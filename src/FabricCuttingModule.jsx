@@ -1,18 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-
-// Returns today's date in YYYY-MM-DD using LOCAL time (not UTC)
-// Fixes the issue where toISOString() returns yesterday's date after midnight IST
-const localToday = () => {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-};
+import { useAppData } from './hooks/useAppData';
+import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet } from 'lucide-react';
-
-// Standard size set used everywhere — every cutting, every run, every view
-const STANDARD_SIZES = ['XS', 'S', 'M', 'L', 'XL'];
 
 export default function FabricCuttingModule() {
   const [activePage, setActivePage] = useState('home');
@@ -69,118 +58,22 @@ export default function FabricCuttingModule() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const [fabricTypes, setFabricTypes] = useState([
-    { id: 1, name: 'Cotton Jersey', composition: '100% Cotton', gsm: 180, format: 'roll', supplier_rates: [
-      { supplier_id: 1, cost_per_kg: 320, chadti: 4.0 },
-      { supplier_id: 2, cost_per_kg: 310, chadti: 3.9 },
-    ]},
-    { id: 2, name: 'Cotton Lycra', composition: '95% Cotton 5% Spandex', gsm: 200, format: 'roll', supplier_rates: [
-      { supplier_id: 2, cost_per_kg: 380, chadti: 3.5 },
-    ]},
-    { id: 3, name: 'Polyester Blend', composition: '65% Polyester 35% Cotton', gsm: 160, format: 'roll', supplier_rates: [
-      { supplier_id: 3, cost_per_kg: 280, chadti: 4.2 },
-    ]},
-    { id: 4, name: 'Rayon', composition: '100% Viscose', gsm: 140, format: 'than', supplier_rates: [
-      { supplier_id: 3, cost_per_m: 145 },
-    ]},
-  ]);
+  const {
+    fabricTypes, suppliers, styleCodes, karigars, karigarPayments,
+    productionEntries, costings, inventory, runs, productionBatches,
+    loading: dbLoading,
+    addFabricType, updateFabricType, deleteFabricType,
+    addSupplier, updateSupplier, deleteSupplier,
+    addStyleCode, updateStyleCode, deleteStyleCode,
+    addKarigar, updateKarigarPaymentType, deleteKarigar, recordKarigarPayment,
+    saveProductionEntry, deleteProductionEntry, updateProductionEntry,
+    upsertCosting, deleteCosting,
+    addInventory, updateInventory, deleteInventory,
+    saveCutting, updateCutEntry, deleteCutEntry,
+    createProductionBatch, completeBatch, deleteProductionBatch,
+    editBatchCompletedDate, editProductionBatch,
+  } = useAppData({ showToast });
 
-  const [suppliers, setSuppliers] = useState([
-    { id: 1, name: 'Arvind Mills', contact_person: '', phone: '', email: '', address: '' },
-    { id: 2, name: 'Raymond Textiles', contact_person: '', phone: '', email: '', address: '' },
-    { id: 3, name: 'Vardhman Fabrics', contact_person: '', phone: '', email: '', address: '' },
-  ]);
-
-  const [styleCodes, setStyleCodes] = useState([
-    { id: 1, code: 'MRT-001' },
-    { id: 2, code: 'WK-007' },
-  ]);
-
-  const [karigars, setKarigars] = useState([
-    { id: 1, name: 'Ramesh Kumar', payment_type: 'piece_rate' },
-    { id: 2, name: 'Suresh Patel', payment_type: 'piece_rate' },
-    { id: 3, name: 'Anil Singh', payment_type: 'salary' },
-  ]);
-
-  // karigarPayments: [{ id, karigar_id, date, amount, breakdown: [{style_code, pieces, rate, subtotal}], notes }]
-  const [karigarPayments, setKarigarPayments] = useState([]);
-
-  // Production entries: {id, date, karigar_id, karigar_name, items: [{sku, qty}]}
-  const today = localToday();
-  const [productionEntries, setProductionEntries] = useState([
-    { id: 1, date: today, karigar_id: 1, karigar_name: 'Ramesh Kumar', items: [{ sku: 'MRT-001', qty: 24 }, { sku: 'WK-007', qty: 18 }] },
-    { id: 2, date: today, karigar_id: 2, karigar_name: 'Suresh Patel', items: [{ sku: 'MRT-001', qty: 30 }] },
-  ]);
-
-  // costings keyed by style_code (one per style)
-  const [costings, setCostings] = useState([
-    {
-      id: 1,
-      style_code: 'MRT-001',
-      fabric_lines: [
-        { fabric_type_id: 1, avg_meters: 1.4 }, // Cotton Jersey, 1.4m for body
-      ],
-      cutting_cost: 18,
-      stitching_cost: 35,
-      trims_cost: 12,
-      finishing_cost: 5,
-      custom_lines: [],
-      updated_date: '2026-04-01',
-    },
-  ]);
-
-  const [inventory, setInventory] = useState([
-    { id: 1, inventory_number: 'ROLL-0001', format: 'roll', fabric_type_id: 1, color: 'Navy Blue', supplier_id: 1, width_cm: 152, initial_weight_kg: 25.5, current_weight_kg: 18.2, rate: 320, received_date: '2026-04-01', status: 'available' },
-    { id: 2, inventory_number: 'ROLL-0002', format: 'roll', fabric_type_id: 1, color: 'Black', supplier_id: 1, width_cm: 152, initial_weight_kg: 30.0, current_weight_kg: 30.0, rate: 320, received_date: '2026-04-03', status: 'available' },
-    { id: 3, inventory_number: 'THAN-0001', format: 'than', fabric_type_id: 4, color: 'White', supplier_id: 3, width_cm: 110, initial_length_m: 80, current_length_m: 80, rate: 145, received_date: '2026-04-08', status: 'available' },
-    { id: 4, inventory_number: 'ROLL-0003', format: 'roll', fabric_type_id: 3, color: 'Olive Green', supplier_id: 3, width_cm: 150, initial_weight_kg: 28.5, current_weight_kg: 28.5, rate: 280, received_date: '2026-04-15', status: 'available' },
-    { id: 5, inventory_number: 'THAN-0002', format: 'than', fabric_type_id: 4, color: 'Maroon', supplier_id: 3, width_cm: 110, initial_length_m: 60, current_length_m: 38.5, rate: 150, received_date: '2026-04-12', status: 'available' },
-    { id: 6, inventory_number: 'ROLL-0004', format: 'roll', fabric_type_id: 2, color: 'Red', supplier_id: 2, width_cm: 147, initial_weight_kg: 24.0, current_weight_kg: 12.7, rate: 380, received_date: '2026-04-10', status: 'available' },
-  ]);
-
-  const [runs, setRuns] = useState([
-    {
-      id: 1, style_code: 'MRT-001', status: 'in_progress',
-      first_cut_date: '2026-04-12', last_append_date: '2026-04-12',
-      pieces: [
-        { size: 'XS', quantity: 0 },
-        { size: 'S', quantity: 20 },
-        { size: 'M', quantity: 35 },
-        { size: 'L', quantity: 30 },
-        { size: 'XL', quantity: 15 },
-      ],
-      entries: [
-        { id: 1, date: '2026-04-12',
-          usage: [{ inventory_id: 1, weight_used_kg: 7.3, length_used_m: null }],
-          pieces_added: [{ size: 'XS', qty: 0 }, { size: 'S', qty: 20 }, { size: 'M', qty: 35 }, { size: 'L', qty: 30 }, { size: 'XL', qty: 15 }],
-          notes: '' },
-      ],
-    },
-    {
-      id: 2, style_code: 'WK-007', status: 'in_progress',
-      first_cut_date: '2026-04-18', last_append_date: '2026-04-22',
-      pieces: [
-        { size: 'XS', quantity: 0 },
-        { size: 'S', quantity: 25 },
-        { size: 'M', quantity: 40 },
-        { size: 'L', quantity: 30 },
-        { size: 'XL', quantity: 0 },
-      ],
-      entries: [
-        { id: 1, date: '2026-04-18',
-          usage: [{ inventory_id: 5, weight_used_kg: null, length_used_m: 21.5 }, { inventory_id: 6, weight_used_kg: 11.3, length_used_m: null }],
-          pieces_added: [{ size: 'XS', qty: 0 }, { size: 'S', qty: 15 }, { size: 'M', qty: 25 }, { size: 'L', qty: 20 }, { size: 'XL', qty: 0 }],
-          notes: 'First cut' },
-        { id: 2, date: '2026-04-22',
-          usage: [],
-          pieces_added: [{ size: 'XS', qty: 0 }, { size: 'S', qty: 10 }, { size: 'M', qty: 15 }, { size: 'L', qty: 10 }, { size: 'XL', qty: 0 }],
-          notes: 'Topped up after fabric arrived' },
-      ],
-    },
-  ]);
-
-  // productionBatches: { id, style_code, issued_date, notes, issued_sizes: {size: qty}, total_issued, karigar_ids: [], karigar_names: [], status: 'issued'|'completed', completed_qty, completed_date }
-  const [productionBatches, setProductionBatches] = useState([]);
 
 
   const getFabricType = (id) => fabricTypes.find(f => f.id === id);
@@ -360,130 +253,6 @@ export default function FabricCuttingModule() {
     });
   }, [runs, productionBatches]);
 
-  // Master data CRUD
-  const addFabricType = (data) => {
-    const newType = {
-      id: Date.now(),
-      name: data.name.trim(),
-      composition: data.composition || '',
-      gsm: data.gsm ? parseInt(data.gsm) : null,
-      format: data.format || 'roll',
-      supplier_rates: data.supplier_rates || [],
-    };
-    setFabricTypes(prev => [...prev, newType]);
-    return newType;
-  };
-  const updateFabricType = (id, data) => {
-    setFabricTypes(prev => prev.map(f => f.id === id ? {
-      ...f,
-      name: data.name ?? f.name,
-      composition: data.composition !== undefined ? data.composition : f.composition,
-      gsm: data.gsm ? parseInt(data.gsm) : (data.gsm === '' ? null : f.gsm),
-      format: data.format ?? f.format,
-      supplier_rates: data.supplier_rates ?? f.supplier_rates,
-    } : f));
-  };
-  const deleteFabricType = (id) => {
-    if (inventory.some(i => i.fabric_type_id === id)) {
-      showToast('Cannot delete: fabric type is in use by stock items');
-      return;
-    }
-    setFabricTypes(prev => prev.filter(f => f.id !== id));
-    showToast('Fabric type deleted');
-  };
-
-  const addSupplier = (data) => {
-    const newSupp = { id: Date.now(), name: data.name.trim(), contact_person: data.contact_person || '', phone: data.phone || '', email: data.email || '', address: data.address || '' };
-    setSuppliers(prev => [...prev, newSupp]);
-    return newSupp;
-  };
-  const updateSupplier = (id, data) => {
-    setSuppliers(prev => prev.map(s => s.id === id ? { ...s, ...data } : s));
-  };
-  const deleteSupplier = (id) => {
-    if (inventory.some(i => i.supplier_id === id)) {
-      showToast('Cannot delete: supplier is in use by stock items');
-      return;
-    }
-    setSuppliers(prev => prev.filter(s => s.id !== id));
-    showToast('Supplier deleted');
-  };
-
-  const addStyleCode = (code) => {
-    const trimmed = code.trim().toUpperCase();
-    if (!trimmed) return null;
-    const existing = styleCodes.find(s => s.code === trimmed);
-    if (existing) return existing;
-    const newSC = { id: Date.now(), code: trimmed };
-    setStyleCodes(prev => [...prev, newSC]);
-    return newSC;
-  };
-  const updateStyleCode = (id, code) => {
-    const trimmed = code.trim().toUpperCase();
-    setStyleCodes(prev => prev.map(s => s.id === id ? { ...s, code: trimmed } : s));
-  };
-  const deleteStyleCode = (id) => {
-    const sc = styleCodes.find(s => s.id === id);
-    if (!sc) return;
-    if (runs.some(r => r.style_code === sc.code)) {
-      showToast('Cannot delete: style code is in use by runs');
-      return;
-    }
-    setStyleCodes(prev => prev.filter(s => s.id !== id));
-    showToast('Style code deleted');
-  };
-
-  // Karigar CRUD
-  const addKarigar = (name, paymentType = 'piece_rate') => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    if (karigars.some(k => k.name.toLowerCase() === trimmed.toLowerCase())) {
-      showToast(`"${trimmed}" already exists`); return;
-    }
-    setKarigars(prev => [...prev, { id: Date.now(), name: trimmed, payment_type: paymentType }]);
-    showToast(`${trimmed} added`);
-  };
-  const updateKarigarPaymentType = (id, paymentType) => {
-    setKarigars(prev => prev.map(k => k.id === id ? { ...k, payment_type: paymentType } : k));
-  };
-  const deleteKarigar = (id) => {
-    const k = karigars.find(k => k.id === id);
-    if (productionBatches.some(b => (b.karigar_ids || []).includes(id))) {
-      showToast('Cannot delete: karigar has production batches');
-      return;
-    }
-    setKarigars(prev => prev.filter(k => k.id !== id));
-    showToast(`${k?.name} removed`);
-  };
-  const recordKarigarPayment = (payment) => {
-    setKarigarPayments(prev => [...prev, { id: Date.now(), ...payment }]);
-    showToast(`Payment of ₹${payment.amount.toLocaleString('en-IN')} recorded`);
-  };
-
-  // Production entry CRUD
-  const saveProductionEntry = (data) => {
-    // data: { date, karigar_id, karigar_name, items }
-    // One entry per karigar per date — upsert
-    const existing = productionEntries.find(e => e.date === data.date && e.karigar_id === data.karigar_id);
-    if (existing) {
-      setProductionEntries(prev => prev.map(e =>
-        e.id === existing.id ? { ...e, items: data.items } : e
-      ));
-      showToast('Entry updated');
-    } else {
-      setProductionEntries(prev => [...prev, { id: Date.now(), ...data }]);
-      showToast('Entry saved');
-    }
-  };
-  const deleteProductionEntry = (id) => {
-    setProductionEntries(prev => prev.filter(e => e.id !== id));
-    showToast('Entry deleted');
-  };
-  const updateProductionEntry = (id, items) => {
-    setProductionEntries(prev => prev.map(e => e.id === id ? { ...e, items } : e));
-    showToast('Entry updated');
-  };
-
   // Returns the highest cost-per-meter across a fabric type's supplier rates
   // ── PRODUCTION BATCH HELPERS ──────────────────────────────────────────
 
@@ -525,81 +294,6 @@ export default function FabricCuttingModule() {
     return result;
   };
 
-  // Create a new batch
-  const createProductionBatch = (data) => {
-    // data: { run_id, style_code, issued_date, notes, issued_sizes, karigar_ids, karigar_names }
-    const total = Object.values(data.issued_sizes).reduce((s, q) => s + q, 0);
-    const newBatch = {
-      id: Date.now(),
-      run_id: data.run_id,
-      style_code: data.style_code,
-      issued_date: data.issued_date,
-      notes: data.notes || '',
-      issued_sizes: data.issued_sizes,
-      total_issued: total,
-      karigar_ids: data.karigar_ids,
-      karigar_names: data.karigar_names,
-      status: 'issued',
-      completed_qty: null,
-      completed_date: null,
-    };
-    setProductionBatches(prev => [...prev, newBatch]);
-    showToast(`Issued ${total} pcs to ${data.karigar_names.join(', ')}`);
-  };
-
-  // Mark a batch complete
-  const completeBatch = (batchId) => {
-    setProductionBatches(prev => prev.map(b =>
-      b.id === batchId ? {
-        ...b,
-        status: 'completed',
-        completed_qty: b.total_issued,
-        completed_date: localToday(),
-      } : b
-    ));
-    showToast('Batch marked complete');
-  };
-
-  // Delete a batch (only if not completed)
-  const deleteProductionBatch = (batchId) => {
-    const batch = productionBatches.find(b => b.id === batchId);
-    if (!batch) return;
-    if (batch.status === 'completed') {
-      // Revert to issued — moves back to In Progress
-      setProductionBatches(prev => prev.map(b =>
-        b.id === batchId ? { ...b, status: 'issued', completed_qty: null, completed_date: null } : b
-      ));
-      showToast('Batch moved back to In Progress');
-    } else {
-      setProductionBatches(prev => prev.filter(b => b.id !== batchId));
-      showToast('Batch deleted');
-    }
-  };
-
-
-  const editBatchCompletedDate = (batchId, newDate) => {
-    setProductionBatches(prev => prev.map(b =>
-      b.id === batchId ? { ...b, completed_date: newDate } : b
-    ));
-    showToast('Completed date updated');
-  };
-
-  const editProductionBatch = (batchId, data) => {
-    // data: { issued_date, issued_sizes, karigar_ids, karigar_names }
-    const total = Object.values(data.issued_sizes).reduce((s, q) => s + (parseInt(q) || 0), 0);
-    setProductionBatches(prev => prev.map(b =>
-      b.id === batchId ? {
-        ...b,
-        issued_date: data.issued_date,
-        issued_sizes: data.issued_sizes,
-        total_issued: total,
-        karigar_ids: data.karigar_ids,
-        karigar_names: data.karigar_names,
-      } : b
-    ));
-    showToast('Batch updated');
-  };
-
   const getMaxCostPerMeter = (fabricTypeId) => {
     const ft = fabricTypes.find(f => f.id === parseInt(fabricTypeId));
     if (!ft || !ft.supplier_rates || ft.supplier_rates.length === 0) return null;
@@ -631,111 +325,6 @@ export default function FabricCuttingModule() {
       + customCost;
   };
 
-  const upsertCosting = (data) => {
-    // Auto-add style code to master if it's a new code
-    const trimmedCode = data.style_code.trim().toUpperCase();
-    const existing = styleCodes.find(s => s.code === trimmedCode);
-    if (!existing) {
-      addStyleCode(trimmedCode);
-      showToast(`Added "${trimmedCode}" to Style Codes`);
-    }
-
-    const existingCosting = costings.find(c => c.style_code === trimmedCode);
-    if (existingCosting) {
-      setCostings(prev => prev.map(c => c.style_code === trimmedCode ? {
-        ...c,
-        ...data,
-        style_code: trimmedCode,
-        updated_date: localToday(),
-      } : c));
-      showToast('Costing updated');
-    } else {
-      setCostings(prev => [...prev, {
-        ...data,
-        id: Date.now(),
-        style_code: trimmedCode,
-        updated_date: localToday(),
-      }]);
-      showToast('Costing added');
-    }
-  };
-
-  const deleteCosting = (id) => {
-    setCostings(prev => prev.filter(c => c.id !== id));
-    showToast('Costing deleted');
-  };
-
-  const addInventory = (data) => {
-    const isRoll = data.format === 'roll';
-    const prefix = isRoll ? 'ROLL' : 'THAN';
-    const sameFormat = inventory.filter(i => i.format === data.format);
-    // Find highest existing number for this format to avoid duplicates
-    const maxNum = sameFormat.reduce((max, i) => {
-      const match = i.inventory_number?.match(/(\d+)$/);
-      return match ? Math.max(max, parseInt(match[1])) : max;
-    }, 0);
-    const newItem = {
-      id: Date.now(),
-      inventory_number: `${prefix}-${String(maxNum + 1).padStart(4, '0')}`,
-      format: data.format,
-      fabric_type_id: parseInt(data.fabric_type_id),
-      color: data.color,
-      supplier_id: parseInt(data.supplier_id),
-      width_cm: parseFloat(data.width_cm),
-      rate: data.rate ? parseFloat(data.rate) : null,
-      received_date: data.received_date,
-      notes: data.notes,
-      status: 'available',
-      initial_weight_kg: isRoll ? parseFloat(data.quantity) : null,
-      current_weight_kg: isRoll ? parseFloat(data.quantity) : null,
-      initial_length_m: !isRoll ? parseFloat(data.quantity) : null,
-      current_length_m: !isRoll ? parseFloat(data.quantity) : null,
-    };
-    setInventory([...inventory, newItem]);
-    setShowAdd(false);
-  };
-
-  const updateInventory = (id, data) => {
-    setInventory(prev => prev.map(i => {
-      if (i.id !== id) return i;
-      const isRoll = i.format === 'roll';
-      const newQty = parseFloat(data.quantity);
-      // If quantity changed, also update current_weight/length proportionally:
-      // We preserve the "used" portion. New initial = newQty, new current = newQty - usedAmount.
-      const oldInitial = isRoll ? i.initial_weight_kg : i.initial_length_m;
-      const oldCurrent = isRoll ? i.current_weight_kg : i.current_length_m;
-      const usedAmount = oldInitial - oldCurrent;
-      const newCurrent = Math.max(0, newQty - usedAmount);
-
-      return {
-        ...i,
-        fabric_type_id: parseInt(data.fabric_type_id),
-        color: data.color,
-        supplier_id: parseInt(data.supplier_id),
-        width_cm: parseFloat(data.width_cm),
-        rate: data.rate ? parseFloat(data.rate) : null,
-        received_date: data.received_date,
-        notes: data.notes,
-        initial_weight_kg: isRoll ? newQty : null,
-        current_weight_kg: isRoll ? newCurrent : null,
-        initial_length_m: !isRoll ? newQty : null,
-        current_length_m: !isRoll ? newCurrent : null,
-      };
-    }));
-    showToast('Stock updated');
-  };
-
-  const deleteInventory = (id) => {
-    // Check if the stock has been used in any cuttings
-    const usedInCuttings = runs.some(r => r.entries.some(e => e.usage.some(u => u.inventory_id === id)));
-    if (usedInCuttings) {
-      showToast('Cannot delete: stock has been used in cuttings');
-      return;
-    }
-    setInventory(prev => prev.filter(i => i.id !== id));
-    showToast('Stock deleted');
-  };
-
   const startRecordCutting = (styleCode) => {
     const trimmedCode = (styleCode || '').trim().toUpperCase();
     if (!trimmedCode) { alert('Style code is required'); return; }
@@ -761,215 +350,6 @@ export default function FabricCuttingModule() {
       setRecordCuttingFor({ style_code: trimmedCode, mode: 'new' });
     }
     setShowStylePicker(false);
-  };
-
-  const saveCutting = (data) => {
-    const updatedInventory = [...inventory];
-    data.usage.forEach(u => {
-      const idx = updatedInventory.findIndex(i => i.id === u.inventory_id);
-      if (idx >= 0) {
-        const item = updatedInventory[idx];
-        if (item.format === 'roll') {
-          const nw = parseFloat((item.current_weight_kg - u.weight_used_kg).toFixed(3));
-          updatedInventory[idx] = { ...item, current_weight_kg: nw, status: nw <= 0.05 ? 'finished' : 'available' };
-        } else {
-          const nl = parseFloat((item.current_length_m - u.length_used_m).toFixed(2));
-          updatedInventory[idx] = { ...item, current_length_m: nl, status: nl <= 0.1 ? 'finished' : 'available' };
-        }
-      }
-    });
-    setInventory(updatedInventory);
-
-    // Normalize pieces_added: ensure every standard size is present (fill missing with 0)
-    // Custom sizes (e.g. "XXL") added by user are also kept
-    const piecesAddedMap = new Map(data.pieces_added.map(p => [p.size, p.qty]));
-    STANDARD_SIZES.forEach(s => { if (!piecesAddedMap.has(s)) piecesAddedMap.set(s, 0); });
-    const normalizedPiecesAdded = orderSizes(Array.from(piecesAddedMap.entries()).map(([size, qty]) => ({ size, qty })));
-
-    if (recordCuttingFor.mode === 'append') {
-      setRuns(runs.map(r => {
-        if (r.id !== recordCuttingFor.existingRunId) return r;
-        const newEntry = { id: r.entries.length + 1, date: data.date, usage: data.usage, pieces_added: normalizedPiecesAdded, notes: data.notes };
-        const piecesMap = new Map(r.pieces.map(p => [p.size, { ...p }]));
-        normalizedPiecesAdded.forEach(pa => {
-          if (piecesMap.has(pa.size)) {
-            const ex = piecesMap.get(pa.size);
-            piecesMap.set(pa.size, { ...ex, quantity: ex.quantity + pa.qty });
-          } else {
-            piecesMap.set(pa.size, { size: pa.size, quantity: pa.qty, finished: 0 });
-          }
-        });
-        return { ...r, pieces: orderSizes(Array.from(piecesMap.values())), entries: [...r.entries, newEntry], last_append_date: data.date > r.last_append_date ? data.date : r.last_append_date };
-      }));
-    } else {
-      const newRun = {
-        id: runs.length + 1,
-        style_code: recordCuttingFor.style_code,
-        status: 'in_progress', first_cut_date: data.date, last_append_date: data.date,
-        pieces: orderSizes(normalizedPiecesAdded.map(pa => ({ size: pa.size, quantity: pa.qty, finished: 0 }))),
-        entries: [{ id: 1, date: data.date, usage: data.usage, pieces_added: normalizedPiecesAdded, notes: data.notes }],
-      };
-      setRuns([...runs, newRun]);
-    }
-    setRecordCuttingFor(null);
-  };
-
-  const updateRunFinished = (runId, newPieces) => {
-    setRuns(runs.map(r => {
-      if (r.id !== runId) return r;
-      const allDone = newPieces.every(p => p.finished >= p.quantity);
-      return { ...r, pieces: newPieces, status: allDone ? 'finished' : 'in_progress' };
-    }));
-    setIssuingForRun(null);
-  };
-
-  // Recalculate run.pieces based on all entries' pieces_added, preserving finished counts
-  // up to the new quantity (capped if reduced)
-  const recalcRunPieces = (entries, oldPieces) => {
-    const totals = new Map(); // size -> quantity
-    entries.forEach(e => {
-      e.pieces_added.forEach(pa => {
-        totals.set(pa.size, (totals.get(pa.size) || 0) + pa.qty);
-      });
-    });
-    // Ensure all standard sizes present
-    STANDARD_SIZES.forEach(s => { if (!totals.has(s)) totals.set(s, 0); });
-
-    const oldFinishedMap = new Map(oldPieces.map(p => [p.size, p.finished]));
-
-    const newPieces = orderSizes(Array.from(totals.entries()).map(([size, quantity]) => {
-      const oldFinished = oldFinishedMap.get(size) || 0;
-      const finished = Math.min(oldFinished, quantity); // cap if quantity reduced
-      return { size, quantity, finished };
-    }));
-
-    return newPieces;
-  };
-
-  // Returns: { inventoryChanges: Map<id, deltaUsed>, blockReason?: string, warnReason?: string }
-  // deltaUsed is positive if more fabric is being consumed, negative if returning fabric
-  const computeFabricDelta = (oldUsage, newUsage) => {
-    const deltaMap = new Map();
-    oldUsage.forEach(u => {
-      const used = u.weight_used_kg || u.length_used_m || 0;
-      deltaMap.set(u.inventory_id, (deltaMap.get(u.inventory_id) || 0) - used);
-    });
-    newUsage.forEach(u => {
-      const used = u.weight_used_kg || u.length_used_m || 0;
-      deltaMap.set(u.inventory_id, (deltaMap.get(u.inventory_id) || 0) + used);
-    });
-
-    // Check if any inventory item would go negative
-    const wouldGoNegative = [];
-    for (const [invId, delta] of deltaMap.entries()) {
-      if (delta === 0) continue;
-      const item = inventory.find(i => i.id === invId);
-      if (!item) continue;
-      const isRoll = item.format === 'roll';
-      const current = isRoll ? item.current_weight_kg : item.current_length_m;
-      // delta > 0 means consuming more — would reduce current by additional delta
-      if (delta > current) {
-        wouldGoNegative.push({ item, delta, current });
-      }
-    }
-
-    return { deltaMap, wouldGoNegative };
-  };
-
-  const applyInventoryDelta = (deltaMap) => {
-    setInventory(prev => prev.map(i => {
-      if (!deltaMap.has(i.id)) return i;
-      const delta = deltaMap.get(i.id);
-      if (delta === 0) return i;
-      const isRoll = i.format === 'roll';
-      const current = isRoll ? i.current_weight_kg : i.current_length_m;
-      const newCurrent = parseFloat((current - delta).toFixed(3));
-      const newStatus = newCurrent <= (isRoll ? 0.05 : 0.1) ? 'finished' : 'available';
-      if (isRoll) return { ...i, current_weight_kg: newCurrent, status: newStatus };
-      return { ...i, current_length_m: newCurrent, status: newStatus };
-    }));
-  };
-
-  const updateCutEntry = (runId, entryId, newData, allowNegativeOverride = false) => {
-    const run = runs.find(r => r.id === runId);
-    if (!run) return;
-    const oldEntry = run.entries.find(e => e.id === entryId);
-    if (!oldEntry) return;
-
-    // Normalize new pieces_added to standard sizes
-    const piecesAddedMap = new Map(newData.pieces_added.map(p => [p.size, p.qty]));
-    STANDARD_SIZES.forEach(s => { if (!piecesAddedMap.has(s)) piecesAddedMap.set(s, 0); });
-    const normalizedPiecesAdded = orderSizes(Array.from(piecesAddedMap.entries()).map(([size, qty]) => ({ size, qty })));
-
-    // Compute fabric delta
-    const { deltaMap, wouldGoNegative } = computeFabricDelta(oldEntry.usage, newData.usage);
-
-    if (wouldGoNegative.length > 0 && !allowNegativeOverride) {
-      const names = wouldGoNegative.map(w => w.item.inventory_number).join(', ');
-      return { needsOverride: true, message: `This change would push ${names} into negative stock. Continue anyway?` };
-    }
-
-    // Apply inventory delta
-    applyInventoryDelta(deltaMap);
-
-    // Replace entry and recompute run.pieces
-    const newEntry = {
-      ...oldEntry,
-      date: newData.date,
-      notes: newData.notes,
-      usage: newData.usage,
-      pieces_added: normalizedPiecesAdded,
-    };
-    const newEntries = run.entries.map(e => e.id === entryId ? newEntry : e);
-    const newPieces = recalcRunPieces(newEntries, run.pieces);
-    const lastDate = newEntries.reduce((max, e) => e.date > max ? e.date : max, '0000-00-00');
-    const allDone = newPieces.every(p => p.finished >= p.quantity);
-
-    setRuns(prev => prev.map(r => r.id === runId ? {
-      ...r,
-      entries: newEntries,
-      pieces: newPieces,
-      last_append_date: lastDate,
-      status: allDone && newPieces.some(p => p.quantity > 0) ? 'finished' : 'in_progress',
-    } : r));
-
-    showToast('Cut entry updated');
-    return { success: true };
-  };
-
-  const deleteCutEntry = (runId, entryId) => {
-    const run = runs.find(r => r.id === runId);
-    if (!run) return;
-
-    const oldEntry = run.entries.find(e => e.id === entryId);
-    if (!oldEntry) return;
-
-    // Reverse the fabric usage
-    const { deltaMap } = computeFabricDelta(oldEntry.usage, []);
-    applyInventoryDelta(deltaMap);
-
-    if (run.entries.length === 1) {
-      // Only entry — delete the entire run
-      setRuns(prev => prev.filter(r => r.id !== runId));
-      showToast('Cut entry and run deleted');
-      return;
-    }
-
-    // Remove the entry and recompute pieces
-    const newEntries = run.entries.filter(e => e.id !== entryId);
-    const newPieces = recalcRunPieces(newEntries, run.pieces);
-    const lastDate = newEntries.reduce((max, e) => e.date > max ? e.date : max, '0000-00-00');
-    const allDone = newPieces.every(p => p.finished >= p.quantity);
-
-    setRuns(prev => prev.map(r => r.id === runId ? {
-      ...r,
-      entries: newEntries,
-      pieces: newPieces,
-      last_append_date: lastDate,
-      status: allDone && newPieces.some(p => p.quantity > 0) ? 'finished' : 'in_progress',
-    } : r));
-
-    showToast('Cut entry deleted');
   };
 
   return (
@@ -1231,7 +611,7 @@ export default function FabricCuttingModule() {
         <RecordCuttingModal context={recordCuttingFor}
           existingRun={recordCuttingFor.mode === 'append' ? runs.find(r => r.id === recordCuttingFor.existingRunId) : null}
           inventory={inventory.filter(i => i.status === 'available' && (i.current_weight_kg > 0 || i.current_length_m > 0))}
-          getFabricType={getFabricType} onClose={() => setRecordCuttingFor(null)} onSave={saveCutting} />
+          getFabricType={getFabricType} onClose={() => setRecordCuttingFor(null)} onSave={(data) => saveCutting(data, recordCuttingFor).then(() => setRecordCuttingFor(null))} />
       )}
       {issuingForRun && (
         <IssueToProductionModal
@@ -6496,17 +5876,6 @@ function RecordPaymentModal({ karigar, onClose, onSave }) {
 
 function colorMap(c) { const m = { 'Navy Blue': '#1e3a5f', 'Black': '#1c1c1c', 'White': '#f5f5f5', 'Olive Green': '#6b7d3a', 'Red': '#c53030', 'Maroon': '#800000', 'Blue': '#2563eb' }; return m[c] || '#9ca3af'; }
 
-function orderSizes(arr) {
-  // Sort: standard sizes first in canonical order, then any custom sizes alphabetically
-  const order = STANDARD_SIZES;
-  return [...arr].sort((a, b) => {
-    const ai = order.indexOf(a.size), bi = order.indexOf(b.size);
-    if (ai === -1 && bi === -1) return a.size.localeCompare(b.size);
-    if (ai === -1) return 1;
-    if (bi === -1) return -1;
-    return ai - bi;
-  });
-}
 function Modal({ title, onClose, wide, children, footer }) {
   return (
     <div className="fixed inset-0 bg-stone-900/40 backdrop-blur-sm z-50 overflow-y-auto" onClick={onClose}>
