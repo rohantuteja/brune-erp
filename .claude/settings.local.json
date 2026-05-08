@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__264d469d-d1f0-426c-8682-a4a76275809a__graphql_query",
+      "Bash(npm create *)",
+      "Bash(export PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin\")",
+      "Read(//Users/rohantuteja/.nvm/**)",
+      "Read(//Users/rohantuteja/.volta/**)",
+      "Bash(find /usr /opt /Users/rohantuteja -maxdepth 6 -name \"node\" -type f 2>/dev/null | head -10 ; find /Users/rohantuteja -maxdepth 5 -name \"npm\" -type f 2>/dev/null | head -5)",
+      "Bash(curl --version)",
+      "Bash(curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh)",
+      "Bash(bash)",
+      "Bash(cp \"/Users/rohantuteja/Downloads/fabric-cutting-module-v97.jsx\" \"/Users/rohantuteja/Brune ERP/src/FabricCuttingModule.jsx\")",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}
