@@ -2071,6 +2071,7 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
       format,
       rate: derivedRate,
     });
+    onClose();
   };
 
   // Format isn't user-chosen anymore — derived from fabric type
