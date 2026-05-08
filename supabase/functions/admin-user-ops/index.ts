@@ -43,7 +43,7 @@ serve(async (req) => {
 
     // ── CREATE USER ───────────────────────────────────────────
     if (action === 'create') {
-      const { email, password, name, role, permissions } = body
+      const { email, password, name, username, role, permissions } = body
 
       const { data: authData, error: authErr } = await admin.auth.admin.createUser({
         email,
@@ -54,7 +54,7 @@ serve(async (req) => {
 
       const userId = authData.user.id
 
-      const { error: profileErr } = await admin.from('user_profiles').insert({ id: userId, name, email, role })
+      const { error: profileErr } = await admin.from('user_profiles').insert({ id: userId, name, email, username: username ?? null, role })
       if (profileErr) {
         await admin.auth.admin.deleteUser(userId).catch(() => {})
         throw profileErr

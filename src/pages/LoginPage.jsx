@@ -3,7 +3,7 @@ import { Layers } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -12,9 +12,20 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    if (error) {
-      setError('Invalid email or password. Please try again.');
+
+    // Resolve username → email via SECURITY DEFINER function (bypasses RLS for anon)
+    const { data: email, error: lookupErr } = await supabase
+      .rpc('get_email_by_username', { p_username: username.trim() });
+
+    if (lookupErr || !email) {
+      setError('Invalid username or password. Please try again.');
+      setLoading(false);
+      return;
+    }
+
+    const { error: authErr } = await supabase.auth.signInWithPassword({ email, password });
+    if (authErr) {
+      setError('Invalid username or password. Please try again.');
     }
     setLoading(false);
   };
@@ -37,15 +48,15 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
 
             <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1.5">Email</label>
+              <label className="block text-xs font-medium text-stone-700 mb-1.5">Username</label>
               <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
+                type="text"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
                 required
                 autoFocus
-                autoComplete="email"
-                placeholder="you@example.com"
+                autoComplete="username"
+                placeholder="your username"
                 className="w-full px-3 py-2.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent placeholder:text-stone-400"
               />
             </div>
