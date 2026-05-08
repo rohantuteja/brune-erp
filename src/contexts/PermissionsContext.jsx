@@ -75,7 +75,11 @@ export function PermissionsProvider({ children }) {
       setPermissions(perms);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [user, authLoading]);
+  // Use user?.id (stable) not user (new object on every Supabase token refresh).
+  // If we depended on `user`, a token refresh on visibilitychange would re-run this
+  // effect, set loading=true, and cause App.jsx to unmount FabricCuttingModule.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, authLoading]);
 
   const isAdmin = profile?.role === 'admin';
 
