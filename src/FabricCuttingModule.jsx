@@ -2,7 +2,10 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
-import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet } from 'lucide-react';
+import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog } from 'lucide-react';
+import { useAuth } from './contexts/AuthContext';
+import { usePermissions } from './contexts/PermissionsContext';
+import UserManagementPage from './pages/UserManagementPage';
 
 const PAGE_TO_PATH = {
   home: '/',
@@ -13,6 +16,7 @@ const PAGE_TO_PATH = {
   payments: '/payments',
   analytics: '/analytics',
   masters: '/masters',
+  users: '/users',
 };
 const PATH_TO_PAGE = Object.fromEntries(Object.entries(PAGE_TO_PATH).map(([k, v]) => [v, k]));
 
@@ -21,6 +25,8 @@ export default function FabricCuttingModule() {
   const { pathname } = useLocation();
   const activePage = PATH_TO_PAGE[pathname] ?? 'home';
   const setActivePage = (page) => navigate(PAGE_TO_PATH[page] ?? '/');
+  const { signOut, user } = useAuth();
+  const { can, profile, isAdmin } = usePermissions();
   const [navOpen, setNavOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editingStockId, setEditingStockId] = useState(null);
@@ -388,13 +394,23 @@ export default function FabricCuttingModule() {
                 activePage === 'costing' ? 'Costing' :
                 activePage === 'production' ? 'Production' :
                 activePage === 'payments' ? 'Payments' :
-                activePage === 'analytics' ? 'Analytics' : 'Master Data'
+                activePage === 'analytics' ? 'Analytics' :
+                activePage === 'users' ? 'User Management' : 'Master Data'
               }</p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-stone-600">
-            <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
-            <span className="hidden sm:inline">Connected</span>
+          <div className="flex items-center gap-1">
+            <div className="hidden sm:flex flex-col items-end mr-1">
+              <span className="text-xs font-medium text-stone-800 leading-tight">{profile?.name ?? user?.email}</span>
+              <span className="text-[10px] text-stone-400 leading-tight capitalize">{profile?.role?.replace(/_/g, ' ') ?? ''}</span>
+            </div>
+            <button
+              onClick={signOut}
+              title="Sign out"
+              className="p-2 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded-md min-w-[40px] min-h-[40px] flex items-center justify-center"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>
@@ -552,6 +568,10 @@ export default function FabricCuttingModule() {
             setActiveSection={setAnalyticsSection}
           />
         )}
+
+        {activePage === 'users' && (
+          <UserManagementPage showToast={showToast} />
+        )}
       </div>
 
       {/* Toast */}
@@ -567,6 +587,10 @@ export default function FabricCuttingModule() {
           activePage={activePage}
           onClose={() => setNavOpen(false)}
           onNavigate={(page) => { setActivePage(page); setNavOpen(false); }}
+          can={can}
+          isAdmin={isAdmin}
+          profile={profile}
+          onSignOut={signOut}
         />
       )}
 
@@ -2440,17 +2464,20 @@ function SizeCell({ qty, flag }) {
   return <div className={`inline-flex items-center justify-center min-w-[2.5rem] px-2 py-1 rounded text-xs font-medium border ${cellMap[flag]}`}>{qty}</div>;
 }
 function FormatBtn({ active, onClick, label, sub }) { return <button onClick={onClick} className={`flex-1 p-3 text-left border rounded-md transition ${active ? 'border-stone-900 bg-stone-900 text-white' : 'border-stone-200 hover:border-stone-400'}`}><div className="text-sm font-medium">{label}</div><div className={`text-xs ${active ? 'text-stone-300' : 'text-stone-500'}`}>{sub}</div></button>; }
-function NavDrawer({ activePage, onClose, onNavigate }) {
-  const navItems = [
-    { id: 'home', label: 'Dashboard', icon: <Home className="w-5 h-5" />, sub: 'Overview & quick actions' },
-    { id: 'inventory', label: 'Inventory', icon: <Boxes className="w-5 h-5" />, sub: 'Fabric rolls & thans' },
-    { id: 'cuttings', label: 'Cuttings', icon: <Scissors className="w-5 h-5" />, sub: 'Style runs & stock' },
-    { id: 'production', label: 'Production', icon: <Users className="w-5 h-5" />, sub: 'Karigar-level tracking' },
-    { id: 'payments', label: 'Payments', icon: <Wallet className="w-5 h-5" />, sub: 'Karigar piece-rate payouts' },
-    { id: 'costing', label: 'Costing', icon: <Calculator className="w-5 h-5" />, sub: 'Cost per piece per style' },
-    { id: 'analytics', label: 'Analytics', icon: <BarChart2 className="w-5 h-5" />, sub: 'Insights & reports' },
-    { id: 'masters', label: 'Master Data', icon: <Database className="w-5 h-5" />, sub: 'Fabric, suppliers, styles' },
+function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onSignOut }) {
+  const allNavItems = [
+    { id: 'home', label: 'Dashboard', icon: <Home className="w-5 h-5" />, sub: 'Overview & quick actions', permKey: 'can_view_dashboard' },
+    { id: 'inventory', label: 'Inventory', icon: <Boxes className="w-5 h-5" />, sub: 'Fabric rolls & thans', permKey: 'can_view_inventory' },
+    { id: 'cuttings', label: 'Cuttings', icon: <Scissors className="w-5 h-5" />, sub: 'Style runs & stock', permKey: 'can_view_cuttings' },
+    { id: 'production', label: 'Production', icon: <Users className="w-5 h-5" />, sub: 'Karigar-level tracking', permKey: 'can_view_production' },
+    { id: 'payments', label: 'Payments', icon: <Wallet className="w-5 h-5" />, sub: 'Karigar piece-rate payouts', permKey: 'can_view_payments' },
+    { id: 'costing', label: 'Costing', icon: <Calculator className="w-5 h-5" />, sub: 'Cost per piece per style', permKey: 'can_view_costing' },
+    { id: 'analytics', label: 'Analytics', icon: <BarChart2 className="w-5 h-5" />, sub: 'Insights & reports', permKey: 'can_view_analytics' },
+    { id: 'masters', label: 'Master Data', icon: <Database className="w-5 h-5" />, sub: 'Fabric, suppliers, styles', permKey: 'can_view_masters' },
   ];
+
+  const navItems = allNavItems.filter(item => !item.permKey || can(item.permKey));
+  const showUsers = can('can_manage_users');
 
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
@@ -2495,10 +2522,43 @@ function NavDrawer({ activePage, onClose, onNavigate }) {
               </button>
             );
           })}
+
+          {showUsers && (
+            <>
+              <div className="mx-3 my-2 border-t border-stone-100" />
+              <button
+                onClick={() => onNavigate('users')}
+                className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-left transition mb-1 min-h-[56px] ${
+                  activePage === 'users'
+                    ? 'bg-stone-900 text-white'
+                    : 'text-stone-700 hover:bg-stone-100'
+                }`}
+              >
+                <div className={`flex-shrink-0 ${activePage === 'users' ? 'text-white' : 'text-stone-500'}`}>
+                  <UserCog className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">User Management</div>
+                  <div className={`text-[11px] ${activePage === 'users' ? 'text-stone-300' : 'text-stone-500'}`}>Accounts & permissions</div>
+                </div>
+              </button>
+            </>
+          )}
         </nav>
 
-        <div className="px-4 py-3 border-t border-stone-200 text-[11px] text-stone-400">
-          v13 · Local prototype
+        {/* User info + sign out */}
+        <div className="px-4 py-3 border-t border-stone-200 flex items-center justify-between">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-stone-700 truncate">{profile?.name ?? 'Unknown'}</div>
+            <div className="text-[10px] text-stone-400 capitalize">{profile?.role?.replace(/_/g, ' ') ?? ''}</div>
+          </div>
+          <button
+            onClick={onSignOut}
+            className="ml-2 flex items-center gap-1.5 text-xs text-stone-500 hover:text-stone-900 hover:bg-stone-100 px-2 py-1.5 rounded-md transition"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign out
+          </button>
         </div>
       </div>
     </div>
