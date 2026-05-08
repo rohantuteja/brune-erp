@@ -164,7 +164,7 @@ function UserModal({ existing, onClose, onSaved, showToast }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="absolute inset-0 bg-stone-900/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-stone-900/50 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} />
       <div className="relative bg-white w-full sm:max-w-lg sm:rounded-xl shadow-xl flex flex-col max-h-[92vh] rounded-t-xl">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-4 border-b border-stone-200">
@@ -348,7 +348,7 @@ function DeleteConfirmModal({ user, onClose, onDeleted, showToast }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-stone-900/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-stone-900/50 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} />
       <div className="relative bg-white rounded-xl shadow-xl w-full max-w-sm p-5">
         <h3 className="text-base font-semibold text-stone-900 mb-1">Delete user?</h3>
         <p className="text-sm text-stone-600 mb-4">
