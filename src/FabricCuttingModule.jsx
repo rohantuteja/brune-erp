@@ -725,6 +725,9 @@ function InventoryTable({
   fabricTypes, suppliers,
   onAdd, onEdit, onDelete, onDuplicate
 }) {
+  const { can } = usePermissions();
+  const canEdit = can('can_edit_inventory');
+  const canDelete = can('can_delete_inventory');
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -769,9 +772,11 @@ function InventoryTable({
           <div className="hidden sm:block">
             <SortMenu value={sortBy} options={sortOptions} onChange={setSortBy} />
           </div>
-          <button onClick={onAdd} className="px-3 sm:px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center justify-center gap-1.5 min-h-[40px] whitespace-nowrap">
-            <Plus className="w-4 h-4" /> <span className="hidden sm:inline">Add Stock</span><span className="sm:hidden">Add</span>
-          </button>
+          {canEdit && (
+            <button onClick={onAdd} className="px-3 sm:px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center justify-center gap-1.5 min-h-[40px] whitespace-nowrap">
+              <Plus className="w-4 h-4" /> <span className="hidden sm:inline">Add Stock</span><span className="sm:hidden">Add</span>
+            </button>
+          )}
         </div>
 
         {/* Sort menu on mobile */}
@@ -878,9 +883,9 @@ function InventoryTable({
                   <Td><InvStatusBadge status={i.status} /></Td>
                   <Td>
                     <div className="flex gap-0.5 justify-end">
-                      <button onClick={() => onDuplicate(i.id)} className="p-1.5 text-stone-400 hover:text-blue-600 hover:bg-blue-50 rounded" aria-label="Duplicate" title="Duplicate"><Copy className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => onEdit(i.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded" aria-label="Edit"><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => setConfirmDeleteId(i.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                      {canEdit && <button onClick={() => onDuplicate(i.id)} className="p-1.5 text-stone-400 hover:text-blue-600 hover:bg-blue-50 rounded" aria-label="Duplicate" title="Duplicate"><Copy className="w-3.5 h-3.5" /></button>}
+                      {canEdit && <button onClick={() => onEdit(i.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded" aria-label="Edit"><Edit2 className="w-3.5 h-3.5" /></button>}
+                      {canDelete && <button onClick={() => setConfirmDeleteId(i.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete"><Trash2 className="w-3.5 h-3.5" /></button>}
                     </div>
                   </Td>
                 </tr>
@@ -909,9 +914,9 @@ function InventoryTable({
                   <InvStatusBadge status={i.status} />
                 </div>
                 <div className="flex gap-0.5 -mt-1 -mr-1">
-                  <button onClick={() => onDuplicate(i.id)} className="p-2 text-stone-400 hover:text-blue-600 hover:bg-blue-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Duplicate" title="Duplicate"><Copy className="w-4 h-4" /></button>
-                  <button onClick={() => onEdit(i.id)} className="p-2 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>
-                  <button onClick={() => setConfirmDeleteId(i.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                  {canEdit && <button onClick={() => onDuplicate(i.id)} className="p-2 text-stone-400 hover:text-blue-600 hover:bg-blue-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Duplicate" title="Duplicate"><Copy className="w-4 h-4" /></button>}
+                  {canEdit && <button onClick={() => onEdit(i.id)} className="p-2 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
+                  {canDelete && <button onClick={() => setConfirmDeleteId(i.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                 </div>
               </div>
               <div className="flex items-center gap-2 text-sm text-stone-700 mb-2 flex-wrap">
@@ -990,6 +995,10 @@ function RunsListView({
   searchTerm, setSearchTerm, dateRange, setDateRange, sortBy, setSortBy,
   onAddCutting, onIssue, getIssuedQty, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry
 }) {
+  const { can } = usePermissions();
+  const canEditCuttings = can('can_edit_cuttings');
+  const canDeleteCuttings = can('can_delete_cuttings');
+  const canEditProduction = can('can_edit_production');
   const sortOptions = [
     { value: 'last_cut_desc', label: 'Most recent cut' },
     { value: 'last_cut_asc', label: 'Oldest cut' },
@@ -1008,9 +1017,11 @@ function RunsListView({
           <div className="hidden sm:block">
             <SortMenu value={sortBy} options={sortOptions} onChange={setSortBy} />
           </div>
-          <button onClick={onAddCutting} className="px-3 sm:px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center justify-center gap-1.5 min-h-[40px] whitespace-nowrap">
-            <Plus className="w-4 h-4" /> <span className="hidden sm:inline">Record Cutting</span><span className="sm:hidden">Record</span>
-          </button>
+          {canEditCuttings && (
+            <button onClick={onAddCutting} className="px-3 sm:px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center justify-center gap-1.5 min-h-[40px] whitespace-nowrap">
+              <Plus className="w-4 h-4" /> <span className="hidden sm:inline">Record Cutting</span><span className="sm:hidden">Record</span>
+            </button>
+          )}
         </div>
 
         <div className="sm:hidden mb-2">
@@ -1091,12 +1102,12 @@ function RunsListView({
                     <History className="w-3.5 h-3.5" />
                     {r.entries.length} cut entr{r.entries.length === 1 ? 'y' : 'ies'}
                   </button>
-                  {derivedStatus === 'active' ? (
+                  {canEditProduction && derivedStatus === 'active' ? (
                     <button onClick={() => onIssue(r)} className="px-3 py-2 text-xs font-medium rounded-md flex items-center gap-1.5 min-h-[40px] bg-stone-900 text-white hover:bg-stone-800">
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       Issue ({remaining} left)
                     </button>
-                  ) : derivedStatus === 'issued' ? (
+                  ) : canEditProduction && derivedStatus === 'issued' ? (
                     <button onClick={() => onIssue(r)} className="px-3 py-2 text-xs font-medium rounded-md flex items-center gap-1.5 min-h-[40px] bg-white text-stone-600 border border-stone-300 hover:bg-stone-50">
                       <Plus className="w-3.5 h-3.5" />
                       Add Batch
@@ -1117,8 +1128,8 @@ function RunsListView({
                             {e.notes && <span className="text-xs text-stone-500 italic basis-full sm:basis-auto">"{e.notes}"</span>}
                           </div>
                           <div className="flex gap-0.5 -mt-1 -mr-1 flex-shrink-0">
-                            <button onClick={() => onEditEntry(r.id, e.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[32px] min-h-[32px] flex items-center justify-center" aria-label="Edit entry"><Edit2 className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => onDeleteEntry(r.id, e.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[32px] min-h-[32px] flex items-center justify-center" aria-label="Delete entry"><Trash2 className="w-3.5 h-3.5" /></button>
+                            {canEditCuttings && <button onClick={() => onEditEntry(r.id, e.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[32px] min-h-[32px] flex items-center justify-center" aria-label="Edit entry"><Edit2 className="w-3.5 h-3.5" /></button>}
+                            {canDeleteCuttings && <button onClick={() => onDeleteEntry(r.id, e.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[32px] min-h-[32px] flex items-center justify-center" aria-label="Delete entry"><Trash2 className="w-3.5 h-3.5" /></button>}
                           </div>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
@@ -3003,6 +3014,9 @@ function DashStat({ icon, label, value, sub, accent }) {
 }
 
 function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onAddKarigar, onDeleteKarigar, onUpdateKarigarPaymentType, showToast, initialTab, onTabChange }) {
+  const { can } = usePermissions();
+  const canEdit = can('can_edit_masters');
+  const canDelete = can('can_delete_masters');
   const [activeTab, setActiveTab] = useState(initialTab || 'fabric_types');
 
   const handleTabChange = (tab) => {
@@ -3076,9 +3090,11 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                 <div className="text-sm font-medium text-stone-900">Fabric Types</div>
                 <div className="text-xs text-stone-500 mt-0.5">Used in stock and cutting records</div>
               </div>
-              <button onClick={() => setEditingFabricType('new')} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
-                <Plus className="w-4 h-4" /> Add
-              </button>
+              {canEdit && (
+                <button onClick={() => setEditingFabricType('new')} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
+                  <Plus className="w-4 h-4" /> Add
+                </button>
+              )}
             </div>
             {fabricTypes.length > 4 && (
               <SearchInput value={ftSearch} onChange={setFtSearch} placeholder="Search fabric types..." />
@@ -3137,12 +3153,8 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                     </div>
                   </div>
                   <div className="flex gap-1 flex-shrink-0">
-                    <button onClick={() => setEditingFabricType(f.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit">
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => onDeleteFabricType(f.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {canEdit && <button onClick={() => setEditingFabricType(f.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
+                    {canDelete && <button onClick={() => onDeleteFabricType(f.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                   </div>
                 </div>
               );
@@ -3160,9 +3172,11 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                 <div className="text-sm font-medium text-stone-900">Suppliers</div>
                 <div className="text-xs text-stone-500 mt-0.5">Used in stock records</div>
               </div>
-              <button onClick={() => setEditingSupplier('new')} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
-                <Plus className="w-4 h-4" /> Add
-              </button>
+              {canEdit && (
+                <button onClick={() => setEditingSupplier('new')} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
+                  <Plus className="w-4 h-4" /> Add
+                </button>
+              )}
             </div>
             {suppliers.length > 4 && (
               <SearchInput value={supSearch} onChange={setSupSearch} placeholder="Search suppliers..." />
@@ -3191,12 +3205,8 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                     </div>
                   </div>
                   <div className="flex gap-1">
-                    <button onClick={() => setEditingSupplier(s.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit">
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => onDeleteSupplier(s.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {canEdit && <button onClick={() => setEditingSupplier(s.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
+                    {canDelete && <button onClick={() => onDeleteSupplier(s.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                   </div>
                 </div>
               );
@@ -3214,9 +3224,11 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                 <div className="text-sm font-medium text-stone-900">Style Codes</div>
                 <div className="text-xs text-stone-500 mt-0.5">Used when recording cuttings</div>
               </div>
-              <button onClick={() => setEditingStyleCode('new')} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
-                <Plus className="w-4 h-4" /> Add
-              </button>
+              {canEdit && (
+                <button onClick={() => setEditingStyleCode('new')} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
+                  <Plus className="w-4 h-4" /> Add
+                </button>
+              )}
             </div>
             {styleCodes.length > 4 && (
               <SearchInput value={scSearch} onChange={setScSearch} placeholder="Search style codes..." />
@@ -3237,12 +3249,8 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                     </div>
                   </div>
                   <div className="flex gap-1">
-                    <button onClick={() => setEditingStyleCode(s.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit">
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => onDeleteStyleCode(s.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {canEdit && <button onClick={() => setEditingStyleCode(s.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
+                    {canDelete && <button onClick={() => onDeleteStyleCode(s.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                   </div>
                 </div>
               );
@@ -3289,41 +3297,45 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                     </button>
                   </div>
                 </div>
-                <button onClick={() => onDeleteKarigar(k.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {canDelete && (
+                  <button onClick={() => onDeleteKarigar(k.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             ))}
             {karigars.length === 0 && (
               <div className="p-12 text-center text-sm text-stone-400">No karigars yet.</div>
             )}
           </div>
-          <div className="p-3 sm:p-4 border-t border-stone-200 space-y-2">
-            <div className="flex gap-2">
-              <input
-                value={newKarigar}
-                onChange={e => setNewKarigar(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { onAddKarigar(newKarigar, newKarigarType); setNewKarigar(''); } }}
-                placeholder="Karigar name..."
-                className="form-input flex-1"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-500">Payment type:</span>
-              {['piece_rate', 'salary'].map(t => (
-                <button key={t} onClick={() => setNewKarigarType(t)}
-                  className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${newKarigarType === t ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300'}`}>
-                  {t === 'piece_rate' ? 'Piece Rate' : 'Salary'}
+          {canEdit && (
+            <div className="p-3 sm:p-4 border-t border-stone-200 space-y-2">
+              <div className="flex gap-2">
+                <input
+                  value={newKarigar}
+                  onChange={e => setNewKarigar(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { onAddKarigar(newKarigar, newKarigarType); setNewKarigar(''); } }}
+                  placeholder="Karigar name..."
+                  className="form-input flex-1"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-stone-500">Payment type:</span>
+                {['piece_rate', 'salary'].map(t => (
+                  <button key={t} onClick={() => setNewKarigarType(t)}
+                    className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${newKarigarType === t ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300'}`}>
+                    {t === 'piece_rate' ? 'Piece Rate' : 'Salary'}
+                  </button>
+                ))}
+                <button
+                  onClick={() => { onAddKarigar(newKarigar, newKarigarType); setNewKarigar(''); }}
+                  className="ml-auto px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[42px] whitespace-nowrap flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" /> Add
                 </button>
-              ))}
-              <button
-                onClick={() => { onAddKarigar(newKarigar, newKarigarType); setNewKarigar(''); }}
-                className="ml-auto px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[42px] whitespace-nowrap flex items-center gap-1.5"
-              >
-                <Plus className="w-4 h-4" /> Add
-              </button>
+              </div>
             </div>
-          </div>
+          )}
           <FormStyles />
         </div>
       )}
@@ -3713,6 +3725,9 @@ function SupplierFormModal({ existing, onClose, onSave }) {
 }
 
 function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, getCostingTotal, searchTerm, setSearchTerm, fabricFilter, setFabricFilter, sortBy, setSortBy, onAdd, onEdit, onDelete }) {
+  const { can } = usePermissions();
+  const canEdit = can('can_edit_costing');
+  const canDelete = can('can_delete_costing');
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const sortOptions = [
@@ -3754,9 +3769,11 @@ function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, ge
               <div className="text-sm font-medium text-stone-900">Style Costings</div>
               <div className="text-xs text-stone-500 mt-0.5">Cost per piece for each style. Fabric cost uses the most expensive supplier rate.</div>
             </div>
-            <button onClick={onAdd} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
-              <Plus className="w-4 h-4" /> Add
-            </button>
+            {canEdit && (
+              <button onClick={onAdd} className="px-3 py-2 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 flex items-center gap-1.5 min-h-[40px]">
+                <Plus className="w-4 h-4" /> Add
+              </button>
+            )}
           </div>
 
           {costings.length > 0 && (
@@ -3815,8 +3832,8 @@ function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, ge
                       <div className="text-lg font-semibold text-stone-900">₹{total.toFixed(2)}</div>
                     </div>
                     <div className="flex gap-1">
-                      <button onClick={() => onEdit(c.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>
-                      <button onClick={() => setConfirmDeleteId(c.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                      {canEdit && <button onClick={() => onEdit(c.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
+                      {canDelete && <button onClick={() => setConfirmDeleteId(c.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                     </div>
                   </div>
                 </div>
@@ -4127,6 +4144,9 @@ function RupeeField({ label, value, onChange, placeholder }) {
 
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
 function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs }) {
+  const { can } = usePermissions();
+  const canEditProduction = can('can_edit_production');
+  const canDeleteProduction = can('can_delete_production');
   const [batchFilter, setBatchFilter] = useState('issued');
   const [batchSearch, setBatchSearch] = useState('');
   const [completingAssignment, setCompletingAssignment] = useState(null);
@@ -4294,12 +4314,16 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                       }
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
-                      <button onClick={() => isComplete ? setEditingDateBatchId(batch.id) : setEditingBatchId(batch.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded" aria-label="Edit batch">
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={() => setConfirmDeleteBatchId(batch.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded" aria-label={isComplete ? 'Revert' : 'Delete'}>
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {canEditProduction && (
+                        <button onClick={() => isComplete ? setEditingDateBatchId(batch.id) : setEditingBatchId(batch.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded" aria-label="Edit batch">
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {canDeleteProduction && (
+                        <button onClick={() => setConfirmDeleteBatchId(batch.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded" aria-label={isComplete ? 'Revert' : 'Delete'}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -4366,7 +4390,7 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                   </div>
 
                   {/* Mark complete button */}
-                  {!isComplete && (
+                  {!isComplete && canEditProduction && (
                     <div className="px-3 sm:px-4 pb-3 pt-1 border-t border-stone-100">
                       <button
                         onClick={() => setCompletingAssignment({ batchId: batch.id })}
@@ -5681,6 +5705,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 }
 
 function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPayments, onRecordPayment }) {
+  const { can } = usePermissions();
+  const canEditPayments = can('can_edit_payments');
   const [payingKarigarId, setPayingKarigarId] = useState(null);
   const [search, setSearch] = useState('');
 
@@ -5776,9 +5802,10 @@ function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPay
 }
 
 function KarigarPaymentCard({ k, onPay }) {
+  const { can } = usePermissions();
   const [expanded, setExpanded] = useState(false);
   const hasUncosted = k.uncostedStyles.length > 0;
-  const canPay = !hasUncosted && k.outstanding > 0;
+  const canPay = !hasUncosted && k.outstanding > 0 && can('can_edit_payments');
 
   return (
           <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
