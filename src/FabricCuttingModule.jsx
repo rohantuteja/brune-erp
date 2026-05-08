@@ -1,10 +1,26 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet } from 'lucide-react';
 
+const PAGE_TO_PATH = {
+  home: '/',
+  inventory: '/inventory',
+  cuttings: '/cuttings',
+  costing: '/costing',
+  production: '/production',
+  payments: '/payments',
+  analytics: '/analytics',
+  masters: '/masters',
+};
+const PATH_TO_PAGE = Object.fromEntries(Object.entries(PAGE_TO_PATH).map(([k, v]) => [v, k]));
+
 export default function FabricCuttingModule() {
-  const [activePage, setActivePage] = useState('home');
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const activePage = PATH_TO_PAGE[pathname] ?? 'home';
+  const setActivePage = (page) => navigate(PAGE_TO_PATH[page] ?? '/');
   const [navOpen, setNavOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editingStockId, setEditingStockId] = useState(null);
