@@ -2582,6 +2582,7 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
 }
 
 function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, thresholdCuttingsLeft, setThresholdCuttingsLeft, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection }) {
+  const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
@@ -2789,7 +2790,15 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
         const otherAlerts = alerts.filter(a => a.page !== 'inventory' && a.page !== 'cuttings');
         const hasAny = alerts.length > 0;
 
+        const pagePermMap = {
+          inventory: 'can_view_inventory', cuttings: 'can_view_cuttings',
+          production: 'can_view_production', payments: 'can_view_payments',
+          costing: 'can_view_costing', analytics: 'can_view_analytics',
+          masters: 'can_view_masters',
+        };
         const handleAlertTap = (a) => {
+          const perm = pagePermMap[a.page];
+          if (perm && !can(perm)) return;
           if (a.page === 'inventory' && a.filters) {
             if (a.filters.fabricTypeId && a.filters.fabricTypeId !== 'all') setInvFabricFilter(String(a.filters.fabricTypeId));
             if (a.filters.color) setInvColorFilter(a.filters.color);
@@ -2831,26 +2840,62 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
 
       {/* ── KEY NUMBERS ── */}
       <div className="grid grid-cols-2 gap-2 sm:gap-3">
-        <button onClick={() => { onNavigate('cuttings'); setCuttingsView('by_style'); }} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 text-left hover:border-stone-300 hover:bg-stone-50 transition active:scale-[0.99]">
-          <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Cuttings Available</div>
-          <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.cuttingsAvailable}</div>
-          <div className="text-[11px] text-stone-400 mt-1">pieces yet to be issued</div>
-        </button>
-        <button onClick={() => onNavigate('production')} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 text-left hover:border-stone-300 hover:bg-stone-50 transition active:scale-[0.99]">
-          <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">In Production</div>
-          <div className="text-xl sm:text-2xl font-bold text-amber-700">{keyNumbers.inProduction}</div>
-          <div className="text-[11px] text-stone-400 mt-1">pieces with karigars</div>
-        </button>
-        <button onClick={() => onNavigate('production')} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 text-left hover:border-stone-300 hover:bg-stone-50 transition active:scale-[0.99]">
-          <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Completed This Month</div>
-          <div className="text-xl sm:text-2xl font-bold text-emerald-700">{keyNumbers.completedThisMonth}</div>
-          <div className="text-[11px] text-stone-400 mt-1">pieces stitched</div>
-        </button>
-        <button onClick={() => onNavigate('cuttings')} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 text-left hover:border-stone-300 hover:bg-stone-50 transition active:scale-[0.99]">
-          <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Active Styles</div>
-          <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.activeStyles}</div>
-          <div className="text-[11px] text-stone-400 mt-1">in progress</div>
-        </button>
+        {(() => {
+          const canCuttings = can('can_view_cuttings');
+          const canProduction = can('can_view_production');
+          const cardBase = "bg-white rounded-lg border border-stone-200 p-3 sm:p-4 text-left transition";
+          const cardBtn = cardBase + " hover:border-stone-300 hover:bg-stone-50 active:scale-[0.99]";
+          return (<>
+            {canCuttings
+              ? <button onClick={() => { onNavigate('cuttings'); setCuttingsView('by_style'); }} className={cardBtn}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Cuttings Available</div>
+                  <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.cuttingsAvailable}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">pieces yet to be issued</div>
+                </button>
+              : <div className={cardBase}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Cuttings Available</div>
+                  <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.cuttingsAvailable}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">pieces yet to be issued</div>
+                </div>
+            }
+            {canProduction
+              ? <button onClick={() => onNavigate('production')} className={cardBtn}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">In Production</div>
+                  <div className="text-xl sm:text-2xl font-bold text-amber-700">{keyNumbers.inProduction}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">pieces with karigars</div>
+                </button>
+              : <div className={cardBase}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">In Production</div>
+                  <div className="text-xl sm:text-2xl font-bold text-amber-700">{keyNumbers.inProduction}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">pieces with karigars</div>
+                </div>
+            }
+            {canProduction
+              ? <button onClick={() => onNavigate('production')} className={cardBtn}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Completed This Month</div>
+                  <div className="text-xl sm:text-2xl font-bold text-emerald-700">{keyNumbers.completedThisMonth}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">pieces stitched</div>
+                </button>
+              : <div className={cardBase}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Completed This Month</div>
+                  <div className="text-xl sm:text-2xl font-bold text-emerald-700">{keyNumbers.completedThisMonth}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">pieces stitched</div>
+                </div>
+            }
+            {canCuttings
+              ? <button onClick={() => onNavigate('cuttings')} className={cardBtn}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Active Styles</div>
+                  <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.activeStyles}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">in progress</div>
+                </button>
+              : <div className={cardBase}>
+                  <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Active Styles</div>
+                  <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.activeStyles}</div>
+                  <div className="text-[11px] text-stone-400 mt-1">in progress</div>
+                </div>
+            }
+          </>);
+        })()}
       </div>
 
       {/* ── ACTIVE PIPELINE ── */}
@@ -2858,7 +2903,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
         <div>
           <div className="flex items-center justify-between mb-2 px-0.5">
             <div className="text-xs font-semibold text-stone-700 uppercase tracking-wide">Active Pipeline</div>
-            <button onClick={() => { setAnalyticsSection('pipeline'); onNavigate('analytics'); }} className="text-xs text-stone-500 hover:text-stone-900 font-medium">Full view →</button>
+            {can('can_view_analytics') && <button onClick={() => { setAnalyticsSection('pipeline'); onNavigate('analytics'); }} className="text-xs text-stone-500 hover:text-stone-900 font-medium">Full view →</button>}
           </div>
           <div className="space-y-2">
             {pipeline.map(p => {
