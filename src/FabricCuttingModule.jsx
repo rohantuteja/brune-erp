@@ -1175,6 +1175,9 @@ function RunsListView({
 }
 
 function StockByStyleView({ styleRollup, searchTerm, setSearchTerm, flagFilter, setFlagFilter, onAddCutting, onMarkFinished }) {
+  const { can } = usePermissions();
+  const canEditCuttings = can('can_edit_cuttings');
+  const canEditProduction = can('can_edit_production');
   const allSizes = useMemo(() => {
     const set = new Set(STANDARD_SIZES);
     styleRollup.forEach(s => s.sizes.forEach(sz => set.add(sz.size)));
@@ -1237,9 +1240,11 @@ function StockByStyleView({ styleRollup, searchTerm, setSearchTerm, flagFilter, 
           <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span><span className="text-stone-600">Low (1–10)</span><span className="text-stone-400">({counts.amber})</span></div>
           <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span><span className="text-stone-600">Healthy (11+)</span><span className="text-stone-400">({counts.green})</span></div>
         </div>
-        <button onClick={onAddCutting} className="px-3 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 flex items-center justify-center gap-1.5 min-h-[40px]">
-          <Plus className="w-3.5 h-3.5" /> Record Cutting
-        </button>
+        {canEditCuttings && (
+          <button onClick={onAddCutting} className="px-3 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 flex items-center justify-center gap-1.5 min-h-[40px]">
+            <Plus className="w-3.5 h-3.5" /> Record Cutting
+          </button>
+        )}
       </div>
       <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
         <div className="overflow-x-auto">
@@ -1284,7 +1289,7 @@ function StockByStyleView({ styleRollup, searchTerm, setSearchTerm, flagFilter, 
                       {s.last_append_date}<div className="text-stone-400">{s.days_since_last_cut}d ago</div>
                     </td>
                     <td className="px-2 sm:px-3 py-3 text-right">
-                      <button onClick={() => onMarkFinished(s)} className="text-xs font-medium text-stone-700 hover:text-stone-900 px-2 py-1.5 hover:bg-stone-100 rounded whitespace-nowrap">Issue</button>
+                      {canEditProduction && <button onClick={() => onMarkFinished(s)} className="text-xs font-medium text-stone-700 hover:text-stone-900 px-2 py-1.5 hover:bg-stone-100 rounded whitespace-nowrap">Issue</button>}
                     </td>
                   </tr>
                 );
@@ -3283,18 +3288,26 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-stone-900">{k.name}</div>
                   <div className="flex gap-1 mt-1">
-                    <button
-                      onClick={() => onUpdateKarigarPaymentType(k.id, 'piece_rate')}
-                      className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'piece_rate' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
-                    >
-                      Piece Rate
-                    </button>
-                    <button
-                      onClick={() => onUpdateKarigarPaymentType(k.id, 'salary')}
-                      className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'salary' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
-                    >
-                      Salary
-                    </button>
+                    {canEdit ? (
+                      <>
+                        <button
+                          onClick={() => onUpdateKarigarPaymentType(k.id, 'piece_rate')}
+                          className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'piece_rate' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
+                        >
+                          Piece Rate
+                        </button>
+                        <button
+                          onClick={() => onUpdateKarigarPaymentType(k.id, 'salary')}
+                          className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'salary' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
+                        >
+                          Salary
+                        </button>
+                      </>
+                    ) : (
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium bg-stone-900 text-white border-stone-900`}>
+                        {k.payment_type === 'piece_rate' ? 'Piece Rate' : 'Salary'}
+                      </span>
+                    )}
                   </div>
                 </div>
                 {canDelete && (
