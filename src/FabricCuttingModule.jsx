@@ -2291,10 +2291,9 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
           suppliers={suppliers}
           onAddSupplier={onAddSupplier}
           onClose={() => setShowAddFabricType(false)}
-          onSave={(data) => {
+          onSave={async (data) => {
             if (onAddFabricType) {
-              const newType = onAddFabricType(data);
-              // Auto-select the new fabric type if its id is returned
+              const newType = await onAddFabricType(data);
               if (newType?.id) {
                 setForm(f => ({ ...f, fabric_type_id: newType.id }));
               }
