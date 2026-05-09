@@ -149,6 +149,165 @@ export function useAppData({ showToast }) {
 
   useEffect(() => { fetchAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Realtime sync ───────────────────────────────────────────────────────────
+  //
+  // One persistent WebSocket channel subscribes to every relevant table.
+  // Flat tables are patched directly from the payload (no extra round-trip).
+  // Complex tables with nested data (fabric_types, runs, costings) do a
+  // targeted single-row refetch so we get their joined children too.
+  // A 600 ms delay before refetching complex rows lets sibling child-table
+  // writes (usage rows, pieces rows, etc.) finish before we read.
+
+  useEffect(() => {
+    // ── Targeted refetch helpers ──────────────────────────────────────────
+    const refetchFabricType = async (id) => {
+      const { data } = await supabase
+        .from('fabric_types').select('*, fabric_type_supplier_rates(*)').eq('id', id).single();
+      if (!data) return;
+      const t = transformFabricType(data);
+      setFabricTypes(prev => prev.some(f => f.id === id)
+        ? prev.map(f => f.id === id ? t : f)
+        : [...prev, t]);
+    };
+
+    const refetchRun = async (runId) => {
+      const { data } = await supabase
+        .from('runs')
+        .select('*, run_pieces(*), run_entries(*, run_entry_usage(*), run_entry_pieces_added(*))')
+        .eq('id', runId).single();
+      if (!data) return;
+      const t = transformRun(data);
+      setRuns(prev => prev.some(r => r.id === runId)
+        ? prev.map(r => r.id === runId ? t : r)
+        : [...prev, t]);
+    };
+
+    const refetchCosting = async (id) => {
+      const { data } = await supabase
+        .from('costings').select('*, costing_fabric_lines(*), costing_custom_lines(*)').eq('id', id).single();
+      if (!data) return;
+      const t = transformCosting(data);
+      setCostings(prev => prev.some(c => c.id === id)
+        ? prev.map(c => c.id === id ? t : c)
+        : [...prev, t]);
+    };
+
+    const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // ── Subscribe ─────────────────────────────────────────────────────────
+    const ch = supabase.channel('realtime-app-data')
+
+      // ── inventory (flat) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inventory' },
+        ({ new: row }) => setInventory(prev => [...prev, row]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'inventory' },
+        ({ new: row }) => setInventory(prev => prev.map(i => i.id === row.id ? row : i)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'inventory' },
+        ({ old: row }) => setInventory(prev => prev.filter(i => i.id !== row.id)))
+
+      // ── suppliers (flat) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'suppliers' },
+        ({ new: row }) => setSuppliers(prev => [...prev, row]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'suppliers' },
+        ({ new: row }) => setSuppliers(prev => prev.map(s => s.id === row.id ? row : s)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'suppliers' },
+        ({ old: row }) => setSuppliers(prev => prev.filter(s => s.id !== row.id)))
+
+      // ── style_codes (flat) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'style_codes' },
+        ({ new: row }) => setStyleCodes(prev => [...prev, row]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'style_codes' },
+        ({ new: row }) => setStyleCodes(prev => prev.map(s => s.id === row.id ? row : s)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'style_codes' },
+        ({ old: row }) => setStyleCodes(prev => prev.filter(s => s.id !== row.id)))
+
+      // ── karigars (flat) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'karigars' },
+        ({ new: row }) => setKarigars(prev => [...prev, row]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'karigars' },
+        ({ new: row }) => setKarigars(prev => prev.map(k => k.id === row.id ? row : k)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'karigars' },
+        ({ old: row }) => setKarigars(prev => prev.filter(k => k.id !== row.id)))
+
+      // ── karigar_payments (flat) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'karigar_payments' },
+        ({ new: row }) => setKarigarPayments(prev => [...prev, { ...row, breakdown: row.breakdown || [] }]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'karigar_payments' },
+        ({ new: row }) => setKarigarPayments(prev => prev.map(p => p.id === row.id ? { ...row, breakdown: row.breakdown || [] } : p)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'karigar_payments' },
+        ({ old: row }) => setKarigarPayments(prev => prev.filter(p => p.id !== row.id)))
+
+      // ── production_entries (flat, items is jsonb) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'production_entries' },
+        ({ new: row }) => setProductionEntries(prev => [...prev, row]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'production_entries' },
+        ({ new: row }) => setProductionEntries(prev => prev.map(e => e.id === row.id ? row : e)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'production_entries' },
+        ({ old: row }) => setProductionEntries(prev => prev.filter(e => e.id !== row.id)))
+
+      // ── production_batches (flat) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'production_batches' },
+        ({ new: row }) => setProductionBatches(prev => [...prev, row]))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'production_batches' },
+        ({ new: row }) => setProductionBatches(prev => prev.map(b => b.id === row.id ? row : b)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'production_batches' },
+        ({ old: row }) => setProductionBatches(prev => prev.filter(b => b.id !== row.id)))
+
+      // ── fabric_types (complex — needs supplier_rates join) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'fabric_types' },
+        ({ new: row }) => refetchFabricType(row.id))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'fabric_types' },
+        ({ new: row }) => refetchFabricType(row.id))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'fabric_types' },
+        ({ old: row }) => setFabricTypes(prev => prev.filter(f => f.id !== row.id)))
+      // child: supplier rates → refetch parent fabric_type
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'fabric_type_supplier_rates' },
+        ({ new: row, old: row2 }) => {
+          const id = row?.fabric_type_id ?? row2?.fabric_type_id;
+          if (id) refetchFabricType(id);
+        })
+
+      // ── runs (complex — needs nested entries/pieces/usage join) ──
+      // We subscribe to run_entries (which carries run_id) as the trigger for
+      // any cutting save/edit/delete. A 600 ms delay lets the sibling child
+      // writes (usage rows, pieces rows) settle before we refetch the run.
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'runs' },
+        ({ new: row }) => delay(600).then(() => refetchRun(row.id)))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'runs' },
+        ({ new: row }) => delay(600).then(() => refetchRun(row.id)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'runs' },
+        ({ old: row }) => setRuns(prev => prev.filter(r => r.id !== row.id)))
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_entries' },
+        ({ new: row }) => delay(600).then(() => refetchRun(row.run_id)))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'run_entries' },
+        ({ new: row }) => delay(600).then(() => refetchRun(row.run_id)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'run_entries' },
+        ({ old: row }) => { if (row.run_id) refetchRun(row.run_id); })
+
+      // ── costings (complex — needs fabric_lines + custom_lines join) ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'costings' },
+        ({ new: row }) => delay(600).then(() => refetchCosting(row.id)))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'costings' },
+        ({ new: row }) => delay(600).then(() => refetchCosting(row.id)))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'costings' },
+        ({ old: row }) => setCostings(prev => prev.filter(c => c.id !== row.id)))
+      // child lines → refetch parent costing
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'costing_fabric_lines' },
+        ({ new: row, old: row2 }) => {
+          const id = row?.costing_id ?? row2?.costing_id;
+          if (id) delay(600).then(() => refetchCosting(id));
+        })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'costing_custom_lines' },
+        ({ new: row, old: row2 }) => {
+          const id = row?.costing_id ?? row2?.costing_id;
+          if (id) delay(600).then(() => refetchCosting(id));
+        })
+
+      .subscribe();
+
+    return () => { supabase.removeChannel(ch); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Internal helpers ────────────────────────────────────────────────────────
 
   /** Recompute aggregate run_pieces from all entries in a run. */
