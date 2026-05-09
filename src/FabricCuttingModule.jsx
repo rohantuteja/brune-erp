@@ -2,9 +2,10 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
-import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog } from 'lucide-react';
+import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
+import { supabase } from './lib/supabase';
 import UserManagementPage from './pages/UserManagementPage';
 
 const PAGE_TO_PATH = {
@@ -566,6 +567,7 @@ export default function FabricCuttingModule() {
             getCostingTotal={getCostingTotal}
             activeSection={analyticsSection}
             setActiveSection={setAnalyticsSection}
+            showToast={showToast}
           />
         )}
 
@@ -4872,8 +4874,114 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 }
 
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
-function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection }) {
+function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast }) {
+  const { isAdmin, can } = usePermissions();
   const [snapshotDate, setSnapshotDate] = useState(localToday());
+
+  // ── Monthly Snapshot state ───────────────────────────────────────────
+  const [snapshots, setSnapshots] = useState([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [takingSnapshot, setTakingSnapshot] = useState(false);
+  const [expandedSnapshotId, setExpandedSnapshotId] = useState(null);
+
+  const currentMonthStr = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  };
+
+  const fmtMonth = (monthStr) => {
+    if (!monthStr) return '';
+    const [year, month] = monthStr.split('-');
+    const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+    return date.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  };
+
+  const fetchSnapshots = async () => {
+    setSnapshotsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('inventory_snapshots')
+        .select('*, inventory_snapshot_items(*)')
+        .order('month', { ascending: false })
+        .limit(24);
+      if (error) throw error;
+      setSnapshots(data || []);
+    } catch (err) {
+      console.error('Failed to fetch snapshots:', err);
+    } finally {
+      setSnapshotsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSection === 'inventory') {
+      fetchSnapshots();
+    }
+  }, [activeSection]);
+
+  const toggleExpand = (id) => {
+    setExpandedSnapshotId(prev => (prev === id ? null : id));
+  };
+
+  const takeSnapshot = async () => {
+    if (takingSnapshot) return;
+    setTakingSnapshot(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/take-inventory-snapshot`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ force: false }),
+        }
+      );
+      const json = await res.json();
+      if (!res.ok) {
+        if (json?.error?.includes('already exists')) {
+          showToast('A snapshot for this month already exists. Use force to overwrite.', 'info');
+        } else {
+          showToast(json?.error || 'Failed to take snapshot', 'error');
+        }
+      } else {
+        showToast('Snapshot taken successfully!', 'success');
+        await fetchSnapshots();
+      }
+    } catch (err) {
+      showToast('Error taking snapshot', 'error');
+    } finally {
+      setTakingSnapshot(false);
+    }
+  };
+
+  const downloadSnapshotCSV = (snapshot) => {
+    const items = snapshot.inventory_snapshot_items || [];
+    if (items.length === 0) {
+      showToast('No items in this snapshot', 'info');
+      return;
+    }
+    const header = ['Fabric Type', 'Supplier', 'Format', 'Rolls/Thans', 'Qty (kg/m)', 'Rate', 'Value (₹)'];
+    const rows = items.map(item => [
+      item.fabric_type_name || '',
+      item.supplier_name || '',
+      item.format || '',
+      item.item_count ?? '',
+      item.total_qty != null ? parseFloat(item.total_qty).toFixed(2) : '',
+      item.avg_rate != null ? parseFloat(item.avg_rate).toFixed(2) : '',
+      item.total_value != null ? parseFloat(item.total_value).toFixed(2) : '',
+    ]);
+    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory-snapshot-${snapshot.month}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const getFabricType = (id) => fabricTypes.find(f => f.id === id);
   const getSupplier = (id) => suppliers.find(s => s.id === id);
@@ -5167,7 +5275,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 <input type="date" value={snapshotDate} onChange={e => setSnapshotDate(e.target.value)} className="form-input" />
               </Field>
               <div className="text-xs text-stone-500 mt-4 sm:mt-0">
-                Showing stock received on or before this date, at current quantities.
+                Showing stock received on or before this date, at current quantities. See Monthly Snapshots below for point-in-time records.
               </div>
             </div>
             <FormStyles />
@@ -5251,6 +5359,149 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 );
               })}
             </div>
+          </div>
+
+          {/* ── Monthly Snapshots ── */}
+          <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+            <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-medium text-stone-900">Monthly Snapshots</div>
+                <div className="text-xs text-stone-500 mt-0.5">
+                  Auto-captured on the last day of each month. Each snapshot records the exact inventory value at that point in time.
+                </div>
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={takeSnapshot}
+                  disabled={takingSnapshot}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  {takingSnapshot ? 'Taking…' : 'Take Now'}
+                </button>
+              )}
+            </div>
+
+            {snapshotsLoading ? (
+              <div className="p-6 text-center text-sm text-stone-400">Loading snapshots…</div>
+            ) : snapshots.length === 0 ? (
+              <div className="p-6 text-center">
+                <Camera className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+                <div className="text-sm text-stone-500">No snapshots yet</div>
+                <div className="text-xs text-stone-400 mt-0.5">Snapshots are auto-captured on the last day of each month.</div>
+              </div>
+            ) : (
+              <div className="divide-y divide-stone-100">
+                {snapshots.map((snap, idx) => {
+                  const prevSnap = snapshots[idx + 1];
+                  const totalValue = parseFloat(snap.total_value) || 0;
+                  const prevValue = prevSnap ? (parseFloat(prevSnap.total_value) || 0) : null;
+                  const momDiff = prevValue !== null ? totalValue - prevValue : null;
+                  const momPct = prevValue && prevValue > 0 ? (momDiff / prevValue) * 100 : null;
+                  const isExpanded = expandedSnapshotId === snap.id;
+                  const items = snap.inventory_snapshot_items || [];
+                  const isCurrentMonth = snap.month === currentMonthStr();
+
+                  return (
+                    <div key={snap.id}>
+                      <button
+                        onClick={() => toggleExpand(snap.id)}
+                        className="w-full flex items-center gap-3 p-3 sm:p-4 hover:bg-stone-50 transition-colors text-left"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-medium text-stone-900">{fmtMonth(snap.month)}</span>
+                            {isCurrentMonth && (
+                              <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                            <span className="text-base font-bold text-stone-900">
+                              ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            </span>
+                            {momDiff !== null && (
+                              <span className={`text-xs font-medium flex items-center gap-0.5 ${momDiff >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                {momDiff >= 0 ? '▲' : '▼'}
+                                ₹{Math.abs(momDiff).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                {momPct !== null && ` (${Math.abs(momPct).toFixed(1)}%)`}
+                                <span className="text-stone-400 font-normal ml-1">vs prev month</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-stone-400 mt-0.5">
+                            {snap.total_items} items · {items.length} fabric groups
+                            {snap.created_by_name ? ` · Taken by ${snap.created_by_name}` : ''}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isAdmin && (
+                            <span
+                              role="button"
+                              onClick={e => { e.stopPropagation(); downloadSnapshotCSV(snap); }}
+                              className="p-1.5 rounded hover:bg-stone-200 text-stone-500 transition-colors"
+                              title="Download CSV"
+                            >
+                              <Download className="w-4 h-4" />
+                            </span>
+                          )}
+                          {isExpanded ? <ChevronUp className="w-4 h-4 text-stone-400" /> : <ChevronDown className="w-4 h-4 text-stone-400" />}
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="border-t border-stone-100 bg-stone-50">
+                          {items.length === 0 ? (
+                            <div className="p-4 text-sm text-stone-400 text-center">No items recorded in this snapshot.</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-stone-200 text-stone-500">
+                                    <th className="text-left px-4 py-2 font-medium">Fabric Type</th>
+                                    <th className="text-left px-4 py-2 font-medium">Supplier</th>
+                                    <th className="text-left px-4 py-2 font-medium">Format</th>
+                                    <th className="text-right px-4 py-2 font-medium">Items</th>
+                                    <th className="text-right px-4 py-2 font-medium">Qty</th>
+                                    <th className="text-right px-4 py-2 font-medium">Avg Rate</th>
+                                    <th className="text-right px-4 py-2 font-medium">Value</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-stone-100">
+                                  {[...items].sort((a, b) => (parseFloat(b.total_value) || 0) - (parseFloat(a.total_value) || 0)).map((item, i) => (
+                                    <tr key={i} className="hover:bg-white transition-colors">
+                                      <td className="px-4 py-2 text-stone-900 font-medium">{item.fabric_type_name || '—'}</td>
+                                      <td className="px-4 py-2 text-stone-600">{item.supplier_name || '—'}</td>
+                                      <td className="px-4 py-2 text-stone-500 capitalize">{item.format || '—'}</td>
+                                      <td className="px-4 py-2 text-right text-stone-600">{item.item_count}</td>
+                                      <td className="px-4 py-2 text-right text-stone-900">
+                                        {parseFloat(item.total_qty).toFixed(2)}
+                                        <span className="text-stone-400 ml-0.5">{item.format === 'roll' ? 'kg' : 'm'}</span>
+                                      </td>
+                                      <td className="px-4 py-2 text-right text-stone-600">₹{parseFloat(item.avg_rate).toFixed(2)}</td>
+                                      <td className="px-4 py-2 text-right font-medium text-stone-900">
+                                        ₹{parseFloat(item.total_value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                                <tfoot>
+                                  <tr className="border-t border-stone-200 bg-stone-100">
+                                    <td colSpan={6} className="px-4 py-2 text-right font-medium text-stone-700">Total</td>
+                                    <td className="px-4 py-2 text-right font-bold text-stone-900">
+                                      ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                    </td>
+                                  </tr>
+                                </tfoot>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
