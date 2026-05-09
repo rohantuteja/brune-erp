@@ -675,11 +675,11 @@ export default function FabricCuttingModule() {
             inventory={inventory}
             getFabricType={getFabricType}
             onClose={() => setEditingEntry(null)}
-            onSave={(newData, allowOverride) => {
-              const result = updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, allowOverride);
+            onSave={async (newData, allowOverride) => {
+              const result = await updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, allowOverride);
               if (result?.needsOverride) {
                 if (window.confirm(result.message)) {
-                  updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, true);
+                  await updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, true);
                   setEditingEntry(null);
                 }
               } else if (result?.success) {
@@ -1444,7 +1444,10 @@ function RecordCuttingModal({ context, existingRun, inventory, getFabricType, on
   const addSize = () => setPiecesAdded([...piecesAdded, { size: '', qty: 0, custom: true }]);
   const removeSize = (idx) => setPiecesAdded(piecesAdded.filter((_, i) => i !== idx));
 
-  const submit = () => {
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (saving) return;
     for (const s of selected) {
       const used = s.weight_used_kg || s.length_used_m;
       if (!used || used <= 0) { alert('Enter usage for each selected item'); return; }
@@ -1458,7 +1461,12 @@ function RecordCuttingModal({ context, existingRun, inventory, getFabricType, on
       .map(p => ({ size: p.size.trim().toUpperCase(), qty: p.qty || 0 }));
     const totalQty = piecesToSave.reduce((s, p) => s + p.qty, 0);
     if (totalQty === 0) { alert('Enter at least one piece quantity'); return; }
-    onSave({ date: form.date, notes: form.notes, usage: selected, pieces_added: piecesToSave });
+    setSaving(true);
+    try {
+      await onSave({ date: form.date, notes: form.notes, usage: selected, pieces_added: piecesToSave });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1469,7 +1477,7 @@ function RecordCuttingModal({ context, existingRun, inventory, getFabricType, on
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">{isAppend ? 'Append Cut' : 'Save New Run'}</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : isAppend ? 'Append Cut' : 'Save New Run'}</button>
         </div>
       }
     >
@@ -1710,7 +1718,10 @@ function EditCutEntryModal({ run, entry, inventory, getFabricType, onClose, onSa
   const addSize = () => setPiecesAdded([...piecesAdded, { size: '', qty: 0, custom: true }]);
   const removeSize = (idx) => setPiecesAdded(piecesAdded.filter((_, i) => i !== idx));
 
-  const submit = () => {
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (saving) return;
     for (const s of selected) {
       const used = s.weight_used_kg || s.length_used_m;
       if (!used || used <= 0) { alert('Enter usage for each selected item'); return; }
@@ -1720,7 +1731,12 @@ function EditCutEntryModal({ run, entry, inventory, getFabricType, onClose, onSa
       .map(p => ({ size: p.size.trim().toUpperCase(), qty: p.qty || 0 }));
     const totalQty = piecesToSave.reduce((s, p) => s + p.qty, 0);
     if (totalQty === 0) { alert('Enter at least one piece quantity'); return; }
-    onSave({ date: form.date, notes: form.notes, usage: selected, pieces_added: piecesToSave });
+    setSaving(true);
+    try {
+      await onSave({ date: form.date, notes: form.notes, usage: selected, pieces_added: piecesToSave });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1731,7 +1747,7 @@ function EditCutEntryModal({ run, entry, inventory, getFabricType, onClose, onSa
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Update Entry</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Update Entry'}</button>
         </div>
       }
     >
