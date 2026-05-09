@@ -1,18 +1,13 @@
 import { useRef } from 'react'
-import { useRegisterSW } from 'virtual:pwa-register/react'
 import { useAuth } from './contexts/AuthContext'
 import { usePermissions } from './contexts/PermissionsContext'
 import LoginPage from './pages/LoginPage'
 import FabricCuttingModule from './FabricCuttingModule'
-import { Layers, RefreshCw } from 'lucide-react'
+import { Layers } from 'lucide-react'
 
 export default function App() {
   const { loading: authLoading, session } = useAuth()
   const { loading: permsLoading } = usePermissions()
-
-  // PWA update detection — shows a banner when a new version is ready.
-  // The browser detects the new service worker automatically (no polling).
-  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW()
 
   // Track whether we've ever successfully finished the initial load.
   // Once true, we never show the spinner again — background permission
@@ -39,23 +34,5 @@ export default function App() {
 
   if (!session) return <LoginPage />
 
-  return (
-    <>
-      <FabricCuttingModule />
-
-      {/* New deployment banner — only visible when a new SW is waiting */}
-      {needRefresh && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-stone-900 text-white rounded-xl px-4 py-3 shadow-xl border border-stone-700 w-max max-w-[calc(100vw-2rem)]">
-          <RefreshCw className="w-4 h-4 shrink-0 text-stone-400" />
-          <p className="text-sm">A new version is available.</p>
-          <button
-            onClick={() => updateServiceWorker(true)}
-            className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-stone-900 hover:bg-stone-100 transition-colors"
-          >
-            Update now
-          </button>
-        </div>
-      )}
-    </>
-  )
+  return <FabricCuttingModule />
 }
