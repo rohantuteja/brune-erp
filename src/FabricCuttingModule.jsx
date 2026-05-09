@@ -3560,7 +3560,7 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
     }
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!form.name.trim()) { alert('Name is required'); return; }
 
     // At least one supplier rate required, with supplier and required cost field(s)
@@ -3576,8 +3576,8 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
         if (existingSupp) {
           supplierId = existingSupp.id;
         } else {
-          const newSupp = onAddSupplier({ name: trimmed });
-          supplierId = newSupp.id;
+          const newSupp = await onAddSupplier({ name: trimmed });
+          supplierId = newSupp?.id ?? null;
         }
       }
       if (!supplierId) { setSubmitError('Each supplier row must have a supplier selected or typed'); return; }
