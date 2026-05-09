@@ -2295,7 +2295,8 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
             if (onAddFabricType) {
               const newType = await onAddFabricType(data);
               if (newType?.id) {
-                setForm(f => ({ ...f, fabric_type_id: newType.id }));
+                const firstSupplierId = newType.supplier_rates?.[0]?.supplier_id || '';
+                setForm(f => ({ ...f, fabric_type_id: newType.id, supplier_id: firstSupplierId }));
               }
             }
             setShowAddFabricType(false);
