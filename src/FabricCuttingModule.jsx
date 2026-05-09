@@ -195,22 +195,18 @@ export default function FabricCuttingModule() {
     });
 
     list = [...list].sort((a, b) => {
-      // Active always before issued
-      if (a._derivedStatus !== b._derivedStatus) {
-        return a._derivedStatus === 'active' ? -1 : 1;
-      }
       switch (runSort) {
-        case 'last_cut_desc': return b.last_append_date.localeCompare(a.last_append_date);
-        case 'last_cut_asc': return a.last_append_date.localeCompare(b.last_append_date);
-        case 'first_cut_desc': return b.first_cut_date.localeCompare(a.first_cut_date);
-        case 'first_cut_asc': return a.first_cut_date.localeCompare(b.first_cut_date);
+        case 'last_cut_desc': return b.last_append_date.localeCompare(a.last_append_date) || b.id - a.id;
+        case 'last_cut_asc': return a.last_append_date.localeCompare(b.last_append_date) || a.id - b.id;
+        case 'first_cut_desc': return b.first_cut_date.localeCompare(a.first_cut_date) || b.id - a.id;
+        case 'first_cut_asc': return a.first_cut_date.localeCompare(b.first_cut_date) || a.id - b.id;
         case 'pieces_desc': {
           const ta = a.pieces.reduce((s, p) => s + p.quantity, 0);
           const tb = b.pieces.reduce((s, p) => s + p.quantity, 0);
-          return tb - ta;
+          return tb - ta || b.id - a.id;
         }
-        case 'style_asc': return a.style_code.localeCompare(b.style_code);
-        default: return 0;
+        case 'style_asc': return a.style_code.localeCompare(b.style_code) || b.id - a.id;
+        default: return b.last_append_date.localeCompare(a.last_append_date) || b.id - a.id;
       }
     });
 
@@ -1116,7 +1112,7 @@ function RunsListView({
                 <div className="border-t border-stone-100 bg-stone-50/50 px-4 py-3">
                   <div className="text-xs uppercase tracking-wide text-stone-500 mb-2">Cut history</div>
                   <div className="space-y-2">
-                    {r.entries.map((e, idx) => (
+                    {[...r.entries].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((e, idx) => (
                       <div key={e.id} className="bg-white border border-stone-200 rounded p-3 text-sm">
                         <div className="flex items-start justify-between mb-2 gap-2">
                           <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
@@ -4313,7 +4309,7 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
         (batchFilter === 'completed' && b.status === 'completed');
       return matchSearch && matchStatus;
 
-    }).sort((a, b) => b.issued_date.localeCompare(a.issued_date));
+    }).sort((a, b) => b.issued_date.localeCompare(a.issued_date) || b.id - a.id);
   }, [batches, batchFilter, batchSearch]);
 
   const totalIssued = batches.reduce((s, b) => s + (b.total_issued || 0), 0);
