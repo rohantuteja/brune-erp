@@ -6305,11 +6305,11 @@ function Modal({ title, onClose, wide, children, footer }) {
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 bg-stone-900/40 backdrop-blur-sm z-50 flex sm:items-start justify-center sm:p-8 overflow-y-auto"
+      className="fixed inset-0 bg-stone-900/40 backdrop-blur-sm z-50 overflow-y-auto sm:flex sm:items-start sm:justify-center sm:p-8"
       onMouseDown={(e) => { if (e.target === backdropRef.current) onClose(); }}
     >
       <div
-        className={`bg-white sm:rounded-lg shadow-xl ${wide ? 'sm:max-w-3xl' : 'sm:max-w-2xl'} w-full sm:my-0 mx-auto min-h-screen sm:min-h-0 rounded-t-xl sm:rounded-t-lg flex-shrink-0`}
+        className={`bg-white sm:rounded-lg shadow-xl ${wide ? 'sm:max-w-3xl' : 'sm:max-w-2xl'} w-full mx-auto min-h-screen sm:min-h-0 rounded-t-xl sm:rounded-t-lg sm:flex-shrink-0`}
       >
         <div className="px-4 sm:px-6 py-4 border-b border-stone-200 flex items-center justify-between sticky top-0 bg-white z-10 rounded-t-xl sm:rounded-t-lg">
           <h2 className="text-base font-semibold text-stone-900">{title}</h2>
