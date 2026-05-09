@@ -1109,11 +1109,6 @@ function RunsListView({
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       Issue ({remaining} left)
                     </button>
-                  ) : canEditProduction && derivedStatus === 'issued' ? (
-                    <button onClick={() => onIssue(r)} className="px-3 py-2 text-xs font-medium rounded-md flex items-center gap-1.5 min-h-[40px] bg-white text-stone-600 border border-stone-300 hover:bg-stone-50">
-                      <Plus className="w-3.5 h-3.5" />
-                      Add Batch
-                    </button>
                   ) : null}
                 </div>
               </div>
