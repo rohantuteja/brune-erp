@@ -45,13 +45,13 @@ export default function App() {
 
       {/* New deployment banner — only visible when a new SW is waiting */}
       {needRefresh && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between gap-3 bg-stone-900 px-4 py-3 shadow-lg">
-          <p className="text-sm text-white">A new version of the app is available.</p>
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-stone-900 text-white rounded-xl px-4 py-3 shadow-xl border border-stone-700 w-max max-w-[calc(100vw-2rem)]">
+          <RefreshCw className="w-4 h-4 shrink-0 text-stone-400" />
+          <p className="text-sm">A new version is available.</p>
           <button
             onClick={() => updateServiceWorker(true)}
-            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-stone-900 hover:bg-stone-100 transition-colors"
+            className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-stone-900 hover:bg-stone-100 transition-colors"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
             Update now
           </button>
         </div>
