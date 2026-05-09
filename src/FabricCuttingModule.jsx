@@ -1898,6 +1898,7 @@ function IssueToProductionModal({ run, karigars, remainingBySize, alreadyIssuedB
 
   const [selectedKarigarIds, setSelectedKarigarIds] = useState([]);
   const [karigarSearch, setKarigarSearch] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const filteredKarigars = karigarSearch.trim()
     ? karigars.filter(k => k.name.toLowerCase().includes(karigarSearch.toLowerCase().trim()))
@@ -1923,24 +1924,28 @@ function IssueToProductionModal({ run, karigars, remainingBySize, alreadyIssuedB
   const fillAll = () => { setSizes(sizes.map(s => ({ ...s, qty: s.max }))); setErrors(e => ({ ...e, sizes: null })); };
   const clearAll = () => setSizes(sizes.map(s => ({ ...s, qty: 0 })));
 
-  const submit = () => {
+  const submit = async () => {
+    if (saving) return;
     const newErrors = {};
     if (!date) newErrors.date = 'Issue date is required';
     if (selectedKarigarIds.length === 0) newErrors.karigar = 'Select at least one karigar';
     if (totalIssuingNow === 0) newErrors.sizes = 'Enter at least one piece quantity';
     if (Object.keys(newErrors).length > 0) { setErrors(newErrors); return; }
 
-    const issued_sizes = {};
-    sizes.forEach(s => { if (parseInt(s.qty) > 0) issued_sizes[s.size] = parseInt(s.qty); });
-    const selectedKarigars = karigars.filter(k => selectedKarigarIds.includes(k.id));
-    onSave({
-      style_code: run.style_code,
-      issued_date: date,
-      notes,
-      issued_sizes,
-      karigar_ids: selectedKarigars.map(k => k.id),
-      karigar_names: selectedKarigars.map(k => k.name),
-    });
+    setSaving(true);
+    try {
+      const issued_sizes = {};
+      sizes.forEach(s => { if (parseInt(s.qty) > 0) issued_sizes[s.size] = parseInt(s.qty); });
+      const selectedKarigars = karigars.filter(k => selectedKarigarIds.includes(k.id));
+      await onSave({
+        style_code: run.style_code,
+        issued_date: date,
+        notes,
+        issued_sizes,
+        karigar_ids: selectedKarigars.map(k => k.id),
+        karigar_names: selectedKarigars.map(k => k.name),
+      });
+    } finally { setSaving(false); }
   };
 
   return (
@@ -1951,7 +1956,7 @@ function IssueToProductionModal({ run, karigars, remainingBySize, alreadyIssuedB
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Issue Batch</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Issue Batch'}</button>
         </div>
       }
     >
@@ -2128,7 +2133,10 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
 
   const [errors, setErrors] = useState({});
 
-  const submit = () => {
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (saving) return;
     const newErrors = {};
     if (!form.fabric_type_id) newErrors.fabric_type = 'Fabric type is required';
     if (!form.supplier_id) newErrors.supplier = 'Select a supplier from the list';
@@ -2136,12 +2144,11 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     if (!form.width_cm) newErrors.width = 'Width is required';
     if (!form.quantity) newErrors.quantity = 'Quantity is required';
     if (Object.keys(newErrors).length > 0) { setErrors(newErrors); return; }
-    onSave({
-      ...form,
-      format,
-      rate: derivedRate,
-    });
-    onClose();
+    setSaving(true);
+    try {
+      await onSave({ ...form, format, rate: derivedRate });
+      onClose();
+    } finally { setSaving(false); }
   };
 
   // Format isn't user-chosen anymore — derived from fabric type
@@ -2163,7 +2170,7 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">{isEdit ? 'Update' : 'Save'}</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : isEdit ? 'Update' : 'Save'}</button>
         </div>
       }
     >
@@ -3471,15 +3478,18 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
 
 function StyleCodeFormModal({ existing, existingCodes, onClose, onSave }) {
   const [code, setCode] = useState(existing?.code || '');
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
+    if (saving) return;
     const trimmed = code.trim().toUpperCase();
     if (!trimmed) { alert('Code is required'); return; }
     if (existingCodes.some(s => s.code === trimmed && s.id !== existing?.id)) {
       alert(`"${trimmed}" already exists`);
       return;
     }
-    onSave(trimmed);
+    setSaving(true);
+    try { await onSave(trimmed); } finally { setSaving(false); }
   };
 
   return (
@@ -3489,7 +3499,7 @@ function StyleCodeFormModal({ existing, existingCodes, onClose, onSave }) {
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Save</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       }
     >
@@ -3526,6 +3536,7 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
 
   const [pendingFormatChange, setPendingFormatChange] = useState(null);
   const [submitError, setSubmitError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const requestFormatChange = (newFormat) => {
     if (newFormat === form.format) return;
@@ -3561,6 +3572,7 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
   };
 
   const submit = async () => {
+    if (saving) return;
     if (!form.name.trim()) { alert('Name is required'); return; }
 
     // At least one supplier rate required, with supplier and required cost field(s)
@@ -3608,13 +3620,16 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
       seen.add(r.supplier_id);
     }
 
-    onSave({
-      name: form.name,
-      composition: form.composition,
-      gsm: form.gsm,
-      format: form.format,
-      supplier_rates: validRates,
-    });
+    setSaving(true);
+    try {
+      await onSave({
+        name: form.name,
+        composition: form.composition,
+        gsm: form.gsm,
+        format: form.format,
+        supplier_rates: validRates,
+      });
+    } finally { setSaving(false); }
   };
 
   if (pendingFormatChange) {
@@ -3638,7 +3653,7 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Save</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       }
     >
@@ -3755,10 +3770,13 @@ function SupplierFormModal({ existing, onClose, onSave }) {
     email: existing?.email || '',
     address: existing?.address || '',
   });
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
+    if (saving) return;
     if (!form.name.trim()) { alert('Name is required'); return; }
-    onSave(form);
+    setSaving(true);
+    try { await onSave(form); } finally { setSaving(false); }
   };
 
   return (
@@ -3768,7 +3786,7 @@ function SupplierFormModal({ existing, onClose, onSave }) {
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Save</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       }
     >
@@ -4019,8 +4037,10 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
   };
   const addCustomLine = () => setCustomLines([...customLines, { label: '', amount: '' }]);
   const removeCustomLine = (idx) => setCustomLines(customLines.filter((_, i) => i !== idx));
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
+    if (saving) return;
     if (!finalStyleCode) { alert('Style code is required'); return; }
     if (!isEdit && collidingCosting) { alert(`A costing already exists for ${finalStyleCode}. Edit that one instead.`); return; }
 
@@ -4040,18 +4060,21 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
       })
       .filter(Boolean);
 
-    onSave({
-      style_code: finalStyleCode,
-      fabric_lines: validLines.map(l => ({
-        fabric_type_id: parseInt(l.fabric_type_id),
-        avg_meters: parseFloat(l.avg_meters),
-      })),
-      cutting_cost: parseFloat(costs.cutting_cost) || 0,
-      stitching_cost: parseFloat(costs.stitching_cost) || 0,
-      trims_cost: parseFloat(costs.trims_cost) || 0,
-      finishing_cost: parseFloat(costs.finishing_cost) || 0,
-      custom_lines: cleanCustomLines,
-    });
+    setSaving(true);
+    try {
+      await onSave({
+        style_code: finalStyleCode,
+        fabric_lines: validLines.map(l => ({
+          fabric_type_id: parseInt(l.fabric_type_id),
+          avg_meters: parseFloat(l.avg_meters),
+        })),
+        cutting_cost: parseFloat(costs.cutting_cost) || 0,
+        stitching_cost: parseFloat(costs.stitching_cost) || 0,
+        trims_cost: parseFloat(costs.trims_cost) || 0,
+        finishing_cost: parseFloat(costs.finishing_cost) || 0,
+        custom_lines: cleanCustomLines,
+      });
+    } finally { setSaving(false); }
   };
 
   return (
@@ -4065,7 +4088,7 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
             Total: <span className="font-semibold text-stone-900">₹{totalCost.toFixed(2)}</span> / piece
           </div>
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] sm:w-auto">{isEdit ? 'Update' : 'Save'}</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] sm:w-auto">{saving ? 'Saving…' : isEdit ? 'Update' : 'Save'}</button>
         </div>
       }
     >
@@ -4676,19 +4699,24 @@ function EditBatchModal({ batch, maxBySize, karigars, onClose, onSave }) {
   };
 
   const totalIssuing = sizes.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
+    if (saving) return;
     if (!issuedDate) { setError('Issue date is required'); return; }
     if (selectedKarigarIds.length === 0) { setError('Select at least one karigar'); return; }
     const issued_sizes = {};
     sizes.forEach(s => { issued_sizes[s.size] = parseInt(s.qty) || 0; });
     const selectedKarigars = karigars.filter(k => selectedKarigarIds.includes(k.id));
-    onSave({
-      issued_date: issuedDate,
-      issued_sizes,
-      karigar_ids: selectedKarigars.map(k => k.id),
-      karigar_names: selectedKarigars.map(k => k.name),
-    });
+    setSaving(true);
+    try {
+      await onSave({
+        issued_date: issuedDate,
+        issued_sizes,
+        karigar_ids: selectedKarigars.map(k => k.id),
+        karigar_names: selectedKarigars.map(k => k.name),
+      });
+    } finally { setSaving(false); }
   };
 
   return (
@@ -4698,7 +4726,7 @@ function EditBatchModal({ batch, maxBySize, karigars, onClose, onSave }) {
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Save Changes</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Save Changes'}</button>
         </div>
       }
     >
@@ -4778,11 +4806,14 @@ function EditBatchModal({ batch, maxBySize, karigars, onClose, onSave }) {
 function EditCompletedDateModal({ batch, onClose, onSave }) {
   const [date, setDate] = useState(batch.completed_date || localToday());
   const minDate = batch.issued_date;
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
+    if (saving) return;
     if (!date) { alert('Please select a date'); return; }
     if (minDate && date < minDate) { alert(`Completed date cannot be before the issue date (${minDate})`); return; }
-    onSave(date);
+    setSaving(true);
+    try { await onSave(date); } finally { setSaving(false); }
   };
 
   return (
@@ -4792,7 +4823,7 @@ function EditCompletedDateModal({ batch, onClose, onSave }) {
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 min-h-[44px] w-full sm:w-auto">Save</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       }
     >
@@ -4816,6 +4847,13 @@ function EditCompletedDateModal({ batch, onClose, onSave }) {
 function MarkCompleteModal({ batch, onClose, onSave }) {
   const karigarCount = (batch.karigar_ids || []).length || 1;
   const creditEach = karigarCount > 1 ? Math.round((batch.total_issued || 0) / karigarCount * 10) / 10 : batch.total_issued || 0;
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    try { await onSave(); } finally { setSaving(false); }
+  };
 
   return (
     <Modal
@@ -4824,8 +4862,8 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={onSave} className="px-4 py-2.5 bg-emerald-700 text-white text-sm font-medium rounded-md hover:bg-emerald-800 min-h-[44px] w-full sm:w-auto flex items-center justify-center gap-2">
-            <CheckCircle2 className="w-4 h-4" /> Mark as Complete
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2.5 bg-emerald-700 text-white text-sm font-medium rounded-md hover:bg-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4" /> {saving ? 'Saving…' : 'Mark as Complete'}
           </button>
         </div>
       }
@@ -6239,21 +6277,25 @@ function KarigarPaymentCard({ k, onPay }) {
 function RecordPaymentModal({ karigar, onClose, onSave }) {
   const [date, setDate] = useState(localToday());
   const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
-    if (!date) { return; }
-    onSave({
-      karigar_id: karigar.id,
-      date,
-      amount: karigar.outstanding,
-      breakdown: karigar.breakdown.filter(b => b.subtotal !== null).map(b => ({
-        style_code: b.style_code,
-        pieces: b.pieces,
-        rate: b.rate,
-        subtotal: b.subtotal,
-      })),
-      notes,
-    });
+  const submit = async () => {
+    if (saving || !date) return;
+    setSaving(true);
+    try {
+      await onSave({
+        karigar_id: karigar.id,
+        date,
+        amount: karigar.outstanding,
+        breakdown: karigar.breakdown.filter(b => b.subtotal !== null).map(b => ({
+          style_code: b.style_code,
+          pieces: b.pieces,
+          rate: b.rate,
+          subtotal: b.subtotal,
+        })),
+        notes,
+      });
+    } finally { setSaving(false); }
   };
 
   return (
@@ -6263,8 +6305,8 @@ function RecordPaymentModal({ karigar, onClose, onSave }) {
       footer={
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
-          <button onClick={submit} className="px-4 py-2.5 bg-emerald-700 text-white text-sm font-medium rounded-md hover:bg-emerald-800 min-h-[44px] w-full sm:w-auto flex items-center justify-center gap-2">
-            <CheckCircle2 className="w-4 h-4" /> Confirm Payment
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-emerald-700 text-white text-sm font-medium rounded-md hover:bg-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4" /> {saving ? 'Saving…' : 'Confirm Payment'}
           </button>
         </div>
       }
