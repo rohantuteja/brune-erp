@@ -194,19 +194,24 @@ export default function FabricCuttingModule() {
       return matchesStatus && matchesSearch && matchesDate;
     });
 
+    // For a given run, the ID of its most recently added cut entry.
+    // Used as a tiebreak when two runs share the same date — the run where
+    // a new entry was most recently recorded bubbles to the top.
+    const maxEntryId = (r) => r.entries.length > 0 ? Math.max(...r.entries.map(e => e.id)) : 0;
+
     list = [...list].sort((a, b) => {
       switch (runSort) {
-        case 'last_cut_desc': return b.last_append_date.localeCompare(a.last_append_date) || b.id - a.id;
-        case 'last_cut_asc': return a.last_append_date.localeCompare(b.last_append_date) || a.id - b.id;
-        case 'first_cut_desc': return b.first_cut_date.localeCompare(a.first_cut_date) || b.id - a.id;
-        case 'first_cut_asc': return a.first_cut_date.localeCompare(b.first_cut_date) || a.id - b.id;
+        case 'last_cut_desc': return b.last_append_date.localeCompare(a.last_append_date) || maxEntryId(b) - maxEntryId(a);
+        case 'last_cut_asc': return a.last_append_date.localeCompare(b.last_append_date) || maxEntryId(a) - maxEntryId(b);
+        case 'first_cut_desc': return b.first_cut_date.localeCompare(a.first_cut_date) || maxEntryId(b) - maxEntryId(a);
+        case 'first_cut_asc': return a.first_cut_date.localeCompare(b.first_cut_date) || maxEntryId(a) - maxEntryId(b);
         case 'pieces_desc': {
           const ta = a.pieces.reduce((s, p) => s + p.quantity, 0);
           const tb = b.pieces.reduce((s, p) => s + p.quantity, 0);
-          return tb - ta || b.id - a.id;
+          return tb - ta || maxEntryId(b) - maxEntryId(a);
         }
-        case 'style_asc': return a.style_code.localeCompare(b.style_code) || b.id - a.id;
-        default: return b.last_append_date.localeCompare(a.last_append_date) || b.id - a.id;
+        case 'style_asc': return a.style_code.localeCompare(b.style_code) || maxEntryId(b) - maxEntryId(a);
+        default: return b.last_append_date.localeCompare(a.last_append_date) || maxEntryId(b) - maxEntryId(a);
       }
     });
 
