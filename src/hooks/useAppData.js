@@ -469,6 +469,10 @@ export function useAppData({ showToast }) {
   };
 
   const deleteSupplier = async (id) => {
+    if (fabricTypes.some(ft => ft.supplier_rates.some(r => r.supplier_id === id))) {
+      showToast('Cannot delete: supplier is linked to a fabric type');
+      return;
+    }
     if (inventory.some(i => i.supplier_id === id)) {
       showToast('Cannot delete: supplier is in use by stock items');
       return;
