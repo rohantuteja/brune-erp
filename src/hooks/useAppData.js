@@ -404,7 +404,7 @@ export function useAppData({ showToast }) {
       );
     }
     const newType = { ...ft, supplier_rates: rates };
-    setFabricTypes(prev => [...prev, newType]);
+    setFabricTypes(prev => prev.some(f => f.id === newType.id) ? prev : [...prev, newType]);
     return newType;
   };
 
@@ -459,7 +459,7 @@ export function useAppData({ showToast }) {
     const { data: sup, error } = await supabase
       .from('suppliers').insert(payload).select().single();
     if (error) { showToast('Error adding supplier'); return null; }
-    setSuppliers(prev => [...prev, sup]);
+    setSuppliers(prev => prev.some(s => s.id === sup.id) ? prev : [...prev, sup]);
     return sup;
   };
 
@@ -488,7 +488,7 @@ export function useAppData({ showToast }) {
     const { data: sc, error } = await supabase
       .from('style_codes').insert({ code: trimmed }).select().single();
     if (error) { showToast('Error adding style code'); return null; }
-    setStyleCodes(prev => [...prev, sc]);
+    setStyleCodes(prev => prev.some(s => s.id === sc.id) ? prev : [...prev, sc]);
     return sc;
   };
 
@@ -521,7 +521,7 @@ export function useAppData({ showToast }) {
     const { data: kg, error } = await supabase
       .from('karigars').insert({ name: trimmed, payment_type: paymentType }).select().single();
     if (error) { showToast('Error adding karigar'); return; }
-    setKarigars(prev => [...prev, kg]);
+    setKarigars(prev => prev.some(k => k.id === kg.id) ? prev : [...prev, kg]);
     showToast(`${trimmed} added`);
   };
 
@@ -552,7 +552,7 @@ export function useAppData({ showToast }) {
     const { data: kp, error } = await supabase
       .from('karigar_payments').insert(payload).select().single();
     if (error) { showToast('Error recording payment'); return; }
-    setKarigarPayments(prev => [...prev, { ...kp, breakdown: kp.breakdown || [] }]);
+    setKarigarPayments(prev => prev.some(p => p.id === kp.id) ? prev : [...prev, { ...kp, breakdown: kp.breakdown || [] }]);
     showToast(`Payment of ₹${payment.amount.toLocaleString('en-IN')} recorded`);
   };
 
@@ -579,7 +579,7 @@ export function useAppData({ showToast }) {
         })
         .select().single();
       if (error) { showToast('Error saving entry'); return; }
-      setProductionEntries(prev => [...prev, pe]);
+      setProductionEntries(prev => prev.some(e => e.id === pe.id) ? prev : [...prev, pe]);
       showToast('Entry saved');
     }
   };
@@ -616,7 +616,7 @@ export function useAppData({ showToast }) {
     const { data: pb, error } = await supabase
       .from('production_batches').insert(payload).select().single();
     if (error) { showToast('Error creating batch'); return; }
-    setProductionBatches(prev => [...prev, pb]);
+    setProductionBatches(prev => prev.some(b => b.id === pb.id) ? prev : [...prev, pb]);
     showToast(`Issued ${total} pcs to ${data.karigar_names.join(', ')}`);
   };
 
@@ -745,7 +745,7 @@ export function useAppData({ showToast }) {
           }))
         );
       }
-      setCostings(prev => [...prev, {
+      setCostings(prev => prev.some(c => c.id === newC.id) ? prev : [...prev, {
         ...newC,
         fabric_lines: data.fabric_lines || [],
         custom_lines: data.custom_lines || [],
@@ -791,7 +791,7 @@ export function useAppData({ showToast }) {
     const { data: inv, error } = await supabase
       .from('inventory').insert(payload).select().single();
     if (error) { showToast('Error adding stock'); return; }
-    setInventory(prev => [...prev, inv]);
+    setInventory(prev => prev.some(i => i.id === inv.id) ? prev : [...prev, inv]);
     showToast('Stock added');
   };
 
@@ -898,7 +898,7 @@ export function useAppData({ showToast }) {
         normPieces.map(pa => ({ entry_id: entry.id, size: pa.size, qty: pa.qty }))
       );
 
-      setRuns(prev => [...prev, {
+      setRuns(prev => prev.some(r => r.id === run.id) ? prev : [...prev, {
         id: run.id,
         style_code,
         first_cut_date:   data.date,
