@@ -3778,6 +3778,7 @@ function FabricTypeFormModal({ existing, suppliers, onAddSupplier, onClose, onSa
 
 function SupplierFormModal({ existing, onClose, onSave }) {
   const [form, setForm] = useState({
+    name: existing?.name || '',
     contact_person: existing?.contact_person || '',
     phone: existing?.phone || '',
     email: existing?.email || '',
