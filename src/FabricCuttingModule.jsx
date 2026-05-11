@@ -4259,7 +4259,6 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
   const [batchFilter, setBatchFilter] = useState('issued');
   const [batchSearch, setBatchSearch] = useState('');
   const [batchKarigarFilter, setBatchKarigarFilter] = useState('all');
-  const [batchDateRange, setBatchDateRange] = useState('all');
   const [completingAssignment, setCompletingAssignment] = useState(null);
   const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState(null);
   const [editingDateBatchId, setEditingDateBatchId] = useState(null);
@@ -4345,15 +4344,6 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
   // Filtered batches
   const filteredBatches = useMemo(() => {
     const q = batchSearch.toLowerCase().trim();
-    const now = new Date();
-    let fromDate = null;
-    if (batchDateRange === 'this_month') {
-      fromDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-    } else if (batchDateRange === '30d') {
-      const d = new Date(); d.setDate(d.getDate() - 30); fromDate = d.toLocaleDateString('en-CA');
-    } else if (batchDateRange === '90d') {
-      const d = new Date(); d.setDate(d.getDate() - 90); fromDate = d.toLocaleDateString('en-CA');
-    }
     return batches.filter(b => {
       const matchSearch = !q || b.style_code.toLowerCase().includes(q) ||
         (b.karigar_names || []).some(n => n.toLowerCase().includes(q));
@@ -4362,10 +4352,9 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
         (batchFilter === 'completed' && b.status === 'completed');
       const matchKarigar = batchKarigarFilter === 'all' ||
         (b.karigar_ids || []).includes(parseInt(batchKarigarFilter));
-      const matchDate = !fromDate || b.issued_date >= fromDate;
-      return matchSearch && matchStatus && matchKarigar && matchDate;
+      return matchSearch && matchStatus && matchKarigar;
     }).sort((a, b) => b.issued_date.localeCompare(a.issued_date) || b.id - a.id);
-  }, [batches, batchFilter, batchSearch, batchKarigarFilter, batchDateRange]);
+  }, [batches, batchFilter, batchSearch, batchKarigarFilter]);
 
   const totalIssued = batches.reduce((s, b) => s + (b.total_issued || 0), 0);
   const totalCompleted = batches.filter(b => b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
@@ -4417,21 +4406,16 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                 </div>
               )}
             </div>
-            {/* Row 2: status + date range chips */}
+            {/* Row 2: status chips */}
             <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
               <FilterChip active={batchFilter === 'all'} onClick={() => setBatchFilter('all')}>All batches ({batches.length})</FilterChip>
               <FilterChip active={batchFilter === 'issued'} onClick={() => setBatchFilter('issued')}>In progress ({pendingCount})</FilterChip>
               <FilterChip active={batchFilter === 'completed'} onClick={() => setBatchFilter('completed')}>Completed ({batches.length - pendingCount})</FilterChip>
-              <div className="w-px bg-stone-200 self-stretch flex-shrink-0 mx-0.5" />
-              <FilterChip active={batchDateRange === 'all'} onClick={() => setBatchDateRange('all')}>All time</FilterChip>
-              <FilterChip active={batchDateRange === 'this_month'} onClick={() => setBatchDateRange('this_month')}>This month</FilterChip>
-              <FilterChip active={batchDateRange === '30d'} onClick={() => setBatchDateRange('30d')}>Last 30d</FilterChip>
-              <FilterChip active={batchDateRange === '90d'} onClick={() => setBatchDateRange('90d')}>Last 90d</FilterChip>
             </div>
             {/* Clear filters */}
-            {(batchSearch || batchKarigarFilter !== 'all' || batchDateRange !== 'all') && (
+            {(batchSearch || batchKarigarFilter !== 'all') && (
               <button
-                onClick={() => { setBatchSearch(''); setBatchKarigarFilter('all'); setBatchDateRange('all'); }}
+                onClick={() => { setBatchSearch(''); setBatchKarigarFilter('all'); }}
                 className="text-xs text-stone-500 hover:text-stone-900 underline"
               >
                 Clear filters
