@@ -194,12 +194,17 @@ export function useAppData({ showToast }) {
 
     const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
+    // Upsert helper: for INSERT events, skip rows already added by the
+    // optimistic update in the same session; add only if genuinely new.
+    const upsert = (setter, row) =>
+      setter(prev => prev.some(x => x.id === row.id) ? prev : [...prev, row]);
+
     // ── Subscribe ─────────────────────────────────────────────────────────
     const ch = supabase.channel('realtime-app-data')
 
       // ── inventory (flat) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inventory' },
-        ({ new: row }) => setInventory(prev => [...prev, row]))
+        ({ new: row }) => upsert(setInventory, row))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'inventory' },
         ({ new: row }) => setInventory(prev => prev.map(i => i.id === row.id ? row : i)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'inventory' },
@@ -207,7 +212,7 @@ export function useAppData({ showToast }) {
 
       // ── suppliers (flat) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'suppliers' },
-        ({ new: row }) => setSuppliers(prev => [...prev, row]))
+        ({ new: row }) => upsert(setSuppliers, row))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'suppliers' },
         ({ new: row }) => setSuppliers(prev => prev.map(s => s.id === row.id ? row : s)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'suppliers' },
@@ -215,7 +220,7 @@ export function useAppData({ showToast }) {
 
       // ── style_codes (flat) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'style_codes' },
-        ({ new: row }) => setStyleCodes(prev => [...prev, row]))
+        ({ new: row }) => upsert(setStyleCodes, row))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'style_codes' },
         ({ new: row }) => setStyleCodes(prev => prev.map(s => s.id === row.id ? row : s)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'style_codes' },
@@ -223,7 +228,7 @@ export function useAppData({ showToast }) {
 
       // ── karigars (flat) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'karigars' },
-        ({ new: row }) => setKarigars(prev => [...prev, row]))
+        ({ new: row }) => upsert(setKarigars, row))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'karigars' },
         ({ new: row }) => setKarigars(prev => prev.map(k => k.id === row.id ? row : k)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'karigars' },
@@ -231,7 +236,7 @@ export function useAppData({ showToast }) {
 
       // ── karigar_payments (flat) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'karigar_payments' },
-        ({ new: row }) => setKarigarPayments(prev => [...prev, { ...row, breakdown: row.breakdown || [] }]))
+        ({ new: row }) => upsert(setKarigarPayments, { ...row, breakdown: row.breakdown || [] }))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'karigar_payments' },
         ({ new: row }) => setKarigarPayments(prev => prev.map(p => p.id === row.id ? { ...row, breakdown: row.breakdown || [] } : p)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'karigar_payments' },
@@ -239,7 +244,7 @@ export function useAppData({ showToast }) {
 
       // ── production_entries (flat, items is jsonb) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'production_entries' },
-        ({ new: row }) => setProductionEntries(prev => [...prev, row]))
+        ({ new: row }) => upsert(setProductionEntries, row))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'production_entries' },
         ({ new: row }) => setProductionEntries(prev => prev.map(e => e.id === row.id ? row : e)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'production_entries' },
@@ -247,7 +252,7 @@ export function useAppData({ showToast }) {
 
       // ── production_batches (flat) ──
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'production_batches' },
-        ({ new: row }) => setProductionBatches(prev => [...prev, row]))
+        ({ new: row }) => upsert(setProductionBatches, row))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'production_batches' },
         ({ new: row }) => setProductionBatches(prev => prev.map(b => b.id === row.id ? row : b)))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'production_batches' },
