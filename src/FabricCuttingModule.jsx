@@ -4251,8 +4251,8 @@ function RupeeField({ label, value, onChange, placeholder }) {
   );
 }
 
-// Karigar filter chip — pill-style trigger that opens a searchable dropdown
-function KarigarFilterChip({ karigars, value, onChange }) {
+// Karigar filter button — sits next to the search bar, opens a searchable dropdown
+function KarigarFilterButton({ karigars, value, onChange }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const ref = useRef(null);
@@ -4281,31 +4281,32 @@ function KarigarFilterChip({ karigars, value, onChange }) {
 
   return (
     <div ref={ref} className="relative flex-shrink-0">
-      {/* Trigger — same pill shape as FilterChip */}
+      {/* Trigger — matches SearchInput height, border style */}
       <button
         onClick={handleOpen}
-        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap transition
-          ${selected ? 'bg-stone-900 text-white' : 'bg-white text-stone-700 border border-stone-200 hover:bg-stone-50'}`}
+        className={`flex items-center gap-1.5 h-[42px] px-3 rounded-md border text-sm font-medium transition-colors whitespace-nowrap
+          ${selected
+            ? 'bg-stone-900 text-white border-stone-900'
+            : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400 hover:text-stone-900'}`}
       >
-        <Users className="w-3 h-3 flex-shrink-0" />
-        <span>{selected ? selected.name : 'Karigar'}</span>
+        <Users className="w-4 h-4 flex-shrink-0" />
+        <span className="max-w-[96px] truncate">{selected ? selected.name : 'Karigar'}</span>
         {selected ? (
           <span
             role="button"
             onClick={e => { e.stopPropagation(); onChange('all'); setOpen(false); }}
-            className="ml-0.5 opacity-70 hover:opacity-100"
+            className="opacity-60 hover:opacity-100 flex-shrink-0"
           >
-            <X className="w-3 h-3" />
+            <X className="w-3.5 h-3.5" />
           </span>
         ) : (
-          <ChevronDown className={`w-3 h-3 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
+          <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`} />
         )}
       </button>
 
-      {/* Dropdown */}
+      {/* Dropdown — anchored right so it doesn't overflow off screen on mobile */}
       {open && (
-        <div className="absolute z-50 top-full mt-1.5 left-0 w-56 bg-white border border-stone-200 rounded-lg shadow-lg overflow-hidden">
-          {/* Search bar */}
+        <div className="absolute z-50 top-full mt-1.5 right-0 w-56 bg-white border border-stone-200 rounded-lg shadow-lg overflow-hidden">
           <div className="p-2 border-b border-stone-100">
             <div className="flex items-center gap-2 px-2.5 py-1.5 bg-stone-50 rounded-md border border-stone-200">
               <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
@@ -4328,25 +4329,20 @@ function KarigarFilterChip({ karigars, value, onChange }) {
               )}
             </div>
           </div>
-          {/* Options */}
           <div className="max-h-52 overflow-y-auto">
             {filtered.length === 0 ? (
               <div className="px-3 py-5 text-center text-xs text-stone-400">No matches for "{query}"</div>
-            ) : (
-              filtered.map(k => (
-                <button
-                  key={k.id}
-                  onClick={() => handleSelect(String(k.id))}
-                  className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2
-                    ${String(k.id) === String(value)
-                      ? 'bg-stone-900 text-white'
-                      : 'text-stone-900 hover:bg-stone-50'}`}
-                >
-                  <span>{k.name}</span>
-                  {String(k.id) === String(value) && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
-                </button>
-              ))
-            )}
+            ) : filtered.map(k => (
+              <button
+                key={k.id}
+                onClick={() => handleSelect(String(k.id))}
+                className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2
+                  ${String(k.id) === String(value) ? 'bg-stone-900 text-white' : 'text-stone-900 hover:bg-stone-50'}`}
+              >
+                <span>{k.name}</span>
+                {String(k.id) === String(value) && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -4492,25 +4488,24 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
 
           {/* Filter + search */}
           <div className="bg-white rounded-lg border border-stone-200 p-3 space-y-2">
-            {/* Search bar */}
-            <SearchInput value={batchSearch} onChange={setBatchSearch} placeholder="Search by style or karigar…" />
-            {/* Chips row: status + karigar filter */}
-            <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+            {/* Row 1: search + karigar button (same height, no overflow container) */}
+            <div className="flex gap-2">
+              <SearchInput value={batchSearch} onChange={setBatchSearch} placeholder="Search by style or karigar…" />
+              {karigars.length > 0 && (
+                <KarigarFilterButton
+                  karigars={karigars}
+                  value={batchKarigarFilter}
+                  onChange={setBatchKarigarFilter}
+                />
+              )}
+            </div>
+            {/* Row 2: status chips — only 3, no scroll needed */}
+            <div className="flex gap-1.5 flex-wrap">
               <FilterChip active={batchFilter === 'all'} onClick={() => setBatchFilter('all')}>All ({batches.length})</FilterChip>
               <FilterChip active={batchFilter === 'issued'} onClick={() => setBatchFilter('issued')}>In progress ({pendingCount})</FilterChip>
               <FilterChip active={batchFilter === 'completed'} onClick={() => setBatchFilter('completed')}>Completed ({batches.length - pendingCount})</FilterChip>
-              {karigars.length > 0 && (
-                <>
-                  <div className="w-px bg-stone-200 self-stretch flex-shrink-0 mx-0.5" />
-                  <KarigarFilterChip
-                    karigars={karigars}
-                    value={batchKarigarFilter}
-                    onChange={setBatchKarigarFilter}
-                  />
-                </>
-              )}
             </div>
-            {/* Clear filters */}
+            {/* Clear */}
             {(batchSearch || batchKarigarFilter !== 'all') && (
               <button
                 onClick={() => { setBatchSearch(''); setBatchKarigarFilter('all'); }}
