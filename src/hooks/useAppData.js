@@ -996,6 +996,34 @@ export function useAppData({ showToast }) {
       Array.from(piecesMap.entries()).map(([size, qty]) => ({ size, qty }))
     );
 
+    // Check: would the edited piece counts leave issued batches with more pieces
+    // than were actually cut? Only warn — don't hard-block — so the user can
+    // correct a genuine mistake even if batches already exist.
+    if (!allowNegativeOverride) {
+      const batchesForRun = productionBatches.filter(b => b.run_id === runId);
+      if (batchesForRun.length > 0) {
+        const previewEntries = run.entries.map(e =>
+          e.id === entryId ? { ...e, pieces_added: normPieces } : e
+        );
+        const newRunPieces = recalcRunPieces(previewEntries, run.pieces);
+        const issuedPerSize = {};
+        batchesForRun.forEach(b => {
+          Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+            issuedPerSize[size] = (issuedPerSize[size] || 0) + (parseInt(qty) || 0);
+          });
+        });
+        const overIssued = newRunPieces
+          .filter(p => (issuedPerSize[p.size] || 0) > p.quantity)
+          .map(p => `${p.size}: ${issuedPerSize[p.size]} issued, ${p.quantity} cut`);
+        if (overIssued.length > 0) {
+          return {
+            needsOverride: true,
+            message: `This edit would make issued pieces exceed cut pieces (${overIssued.join(' · ')}). Continue anyway?`,
+          };
+        }
+      }
+    }
+
     const { deltaMap, wouldGoNegative } = computeFabricDelta(oldEntry.usage, newData.usage);
     if (wouldGoNegative.length > 0 && !allowNegativeOverride) {
       const names = wouldGoNegative.map(w => w.item.inventory_number).join(', ');
