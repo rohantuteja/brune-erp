@@ -38,6 +38,7 @@ export default function FabricCuttingModule() {
   const [issuingForRun, setIssuingForRun] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null);
   const [confirmDeleteEntry, setConfirmDeleteEntry] = useState(null);
+  const [cutEntryOverrideConfirm, setCutEntryOverrideConfirm] = useState(null); // { message, newData }
 
   // Inventory filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -681,10 +682,7 @@ export default function FabricCuttingModule() {
             onSave={async (newData, allowOverride) => {
               const result = await updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, allowOverride);
               if (result?.needsOverride) {
-                if (window.confirm(result.message)) {
-                  await updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, true);
-                  setEditingEntry(null);
-                }
+                setCutEntryOverrideConfirm({ message: result.message, newData });
               } else if (result?.success) {
                 setEditingEntry(null);
               }
@@ -692,6 +690,21 @@ export default function FabricCuttingModule() {
           />
         );
       })()}
+
+      {cutEntryOverrideConfirm && editingEntry && (
+        <ConfirmDialog
+          title="Are you sure?"
+          message={cutEntryOverrideConfirm.message}
+          confirmLabel="Continue anyway"
+          onConfirm={async () => {
+            const { newData } = cutEntryOverrideConfirm;
+            setCutEntryOverrideConfirm(null);
+            await updateCutEntry(editingEntry.runId, editingEntry.entryId, newData, true);
+            setEditingEntry(null);
+          }}
+          onCancel={() => setCutEntryOverrideConfirm(null)}
+        />
+      )}
 
       {confirmDeleteEntry && (() => {
         const run = runs.find(r => r.id === confirmDeleteEntry.runId);
