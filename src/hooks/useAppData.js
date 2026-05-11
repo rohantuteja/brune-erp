@@ -1064,8 +1064,23 @@ export function useAppData({ showToast }) {
     await applyInventoryDelta(deltaMap);
 
     if (run.entries.length === 1) {
-      // Deleting the only entry — delete the whole run
-      await supabase.from('runs').delete().eq('id', runId);
+      // Deleting the only entry would delete the whole run.
+      // Block if any production batches are tied to this run.
+      if (productionBatches.some(b => b.run_id === runId)) {
+        // Reverse the fabric delta we already applied before blocking.
+        const { deltaMap: revert } = computeFabricDelta([], oldEntry.usage);
+        await applyInventoryDelta(revert);
+        showToast('Cannot delete: this run has production batches issued against it. Delete those batches first.');
+        return;
+      }
+      const { error } = await supabase.from('runs').delete().eq('id', runId);
+      if (error) {
+        // Reverse the fabric delta we already applied.
+        const { deltaMap: revert } = computeFabricDelta([], oldEntry.usage);
+        await applyInventoryDelta(revert);
+        showToast('Could not delete run');
+        return;
+      }
       setRuns(prev => prev.filter(r => r.id !== runId));
       showToast('Cut entry and run deleted');
       return;
