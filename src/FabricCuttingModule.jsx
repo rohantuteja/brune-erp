@@ -4251,6 +4251,109 @@ function RupeeField({ label, value, onChange, placeholder }) {
   );
 }
 
+// Karigar filter chip — pill-style trigger that opens a searchable dropdown
+function KarigarFilterChip({ karigars, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setQuery(''); }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const selected = value !== 'all' ? karigars.find(k => String(k.id) === String(value)) : null;
+  const filtered = query.trim()
+    ? karigars.filter(k => k.name.toLowerCase().includes(query.toLowerCase().trim()))
+    : karigars;
+
+  const handleOpen = () => {
+    setOpen(o => !o);
+    setQuery('');
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  const handleSelect = (id) => { onChange(id); setOpen(false); setQuery(''); };
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      {/* Trigger — same pill shape as FilterChip */}
+      <button
+        onClick={handleOpen}
+        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap transition
+          ${selected ? 'bg-stone-900 text-white' : 'bg-white text-stone-700 border border-stone-200 hover:bg-stone-50'}`}
+      >
+        <Users className="w-3 h-3 flex-shrink-0" />
+        <span>{selected ? selected.name : 'Karigar'}</span>
+        {selected ? (
+          <span
+            role="button"
+            onClick={e => { e.stopPropagation(); onChange('all'); setOpen(false); }}
+            className="ml-0.5 opacity-70 hover:opacity-100"
+          >
+            <X className="w-3 h-3" />
+          </span>
+        ) : (
+          <ChevronDown className={`w-3 h-3 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
+        )}
+      </button>
+
+      {/* Dropdown */}
+      {open && (
+        <div className="absolute z-50 top-full mt-1.5 left-0 w-56 bg-white border border-stone-200 rounded-lg shadow-lg overflow-hidden">
+          {/* Search bar */}
+          <div className="p-2 border-b border-stone-100">
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-stone-50 rounded-md border border-stone-200">
+              <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+                  if (e.key === 'Enter' && filtered.length === 1) handleSelect(String(filtered[0].id));
+                }}
+                placeholder="Search karigars…"
+                className="flex-1 text-sm bg-transparent outline-none text-stone-900 placeholder-stone-400"
+              />
+              {query && (
+                <button onClick={() => setQuery('')} className="text-stone-400 hover:text-stone-600">
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          </div>
+          {/* Options */}
+          <div className="max-h-52 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-5 text-center text-xs text-stone-400">No matches for "{query}"</div>
+            ) : (
+              filtered.map(k => (
+                <button
+                  key={k.id}
+                  onClick={() => handleSelect(String(k.id))}
+                  className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2
+                    ${String(k.id) === String(value)
+                      ? 'bg-stone-900 text-white'
+                      : 'text-stone-900 hover:bg-stone-50'}`}
+                >
+                  <span>{k.name}</span>
+                  {String(k.id) === String(value) && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
 function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs }) {
   const { can } = usePermissions();
@@ -4388,29 +4491,24 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
           </div>
 
           {/* Filter + search */}
-          <div className="bg-white rounded-lg border border-stone-200 p-3 space-y-2.5">
-            {/* Row 1: text search + karigar picker */}
-            <div className="flex flex-col sm:flex-row gap-2">
-              <SearchInput value={batchSearch} onChange={setBatchSearch} placeholder="Search by style or karigar..." />
-              {karigars.length > 0 && (
-                <div className="sm:w-52 flex-shrink-0">
-                  <SearchableSelect
-                    value={batchKarigarFilter}
-                    onChange={val => setBatchKarigarFilter(val)}
-                    placeholder="All karigars"
-                    options={[
-                      { value: 'all', label: 'All karigars' },
-                      ...karigars.map(k => ({ value: String(k.id), label: k.name })),
-                    ]}
-                  />
-                </div>
-              )}
-            </div>
-            {/* Row 2: status chips */}
+          <div className="bg-white rounded-lg border border-stone-200 p-3 space-y-2">
+            {/* Search bar */}
+            <SearchInput value={batchSearch} onChange={setBatchSearch} placeholder="Search by style or karigar…" />
+            {/* Chips row: status + karigar filter */}
             <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-              <FilterChip active={batchFilter === 'all'} onClick={() => setBatchFilter('all')}>All batches ({batches.length})</FilterChip>
+              <FilterChip active={batchFilter === 'all'} onClick={() => setBatchFilter('all')}>All ({batches.length})</FilterChip>
               <FilterChip active={batchFilter === 'issued'} onClick={() => setBatchFilter('issued')}>In progress ({pendingCount})</FilterChip>
               <FilterChip active={batchFilter === 'completed'} onClick={() => setBatchFilter('completed')}>Completed ({batches.length - pendingCount})</FilterChip>
+              {karigars.length > 0 && (
+                <>
+                  <div className="w-px bg-stone-200 self-stretch flex-shrink-0 mx-0.5" />
+                  <KarigarFilterChip
+                    karigars={karigars}
+                    value={batchKarigarFilter}
+                    onChange={setBatchKarigarFilter}
+                  />
+                </>
+              )}
             </div>
             {/* Clear filters */}
             {(batchSearch || batchKarigarFilter !== 'all') && (
