@@ -4399,22 +4399,25 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
           </div>
 
           {/* Filter + search */}
-          <div className="bg-white rounded-lg border border-stone-200 p-3 space-y-2">
-            <div className="flex gap-2">
+          <div className="bg-white rounded-lg border border-stone-200 p-3 space-y-2.5">
+            {/* Row 1: text search + karigar picker */}
+            <div className="flex flex-col sm:flex-row gap-2">
               <SearchInput value={batchSearch} onChange={setBatchSearch} placeholder="Search by style or karigar..." />
               {karigars.length > 0 && (
-                <select
-                  value={batchKarigarFilter}
-                  onChange={e => setBatchKarigarFilter(e.target.value)}
-                  className="form-input text-sm min-w-0 flex-shrink-0"
-                >
-                  <option value="all">All karigars</option>
-                  {karigars.map(k => (
-                    <option key={k.id} value={k.id}>{k.name}</option>
-                  ))}
-                </select>
+                <div className="sm:w-52 flex-shrink-0">
+                  <SearchableSelect
+                    value={batchKarigarFilter}
+                    onChange={val => setBatchKarigarFilter(val)}
+                    placeholder="All karigars"
+                    options={[
+                      { value: 'all', label: 'All karigars' },
+                      ...karigars.map(k => ({ value: String(k.id), label: k.name })),
+                    ]}
+                  />
+                </div>
               )}
             </div>
+            {/* Row 2: status + date range chips */}
             <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
               <FilterChip active={batchFilter === 'all'} onClick={() => setBatchFilter('all')}>All batches ({batches.length})</FilterChip>
               <FilterChip active={batchFilter === 'issued'} onClick={() => setBatchFilter('issued')}>In progress ({pendingCount})</FilterChip>
@@ -4425,6 +4428,7 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
               <FilterChip active={batchDateRange === '30d'} onClick={() => setBatchDateRange('30d')}>Last 30d</FilterChip>
               <FilterChip active={batchDateRange === '90d'} onClick={() => setBatchDateRange('90d')}>Last 90d</FilterChip>
             </div>
+            {/* Clear filters */}
             {(batchSearch || batchKarigarFilter !== 'all' || batchDateRange !== 'all') && (
               <button
                 onClick={() => { setBatchSearch(''); setBatchKarigarFilter('all'); setBatchDateRange('all'); }}
