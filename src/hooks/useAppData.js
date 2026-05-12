@@ -594,6 +594,23 @@ export function useAppData({ showToast }) {
     }
   };
 
+  const updateKarigarPayment = async (id, data) => {
+    const payload = {
+      date: data.date,
+      amount: data.amount,
+      notes: data.notes || '',
+    };
+    await supabase.from('karigar_payments').update(payload).eq('id', id);
+    setKarigarPayments(prev => prev.map(p => p.id === id ? { ...p, ...payload } : p));
+    showToast('Payment updated');
+  };
+
+  const deleteKarigarPayment = async (id) => {
+    await supabase.from('karigar_payments').delete().eq('id', id);
+    setKarigarPayments(prev => prev.filter(p => p.id !== id));
+    showToast('Payment deleted');
+  };
+
   const deleteProductionEntry = async (id) => {
     await supabase.from('production_entries').delete().eq('id', id);
     setProductionEntries(prev => prev.filter(e => e.id !== id));
@@ -1156,7 +1173,8 @@ export function useAppData({ showToast }) {
     // Style codes
     addStyleCode, updateStyleCode, deleteStyleCode,
     // Karigars
-    addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar, recordKarigarPayment,
+    addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar,
+    recordKarigarPayment, updateKarigarPayment, deleteKarigarPayment,
     // Production entries
     saveProductionEntry, deleteProductionEntry, updateProductionEntry,
     // Production batches

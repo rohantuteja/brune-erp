@@ -89,7 +89,8 @@ export default function FabricCuttingModule() {
     addFabricType, updateFabricType, deleteFabricType,
     addSupplier, updateSupplier, deleteSupplier,
     addStyleCode, updateStyleCode, deleteStyleCode,
-    addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar, recordKarigarPayment,
+    addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar,
+    recordKarigarPayment, updateKarigarPayment, deleteKarigarPayment,
     saveProductionEntry, deleteProductionEntry, updateProductionEntry,
     upsertCosting, deleteCosting,
     addInventory, updateInventory, deleteInventory,
@@ -556,6 +557,8 @@ export default function FabricCuttingModule() {
             getCostingTotal={getCostingTotal}
             karigarPayments={karigarPayments}
             onRecordPayment={recordKarigarPayment}
+            onEditPayment={updateKarigarPayment}
+            onDeletePayment={deleteKarigarPayment}
           />
         )}
 
@@ -6212,7 +6215,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   );
 }
 
-function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPayments, onRecordPayment }) {
+function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPayments, onRecordPayment, onEditPayment, onDeletePayment }) {
   const { can } = usePermissions();
   const canEditPayments = can('can_edit_payments');
   const [payingKarigarId, setPayingKarigarId] = useState(null);
@@ -6293,7 +6296,7 @@ function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPay
       )}
 
       {filteredStats.map(k => (
-        <KarigarPaymentCard key={k.id} k={k} onPay={setPayingKarigarId} />
+        <KarigarPaymentCard key={k.id} k={k} onPay={setPayingKarigarId} onEditPayment={onEditPayment} onDeletePayment={onDeletePayment} />
       ))}
       {payingKarigarId !== null && (() => {
         const k = filteredStats.find(ks => ks.id === payingKarigarId) || karigarStats.find(ks => ks.id === payingKarigarId);
@@ -6309,14 +6312,18 @@ function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPay
   );
 }
 
-function KarigarPaymentCard({ k, onPay }) {
+function KarigarPaymentCard({ k, onPay, onEditPayment, onDeletePayment }) {
   const { can } = usePermissions();
   const [expanded, setExpanded] = useState(false);
+  const [editingPayment, setEditingPayment] = useState(null);
+  const [confirmDeletePaymentId, setConfirmDeletePaymentId] = useState(null);
   const hasUncosted = k.uncostedStyles.length > 0;
   const canPay = !hasUncosted && k.outstanding > 0 && can('can_edit_payments');
+  const canEdit = can('can_edit_payments');
 
   return (
-          <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+    <>
+      <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
             {/* Header */}
             <div className="p-3 sm:p-4">
               <div className="flex items-center gap-3 mb-3">
@@ -6401,9 +6408,29 @@ function KarigarPaymentCard({ k, onPay }) {
                   <div className="divide-y divide-stone-100">
                     {k.paymentHistory.map(p => (
                       <div key={p.id} className="px-3 py-2.5">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs text-stone-500">{p.date}</span>
-                          <span className="text-sm font-semibold text-emerald-700">₹{p.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                        <div className="flex items-center justify-between mb-1 gap-2">
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <span className="text-xs text-stone-500">{p.date}</span>
+                            <span className="text-sm font-semibold text-emerald-700">₹{p.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                          </div>
+                          {canEdit && (
+                            <div className="flex items-center gap-0.5 flex-shrink-0">
+                              <button
+                                onClick={() => setEditingPayment(p)}
+                                className="p-1.5 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded"
+                                aria-label="Edit payment"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeletePaymentId(p.id)}
+                                className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded"
+                                aria-label="Delete payment"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-1">
                           {(p.breakdown || []).map((b, i) => (
@@ -6419,7 +6446,82 @@ function KarigarPaymentCard({ k, onPay }) {
                 )}
               </div>
             )}
+      </div>
+
+      {editingPayment && (
+        <EditPaymentModal
+          payment={editingPayment}
+          karigarName={k.name}
+          onClose={() => setEditingPayment(null)}
+          onSave={async (data) => { await onEditPayment(editingPayment.id, data); setEditingPayment(null); }}
+        />
+      )}
+      {confirmDeletePaymentId !== null && (
+        <ConfirmDialog
+          title="Delete payment?"
+          message="This payment record will be permanently deleted and the outstanding balance will be recalculated."
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { onDeletePayment(confirmDeletePaymentId); setConfirmDeletePaymentId(null); }}
+          onCancel={() => setConfirmDeletePaymentId(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function EditPaymentModal({ payment, karigarName, onClose, onSave }) {
+  const [date, setDate] = useState(payment.date);
+  const [amount, setAmount] = useState(String(payment.amount));
+  const [notes, setNotes] = useState(payment.notes || '');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (saving) return;
+    const amt = parseFloat(amount);
+    if (!date) { alert('Date is required'); return; }
+    if (isNaN(amt) || amt <= 0) { alert('Enter a valid amount'); return; }
+    setSaving(true);
+    try { await onSave({ date, amount: amt, notes }); } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal
+      title={`Edit Payment — ${karigarName}`}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-stone-600 hover:bg-stone-100 rounded-md min-h-[44px] w-full sm:w-auto">Cancel</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 disabled:cursor-not-allowed min-h-[44px] w-full sm:w-auto">
+            {saving ? 'Saving…' : 'Save Changes'}
+          </button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        {(payment.breakdown || []).length > 0 && (
+          <div className="p-3 bg-stone-50 rounded-lg border border-stone-200 space-y-1">
+            <div className="text-[11px] text-stone-400 uppercase tracking-wide mb-1.5">Original breakdown</div>
+            {payment.breakdown.map((b, i) => (
+              <div key={i} className="flex items-center justify-between text-xs">
+                <span className="font-mono text-stone-600">{b.style_code}: {b.pieces} pcs × ₹{b.rate}</span>
+                <span className="text-stone-700 font-medium">₹{b.subtotal?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+              </div>
+            ))}
           </div>
+        )}
+        <Field label="Payment date" required>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} className="form-input" />
+        </Field>
+        <Field label="Amount (₹)" required>
+          <input type="number" value={amount} onChange={e => setAmount(e.target.value)} min="0" step="0.01" className="form-input" />
+        </Field>
+        <Field label="Notes">
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional note…" className="form-input" />
+        </Field>
+      </div>
+      <FormStyles />
+    </Modal>
   );
 }
 
