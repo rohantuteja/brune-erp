@@ -534,6 +534,12 @@ export function useAppData({ showToast }) {
     setKarigars(prev => prev.map(k => k.id === id ? { ...k, payment_type: paymentType } : k));
   };
 
+  const toggleKarigarActive = async (id, isActive) => {
+    await supabase.from('karigars').update({ is_active: isActive }).eq('id', id);
+    setKarigars(prev => prev.map(k => k.id === id ? { ...k, is_active: isActive } : k));
+    showToast(isActive ? 'Karigar re-enabled' : 'Karigar disabled');
+  };
+
   const deleteKarigar = async (id) => {
     const k = karigars.find(k => k.id === id);
     if (productionBatches.some(b => (b.karigar_ids || []).includes(id))) {
@@ -1150,7 +1156,7 @@ export function useAppData({ showToast }) {
     // Style codes
     addStyleCode, updateStyleCode, deleteStyleCode,
     // Karigars
-    addKarigar, updateKarigarPaymentType, deleteKarigar, recordKarigarPayment,
+    addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar, recordKarigarPayment,
     // Production entries
     saveProductionEntry, deleteProductionEntry, updateProductionEntry,
     // Production batches

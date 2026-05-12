@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
-import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download } from 'lucide-react';
+import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
 import { supabase } from './lib/supabase';
@@ -89,7 +89,7 @@ export default function FabricCuttingModule() {
     addFabricType, updateFabricType, deleteFabricType,
     addSupplier, updateSupplier, deleteSupplier,
     addStyleCode, updateStyleCode, deleteStyleCode,
-    addKarigar, updateKarigarPaymentType, deleteKarigar, recordKarigarPayment,
+    addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar, recordKarigarPayment,
     saveProductionEntry, deleteProductionEntry, updateProductionEntry,
     upsertCosting, deleteCosting,
     addInventory, updateInventory, deleteInventory,
@@ -510,6 +510,7 @@ export default function FabricCuttingModule() {
             onDeleteStyleCode={deleteStyleCode}
             onAddKarigar={addKarigar}
             onDeleteKarigar={deleteKarigar}
+            onToggleKarigarActive={toggleKarigarActive}
             onUpdateKarigarPaymentType={updateKarigarPaymentType}
             showToast={showToast}
             initialTab={mastersInitialTab}
@@ -660,7 +661,7 @@ export default function FabricCuttingModule() {
       {issuingForRun && (
         <IssueToProductionModal
           run={issuingForRun}
-          karigars={karigars}
+          karigars={karigars.filter(k => k.is_active !== false)}
           remainingBySize={getRemainingBySizeMap(issuingForRun)}
           alreadyIssuedBySize={getIssuedBySizeMap(issuingForRun.style_code, issuingForRun.id)}
           onClose={() => setIssuingForRun(null)}
@@ -3097,7 +3098,7 @@ function DashStat({ icon, label, value, sub, accent }) {
   );
 }
 
-function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onAddKarigar, onDeleteKarigar, onUpdateKarigarPaymentType, showToast, initialTab, onTabChange }) {
+function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onAddKarigar, onDeleteKarigar, onToggleKarigarActive, onUpdateKarigarPaymentType, showToast, initialTab, onTabChange }) {
   const { can } = usePermissions();
   const canEdit = can('can_edit_masters');
   const canDelete = can('can_delete_masters');
@@ -3359,43 +3360,58 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
             {filteredKarigars.length === 0 && karigars.length > 0 && (
               <div className="p-12 text-center text-sm text-stone-400">No karigars match "{karSearch}".</div>
             )}
-            {filteredKarigars.map(k => (
-              <div key={k.id} className="p-3 sm:p-4 flex items-center gap-3 hover:bg-stone-50">
-                <div className="w-9 h-9 rounded-full bg-stone-100 text-stone-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
-                  {k.name.split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-stone-900">{k.name}</div>
-                  <div className="flex gap-1 mt-1">
-                    {canEdit ? (
-                      <>
-                        <button
-                          onClick={() => onUpdateKarigarPaymentType(k.id, 'piece_rate')}
-                          className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'piece_rate' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
-                        >
-                          Piece Rate
-                        </button>
-                        <button
-                          onClick={() => onUpdateKarigarPaymentType(k.id, 'salary')}
-                          className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'salary' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
-                        >
-                          Salary
-                        </button>
-                      </>
-                    ) : (
-                      <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium bg-stone-900 text-white border-stone-900`}>
-                        {k.payment_type === 'piece_rate' ? 'Piece Rate' : 'Salary'}
-                      </span>
-                    )}
+            {filteredKarigars.map(k => {
+              const isActive = k.is_active !== false;
+              return (
+                <div key={k.id} className={`p-3 sm:p-4 flex items-center gap-3 hover:bg-stone-50 ${!isActive ? 'opacity-60' : ''}`}>
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0 ${isActive ? 'bg-stone-100 text-stone-700' : 'bg-stone-100 text-stone-400'}`}>
+                    {k.name.split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase()}
                   </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className={`text-sm font-medium ${isActive ? 'text-stone-900' : 'text-stone-400'}`}>{k.name}</div>
+                      {!isActive && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-stone-100 text-stone-500 border border-stone-200">
+                          <UserX className="w-2.5 h-2.5" /> Inactive
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1 mt-1">
+                      {canEdit && isActive ? (
+                        <>
+                          <button
+                            onClick={() => onUpdateKarigarPaymentType(k.id, 'piece_rate')}
+                            className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'piece_rate' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
+                          >Piece Rate</button>
+                          <button
+                            onClick={() => onUpdateKarigarPaymentType(k.id, 'salary')}
+                            className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition ${k.payment_type === 'salary' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-500 border-stone-300 hover:border-stone-400'}`}
+                          >Salary</button>
+                        </>
+                      ) : (
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${isActive ? 'bg-stone-900 text-white border-stone-900' : 'bg-stone-100 text-stone-400 border-stone-200'}`}>
+                          {k.payment_type === 'piece_rate' ? 'Piece Rate' : 'Salary'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {canEdit && (
+                    <button
+                      onClick={() => onToggleKarigarActive(k.id, !isActive)}
+                      title={isActive ? 'Disable karigar' : 'Re-enable karigar'}
+                      className={`p-2 rounded min-w-[36px] min-h-[36px] flex items-center justify-center transition ${isActive ? 'text-stone-400 hover:text-amber-600 hover:bg-amber-50' : 'text-stone-400 hover:text-emerald-600 hover:bg-emerald-50'}`}
+                    >
+                      {isActive ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                    </button>
+                  )}
+                  {canDelete && (
+                    <button onClick={() => onDeleteKarigar(k.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
-                {canDelete && (
-                  <button onClick={() => onDeleteKarigar(k.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
             {karigars.length === 0 && (
               <div className="p-12 text-center text-sm text-stone-400">No karigars yet.</div>
             )}
