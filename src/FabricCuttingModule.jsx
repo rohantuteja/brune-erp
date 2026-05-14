@@ -6592,7 +6592,25 @@ function RecordPaymentModal({ karigar, onClose, onSave }) {
   );
 }
 
-function colorMap(c) { const m = { 'Navy Blue': '#1e3a5f', 'Black': '#1c1c1c', 'White': '#f5f5f5', 'Olive Green': '#6b7d3a', 'Red': '#c53030', 'Maroon': '#800000', 'Blue': '#2563eb' }; return m[c] || '#9ca3af'; }
+function colorMap(c) {
+  if (!c) return '#9ca3af';
+  // Custom overrides for multi-word or non-CSS colour names
+  const custom = {
+    'Navy Blue': '#1e3a5f', 'Olive Green': '#6b7d3a', 'Off White': '#f5f0e8',
+    'Light Pink': '#ffb6c1', 'Dark Green': '#1a4d2e', 'Dark Blue': '#1e3a5f',
+    'Sky Blue': '#87ceeb', 'Hot Pink': '#ff69b4', 'Light Blue': '#add8e6',
+    'Light Grey': '#d3d3d3', 'Light Gray': '#d3d3d3', 'Dark Grey': '#616161',
+    'Dark Gray': '#616161', 'Dark Red': '#8b0000', 'Dark Brown': '#5d3a1a',
+    'Bottle Green': '#006a4e', 'Royal Blue': '#4169e1', 'Baby Blue': '#89cff0',
+    'Baby Pink': '#f4c2c2', 'Pastel Pink': '#ffd1dc', 'Dusty Pink': '#dcae96',
+  };
+  const key = Object.keys(custom).find(k => k.toLowerCase() === c.toLowerCase());
+  if (key) return custom[key];
+  // For single-word names, return as-is — the browser natively understands
+  // 'pink', 'purple', 'orange', 'teal', 'coral', 'salmon', 'gold', etc.
+  // Invalid names render as transparent (circle border still visible).
+  return c.toLowerCase();
+}
 
 function Modal({ title, onClose, wide, children, footer }) {
   const backdropRef = React.useRef(null);
