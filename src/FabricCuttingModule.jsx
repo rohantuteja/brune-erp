@@ -48,7 +48,7 @@ export default function FabricCuttingModule() {
   const [invSupplierFilter, setInvSupplierFilter] = useState('all');
   const [invColorFilter, setInvColorFilter] = useState('all');
   const [invLowStockOnly, setInvLowStockOnly] = useState(false);
-  const [invSort, setInvSort] = useState('received_desc');
+  const [invSort, setInvSort] = useState('added_desc');
 
   // Style runs filters
   const [runStatusFilter, setRunStatusFilter] = useState('active');
@@ -135,15 +135,17 @@ export default function FabricCuttingModule() {
 
     list = [...list].sort((a, b) => {
       switch (invSort) {
+        case 'added_desc': return b.id - a.id; // most recently added to system first
+        case 'added_asc': return a.id - b.id; // oldest added to system first
         case 'received_desc': {
           const da = a.received_date ? new Date(a.received_date).getTime() : 0;
           const db = b.received_date ? new Date(b.received_date).getTime() : 0;
-          return db !== da ? db - da : b.id - a.id; // tiebreak: newer id first
+          return db !== da ? db - da : b.id - a.id;
         }
         case 'received_asc': {
           const da = a.received_date ? new Date(a.received_date).getTime() : 0;
           const db = b.received_date ? new Date(b.received_date).getTime() : 0;
-          return da !== db ? da - db : a.id - b.id; // tiebreak: older id first
+          return da !== db ? da - db : a.id - b.id;
         }
         case 'number_asc': return (a.inventory_number || '').localeCompare(b.inventory_number || '');
         case 'stock_asc': {
@@ -156,7 +158,7 @@ export default function FabricCuttingModule() {
           const cb = parseFloat(b.format === 'roll' ? b.current_weight_kg : b.current_length_m) || 0;
           return cb - ca;
         }
-        default: return b.id - a.id; // default tiebreak: newest added first
+        default: return b.id - a.id;
       }
     });
 
@@ -775,8 +777,10 @@ function InventoryTable({
   };
 
   const sortOptions = [
-    { value: 'received_desc', label: 'Newest first' },
-    { value: 'received_asc', label: 'Oldest first' },
+    { value: 'added_desc', label: 'Newest first' },
+    { value: 'added_asc', label: 'Oldest first' },
+    { value: 'received_desc', label: 'Received date ↓' },
+    { value: 'received_asc', label: 'Received date ↑' },
     { value: 'number_asc', label: 'Number A-Z' },
     { value: 'stock_asc', label: 'Stock: low to high' },
     { value: 'stock_desc', label: 'Stock: high to low' },
@@ -6594,21 +6598,41 @@ function RecordPaymentModal({ karigar, onClose, onSave }) {
 
 function colorMap(c) {
   if (!c) return '#9ca3af';
-  // Custom overrides for multi-word or non-CSS colour names
   const custom = {
-    'Navy Blue': '#1e3a5f', 'Olive Green': '#6b7d3a', 'Off White': '#f5f0e8',
-    'Light Pink': '#ffb6c1', 'Dark Green': '#1a4d2e', 'Dark Blue': '#1e3a5f',
-    'Sky Blue': '#87ceeb', 'Hot Pink': '#ff69b4', 'Light Blue': '#add8e6',
-    'Light Grey': '#d3d3d3', 'Light Gray': '#d3d3d3', 'Dark Grey': '#616161',
-    'Dark Gray': '#616161', 'Dark Red': '#8b0000', 'Dark Brown': '#5d3a1a',
-    'Bottle Green': '#006a4e', 'Royal Blue': '#4169e1', 'Baby Blue': '#89cff0',
-    'Baby Pink': '#f4c2c2', 'Pastel Pink': '#ffd1dc', 'Dusty Pink': '#dcae96',
+    // Whites & Neutrals
+    'White': '#ffffff', 'Off White': '#f5f0e8', 'Ivory': '#fffff0', 'Cream': '#fffdd0',
+    // Greys
+    'Black': '#1a1a1a', 'Charcoal': '#36454f', 'Dark Grey': '#616161', 'Dark Gray': '#616161',
+    'Grey': '#808080', 'Gray': '#808080', 'Light Grey': '#d3d3d3', 'Light Gray': '#d3d3d3',
+    // Reds
+    'Red': '#e53935', 'Dark Red': '#8b0000', 'Maroon': '#800000', 'Burgundy': '#800020',
+    // Pinks
+    'Pink': '#ffc0cb', 'Hot Pink': '#ff69b4', 'Baby Pink': '#f4c2c2',
+    'Dusty Pink': '#dcae96', 'Mauve': '#e0b0ff', 'Light Pink': '#ffb6c1',
+    'Pastel Pink': '#ffd1dc', 'Dusty Rose': '#dcae96', 'Blush': '#de5d83',
+    // Oranges & Peach
+    'Orange': '#ffa500', 'Peach': '#ffcba4', 'Coral': '#ff7f50', 'Rust': '#b7410e',
+    // Yellows & Golds
+    'Yellow': '#ffd600', 'Mustard': '#e3a008', 'Golden': '#ffd700',
+    // Greens
+    'Green': '#2e7d32', 'Dark Green': '#1a4d2e', 'Olive Green': '#6b7d3a',
+    'Mint Green': '#98ff98', 'Lime Green': '#32cd32', 'Bottle Green': '#006a4e',
+    'Mint': '#98ff98',
+    // Blues
+    'Blue': '#1565c0', 'Dark Blue': '#0d2137', 'Navy Blue': '#1e3a5f',
+    'Royal Blue': '#4169e1', 'Sky Blue': '#87ceeb', 'Baby Blue': '#89cff0',
+    'Light Blue': '#add8e6', 'Teal': '#008080', 'Dusty Blue': '#6699cc',
+    // Purples
+    'Purple': '#7b1fa2', 'Lavender': '#e6e6fa', 'Violet': '#ee82ee', 'Indigo': '#3f51b5',
+    // Browns & Tans
+    'Brown': '#795548', 'Beige': '#f5f5dc', 'Tan': '#d2b48c',
+    'Camel': '#c19a6b', 'Khaki': '#c3b091', 'Dark Brown': '#5d3a1a',
+    'Nude': '#e3bc9a', 'Wine': '#722f37',
+    // Special
+    'Printed': '#9ca3af', 'Multi Colour': '#9ca3af',
   };
   const key = Object.keys(custom).find(k => k.toLowerCase() === c.toLowerCase());
   if (key) return custom[key];
-  // For single-word names, return as-is — the browser natively understands
-  // 'pink', 'purple', 'orange', 'teal', 'coral', 'salmon', 'gold', etc.
-  // Invalid names render as transparent (circle border still visible).
   return c.toLowerCase();
 }
 
