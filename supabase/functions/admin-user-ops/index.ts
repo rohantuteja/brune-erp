@@ -21,7 +21,60 @@ serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
-    // Verify caller is an authenticated admin
+    const body = await req.json()
+    const { action } = body
+
+    // ── BOOTSTRAP (first admin, no auth required) ─────────────
+    if (action === 'bootstrap') {
+      // Only allowed when there are zero users in user_profiles
+      const { count } = await admin
+        .from('user_profiles')
+        .select('*', { count: 'exact', head: true })
+      if ((count ?? 0) > 0) throw new Error('Bootstrap not allowed: users already exist')
+
+      const { email, password, name, username } = body
+      if (!email || !password || !name) throw new Error('email, password and name are required')
+
+      const { data: authData, error: authErr } = await admin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+      })
+      if (authErr) throw authErr
+
+      const userId = authData.user.id
+
+      const { error: profileErr } = await admin.from('user_profiles').insert({
+        id: userId, name, email, username: username ?? null, role: 'admin',
+      })
+      if (profileErr) {
+        await admin.auth.admin.deleteUser(userId).catch(() => {})
+        throw profileErr
+      }
+
+      // Grant all permissions
+      const allPerms = {
+        user_id: userId,
+        can_view_dashboard: true, can_view_inventory: true, can_edit_inventory: true,
+        can_delete_inventory: true, can_view_cuttings: true, can_edit_cuttings: true,
+        can_delete_cuttings: true, can_view_production: true, can_edit_production: true,
+        can_delete_production: true, can_view_payments: true, can_edit_payments: true,
+        can_view_costing: true, can_edit_costing: true, can_delete_costing: true,
+        can_view_analytics: true, can_view_masters: true, can_edit_masters: true,
+        can_delete_masters: true, can_manage_users: true,
+      }
+      const { error: permErr } = await admin.from('user_permissions').insert(allPerms)
+      if (permErr) {
+        await admin.auth.admin.deleteUser(userId).catch(() => {})
+        throw permErr
+      }
+
+      return new Response(JSON.stringify({ id: userId }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // All actions below require an authenticated admin ────────
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) throw new Error('Missing authorization header')
 
@@ -37,9 +90,6 @@ serve(async (req) => {
       .eq('id', callerUser.id)
       .single()
     if (callerProfile?.role !== 'admin') throw new Error('Forbidden: admin only')
-
-    const body = await req.json()
-    const { action } = body
 
     // ── CREATE USER ───────────────────────────────────────────
     if (action === 'create') {
@@ -67,6 +117,20 @@ serve(async (req) => {
       }
 
       return new Response(JSON.stringify({ id: userId }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // ── UPDATE PASSWORD ───────────────────────────────────────
+    if (action === 'update_password') {
+      const { userId: targetId, password: newPassword } = body
+      if (!targetId || !newPassword) throw new Error('userId and password are required')
+      if (newPassword.length < 6) throw new Error('Password must be at least 6 characters')
+
+      const { error: updErr } = await admin.auth.admin.updateUserById(targetId, { password: newPassword })
+      if (updErr) throw updErr
+
+      return new Response(JSON.stringify({ success: true }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }

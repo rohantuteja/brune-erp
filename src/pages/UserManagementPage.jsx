@@ -117,6 +117,7 @@ function UserModal({ existing, onClose, onSaved, showToast }) {
     if (!username.trim()) { setError('Username is required'); return; }
     if (!isEdit && !email.trim()) { setError('Email is required'); return; }
     if (!isEdit && password.length < 6) { setError('Password must be at least 6 characters'); return; }
+    if (isEdit && password.length > 0 && password.length < 6) { setError('New password must be at least 6 characters'); return; }
     setSaving(true);
 
     try {
@@ -137,6 +138,20 @@ function UserModal({ existing, onClose, onSaved, showToast }) {
           .update(perms)
           .eq('user_id', existing.id);
         if (permE) throw permE;
+
+        // Update password if provided
+        if (password.trim()) {
+          const res = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-user-ops`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ action: 'update_password', userId: existing.id, password }),
+            }
+          );
+          const json = await res.json();
+          if (json.error) throw new Error(json.error);
+        }
 
         showToast('User updated');
         onSaved();
@@ -212,28 +227,29 @@ function UserModal({ existing, onClose, onSaved, showToast }) {
             </div>
           )}
 
-          {/* Password — only on create */}
-          {!isEdit && (
-            <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1.5">Password</label>
-              <div className="relative">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Min 6 characters"
-                  className="w-full px-3 py-2.5 pr-10 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
+          {/* Password — required on create, optional on edit */}
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1.5">
+              {isEdit ? 'New Password' : 'Password'}
+            </label>
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder={isEdit ? 'Leave blank to keep current password' : 'Min 6 characters'}
+                className="w-full px-3 py-2.5 pr-10 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
-          )}
+            {isEdit && <p className="text-[10px] text-stone-400 mt-1">Only fill in if you want to change this user's password.</p>}
+          </div>
 
           {/* Role */}
           <div>
@@ -317,6 +333,98 @@ function UserModal({ existing, onClose, onSaved, showToast }) {
   );
 }
 
+// ── Bootstrap modal (first-time setup, no auth needed) ──────────────────────
+function BootstrapModal({ onClose, onDone, showToast }) {
+  const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleCreate = async () => {
+    setError('');
+    if (!name.trim()) { setError('Name is required'); return; }
+    if (!email.trim()) { setError('Email is required'); return; }
+    if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-user-ops`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'bootstrap', email: email.trim(), password, name: name.trim(), username: username.trim().toLowerCase() || null }),
+        }
+      );
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      showToast('Admin account created — please sign in');
+      onDone();
+    } catch (err) {
+      setError(err.message ?? 'Something went wrong');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="absolute inset-0 bg-stone-900/50 backdrop-blur-sm" />
+      <div className="relative bg-white w-full sm:max-w-md sm:rounded-xl shadow-xl flex flex-col max-h-[92vh] rounded-t-xl">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-stone-200">
+          <div>
+            <h2 className="text-base font-semibold text-stone-900">First-Time Setup</h2>
+            <p className="text-xs text-stone-500 mt-0.5">Create the initial admin account</p>
+          </div>
+          <button onClick={onClose} className="p-2 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded-md">✕</button>
+        </div>
+        <div className="overflow-y-auto flex-1 p-4 space-y-4">
+          <div className="px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-800">
+            This setup only works when no users exist yet. The account created will have full admin access.
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1.5">Full Name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Rohan Tuteja"
+              className="w-full px-3 py-2.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1.5">Username <span className="text-stone-400 font-normal">(optional)</span></label>
+            <input value={username} onChange={e => setUsername(e.target.value.toLowerCase().replace(/\s/g, ''))} placeholder="e.g. admin"
+              className="w-full px-3 py-2.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1.5">Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@example.com"
+              className="w-full px-3 py-2.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1.5">Password</label>
+            <div className="relative">
+              <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                placeholder="Min 6 characters"
+                className="w-full px-3 py-2.5 pr-10 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent" />
+              <button type="button" onClick={() => setShowPassword(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700">
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+          {error && <div className="px-3 py-2.5 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{error}</div>}
+        </div>
+        <div className="px-4 py-3 border-t border-stone-200 flex gap-2 justify-end">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-stone-700 border border-stone-300 rounded-md hover:bg-stone-50">Cancel</button>
+          <button onClick={handleCreate} disabled={saving}
+            className="px-4 py-2 text-sm bg-stone-900 text-white rounded-md hover:bg-stone-800 disabled:opacity-60">
+            {saving ? 'Creating…' : 'Create Admin Account'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Delete confirmation ──────────────────────────────────────────────────────
 function DeleteConfirmModal({ user, onClose, onDeleted, showToast }) {
   const [deleting, setDeleting] = useState(false);
@@ -380,6 +488,7 @@ export default function UserManagementPage({ showToast }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [deletingUser, setDeletingUser] = useState(null);
+  const [showBootstrap, setShowBootstrap] = useState(false);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -416,7 +525,13 @@ export default function UserManagementPage({ showToast }) {
       ) : users.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-stone-400">
           <User className="w-10 h-10 mb-3 opacity-40" />
-          <p className="text-sm">No users found</p>
+          <p className="text-sm mb-3">No users found</p>
+          <button
+            onClick={() => setShowBootstrap(true)}
+            className="px-4 py-2 text-sm bg-stone-900 text-white rounded-md hover:bg-stone-800"
+          >
+            First-Time Setup
+          </button>
         </div>
       ) : (
         <div className="space-y-2">
@@ -496,6 +611,13 @@ export default function UserManagementPage({ showToast }) {
           user={deletingUser}
           onClose={() => setDeletingUser(null)}
           onDeleted={() => { setDeletingUser(null); fetchUsers(); }}
+          showToast={showToast}
+        />
+      )}
+      {showBootstrap && (
+        <BootstrapModal
+          onClose={() => setShowBootstrap(false)}
+          onDone={() => { setShowBootstrap(false); fetchUsers(); }}
           showToast={showToast}
         />
       )}
