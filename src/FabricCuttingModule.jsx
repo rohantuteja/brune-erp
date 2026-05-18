@@ -341,11 +341,12 @@ export default function FabricCuttingModule() {
   // Total cost per piece for a costing entry
   const getCostingTotal = (costing) => {
     if (!costing) return 0;
-    const fabricCost = (costing.fabric_lines || []).reduce((sum, line) => {
+    const autoFabricCost = (costing.fabric_lines || []).reduce((sum, line) => {
       const cpm = getMaxCostPerMeter(line.fabric_type_id);
       if (cpm === null) return sum;
       return sum + (cpm * (parseFloat(line.avg_meters) || 0));
     }, 0);
+    const fabricCost = costing.fabric_cost_override != null ? costing.fabric_cost_override : autoFabricCost;
     const customCost = (costing.custom_lines || []).reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
     return fabricCost
       + (parseFloat(costing.cutting_cost) || 0)
@@ -4023,10 +4024,11 @@ function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, ge
           )}
           {filtered.map(c => {
             const total = getCostingTotal(c);
-            const fabricCost = (c.fabric_lines || []).reduce((sum, line) => {
+            const autoFabricCost = (c.fabric_lines || []).reduce((sum, line) => {
               const cpm = getMaxCostPerMeter(line.fabric_type_id);
               return cpm === null ? sum : sum + (cpm * (parseFloat(line.avg_meters) || 0));
             }, 0);
+            const fabricCost = c.fabric_cost_override != null ? c.fabric_cost_override : autoFabricCost;
             return (
               <div key={c.id} className="p-3 sm:p-4 hover:bg-stone-50">
                 <div className="flex items-start justify-between gap-3">
@@ -4115,6 +4117,13 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
       : [{ fabric_type_id: '', avg_meters: '' }]
   );
 
+  const [fabricOverride, setFabricOverride] = useState(
+    existing?.fabric_cost_override != null
+  );
+  const [fabricOverrideValue, setFabricOverrideValue] = useState(
+    existing?.fabric_cost_override != null ? String(existing.fabric_cost_override) : ''
+  );
+
   const [costs, setCosts] = useState({
     cutting_cost: existing?.cutting_cost ?? '18',
     stitching_cost: existing?.stitching_cost ?? '',
@@ -4137,9 +4146,10 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
     return { ft, cpm, meters, lineCost };
   });
   const fabricCostTotal = fabricCostBreakdown.reduce((s, l) => s + l.lineCost, 0);
+  const effectiveFabricCost = fabricOverride ? (parseFloat(fabricOverrideValue) || 0) : fabricCostTotal;
 
   const customTotal = customLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
-  const totalCost = fabricCostTotal
+  const totalCost = effectiveFabricCost
     + (parseFloat(costs.cutting_cost) || 0)
     + (parseFloat(costs.stitching_cost) || 0)
     + (parseFloat(costs.trims_cost) || 0)
@@ -4203,6 +4213,7 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
         trims_cost: parseFloat(costs.trims_cost) || 0,
         finishing_cost: parseFloat(costs.finishing_cost) || 0,
         custom_lines: cleanCustomLines,
+        fabric_cost_override: fabricOverride && fabricOverrideValue !== '' ? parseFloat(fabricOverrideValue) : null,
       });
     } finally { setSaving(false); }
   };
@@ -4300,9 +4311,51 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
           })}
         </div>
 
-        <div className="mt-3 p-3 bg-stone-100 rounded text-sm flex justify-between">
-          <span className="text-stone-700 font-medium">Fabric subtotal</span>
-          <span className="font-semibold text-stone-900">₹{fabricCostTotal.toFixed(2)}</span>
+        <div className="mt-3 p-3 bg-stone-100 rounded text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-stone-700 font-medium">Fabric subtotal</span>
+            <div className="flex items-center gap-3">
+              {fabricOverride ? (
+                <>
+                  <span className="text-stone-400 line-through text-xs">₹{fabricCostTotal.toFixed(2)}</span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-stone-500 text-xs">₹</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="0.01"
+                      value={fabricOverrideValue}
+                      onChange={e => setFabricOverrideValue(e.target.value)}
+                      placeholder={fabricCostTotal.toFixed(2)}
+                      className="w-28 text-right text-sm font-semibold text-stone-900 bg-white border border-stone-300 rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-stone-900"
+                      autoFocus
+                    />
+                  </div>
+                  <button
+                    onClick={() => { setFabricOverride(false); setFabricOverrideValue(''); }}
+                    className="text-xs text-stone-500 hover:text-stone-800 underline underline-offset-2 whitespace-nowrap"
+                  >
+                    ↩ Auto
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold text-stone-900">₹{fabricCostTotal.toFixed(2)}</span>
+                  <button
+                    onClick={() => { setFabricOverride(true); setFabricOverrideValue(fabricCostTotal.toFixed(2)); }}
+                    className="text-xs text-stone-500 hover:text-stone-800 underline underline-offset-2 whitespace-nowrap"
+                  >
+                    Override ↗
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          {fabricOverride && (
+            <p className="text-[11px] text-amber-700 mt-1.5 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+              Manual override active — auto-calculation paused
+            </p>
+          )}
         </div>
       </div>
 
@@ -5456,15 +5509,17 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     const sorted = [...costings].map(c => ({
       ...c,
       total: getCostingTotal(c),
-      fabricCost: (c.fabric_lines || []).reduce((s, l) => {
-        const ft = fabricTypes.find(f => f.id === l.fabric_type_id);
-        if (!ft?.supplier_rates?.length) return s;
-        const maxCpm = Math.max(...ft.supplier_rates.map(r => {
-          if (ft.format === 'roll' && r.cost_per_kg && r.chadti > 0) return r.cost_per_kg / r.chadti;
-          return r.cost_per_m || 0;
-        }).filter(Boolean));
-        return s + maxCpm * (l.avg_meters || 0);
-      }, 0),
+      fabricCost: c.fabric_cost_override != null
+        ? c.fabric_cost_override
+        : (c.fabric_lines || []).reduce((s, l) => {
+            const ft = fabricTypes.find(f => f.id === l.fabric_type_id);
+            if (!ft?.supplier_rates?.length) return s;
+            const maxCpm = Math.max(...ft.supplier_rates.map(r => {
+              if (ft.format === 'roll' && r.cost_per_kg && r.chadti > 0) return r.cost_per_kg / r.chadti;
+              return r.cost_per_m || 0;
+            }).filter(Boolean));
+            return s + maxCpm * (l.avg_meters || 0);
+          }, 0),
     })).sort((a, b) => b.total - a.total);
 
     const avgCost = sorted.reduce((s, c) => s + c.total, 0) / sorted.length;
