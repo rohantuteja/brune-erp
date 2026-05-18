@@ -2106,7 +2106,7 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     width_cm: source?.width_cm || '',
     quantity: source ? (source.format === 'roll' ? source.initial_weight_kg : source.initial_length_m) : '',
     received_date: existing?.received_date || localToday(),
-    notes: existing?.notes || '',
+    notes: source?.notes || '',
     inventory_number_override: '',  // empty = use auto-generated
   });
 
@@ -2308,7 +2308,10 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
             {errors.color && <div className="text-xs text-red-600 mt-1">{errors.color}</div>}
           </Field>
           <Field label="Width (cm)" required>
-            <input type="number" inputMode="decimal" step="0.5" value={form.width_cm} onChange={e => { setForm({ ...form, width_cm: e.target.value }); setErrors(er => ({ ...er, width: null })); }} placeholder="152" className={`form-input ${errors.width ? 'border-red-400' : ''}`} />
+            <input type="number" inputMode="decimal" step="0.5" value={form.width_cm} onChange={e => { setForm({ ...form, width_cm: e.target.value }); setErrors(er => ({ ...er, width: null })); }} placeholder="152" className={`form-input ${isDuplicate ? 'ring-2 ring-amber-400 border-amber-400' : ''} ${errors.width ? 'border-red-400' : ''}`} />
+            {isDuplicate && (
+              <div className="text-[11px] text-amber-700 font-medium mt-1">⚠ Please verify the width for the new {isRoll ? 'roll' : 'than'}</div>
+            )}
             {errors.width && <div className="text-xs text-red-600 mt-1">{errors.width}</div>}
           </Field>
           <Field label={isRoll ? 'Weight (kg)' : 'Length (m)'} required>
