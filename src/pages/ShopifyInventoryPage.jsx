@@ -214,13 +214,12 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
             const variants = Array.isArray(product.variants) ? product.variants : [];
             const hasActiveRun = activeStyleCodes.has((product.style_code || '').toUpperCase());
             const isZeroStock = product.total_inventory === 0;
-            const isDraft = product.status !== 'active';
 
             return (
               <div
                 key={product.id}
-                className={`bg-white border rounded-lg p-4 transition-opacity ${
-                  isZeroStock ? 'border-red-200' : isDraft ? 'border-stone-200 opacity-70' : 'border-stone-200'
+                className={`bg-white border rounded-lg p-4 ${
+                  isZeroStock ? 'border-red-200' : 'border-stone-200'
                 }`}
               >
                 {/* Product header */}
@@ -234,11 +233,6 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
                       {hasActiveRun && (
                         <span className="text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium shrink-0">
                           Active Run
-                        </span>
-                      )}
-                      {isDraft && (
-                        <span className="text-xs bg-stone-100 text-stone-500 px-1.5 py-0.5 rounded-full font-medium capitalize shrink-0">
-                          {product.status}
                         </span>
                       )}
                     </div>
