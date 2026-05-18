@@ -5209,12 +5209,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         }
       );
       const json = await res.json();
-      if (!res.ok) {
-        if (json?.error?.includes('already exists')) {
-          showToast('A snapshot for this month already exists. Use force to overwrite.', 'info');
-        } else {
-          showToast(json?.error || 'Failed to take snapshot', 'error');
-        }
+      if (!res.ok || json?.error) {
+        showToast(json?.error || 'Failed to take snapshot', 'error');
       } else {
         showToast('Snapshot taken successfully!', 'success');
         await fetchSnapshots();
