@@ -5150,6 +5150,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [snapshotsLoading, setSnapshotsLoading] = useState(false);
   const [takingSnapshot, setTakingSnapshot] = useState(false);
   const [expandedSnapshotId, setExpandedSnapshotId] = useState(null);
+  const [deletingSnapshotId, setDeletingSnapshotId] = useState(null);
+  const [confirmDeleteSnapshotId, setConfirmDeleteSnapshotId] = useState(null);
 
   const currentMonthStr = () => {
     const now = new Date();
@@ -5224,21 +5226,53 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     }
   };
 
+  // Groups individual snapshot item rows by fabric_type_name + supplier_name + format
+  const groupSnapshotItems = (items) => {
+    const map = {};
+    for (const item of items) {
+      const key = `${item.fabric_type_name}||${item.supplier_name}||${item.format}`;
+      if (!map[key]) {
+        map[key] = {
+          fabric_type_name: item.fabric_type_name,
+          supplier_name: item.supplier_name,
+          format: item.format,
+          item_count: 0,
+          total_qty: 0,
+          total_value: 0,
+          _rate_sum: 0,
+          _rate_count: 0,
+        };
+      }
+      const g = map[key];
+      g.item_count += 1;
+      g.total_qty += parseFloat(item.closing_quantity) || 0;
+      const rate = parseFloat(item.rate) || 0;
+      const val = parseFloat(item.closing_value) || 0;
+      g.total_value += val;
+      if (rate > 0) { g._rate_sum += rate; g._rate_count += 1; }
+    }
+    return Object.values(map).map(g => ({
+      ...g,
+      avg_rate: g._rate_count > 0 ? g._rate_sum / g._rate_count : 0,
+    }));
+  };
+
   const downloadSnapshotCSV = (snapshot) => {
-    const items = snapshot.inventory_snapshot_items || [];
-    if (items.length === 0) {
+    const rawItems = snapshot.inventory_snapshot_items || [];
+    if (rawItems.length === 0) {
       showToast('No items in this snapshot', 'info');
       return;
     }
-    const header = ['Fabric Type', 'Supplier', 'Format', 'Rolls/Thans', 'Qty (kg/m)', 'Rate', 'Value (₹)'];
-    const rows = items.map(item => [
+    const grouped = groupSnapshotItems(rawItems);
+    const header = ['Fabric Type', 'Supplier', 'Format', 'Rolls/Thans', 'Qty (kg/m)', 'Avg Rate', 'Value (₹)'];
+    const rows = grouped.map(item => [
       item.fabric_type_name || '',
       item.supplier_name || '',
       item.format || '',
-      item.item_count ?? '',
-      item.total_qty != null ? parseFloat(item.total_qty).toFixed(2) : '',
-      item.avg_rate != null ? parseFloat(item.avg_rate).toFixed(2) : '',
-      item.total_value != null ? parseFloat(item.total_value).toFixed(2) : '',
+      item.item_count,
+      item.total_qty.toFixed(2),
+      item.avg_rate.toFixed(2),
+      item.total_value.toFixed(2),
     ]);
     const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -5248,6 +5282,24 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     a.download = `inventory-snapshot-${snapshot.month}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const deleteSnapshot = async (snapId) => {
+    try {
+      const { error } = await supabase
+        .from('inventory_snapshots')
+        .delete()
+        .eq('id', snapId);
+      if (error) throw error;
+      setSnapshots(prev => prev.filter(s => s.id !== snapId));
+      if (expandedSnapshotId === snapId) setExpandedSnapshotId(null);
+      showToast('Snapshot deleted', 'success');
+    } catch (err) {
+      showToast('Failed to delete snapshot', 'error');
+    } finally {
+      setDeletingSnapshotId(null);
+      setConfirmDeleteSnapshotId(null);
+    }
   };
 
   const getFabricType = (id) => fabricTypes.find(f => f.id === id);
@@ -5661,13 +5713,16 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               <div className="divide-y divide-stone-100">
                 {snapshots.map((snap, idx) => {
                   const prevSnap = snapshots[idx + 1];
-                  const totalValue = parseFloat(snap.total_value) || 0;
-                  const prevValue = prevSnap ? (parseFloat(prevSnap.total_value) || 0) : null;
+                  const totalValue = parseFloat(snap.total_stock_value) || 0;
+                  const prevValue = prevSnap ? (parseFloat(prevSnap.total_stock_value) || 0) : null;
                   const momDiff = prevValue !== null ? totalValue - prevValue : null;
                   const momPct = prevValue && prevValue > 0 ? (momDiff / prevValue) * 100 : null;
                   const isExpanded = expandedSnapshotId === snap.id;
-                  const items = snap.inventory_snapshot_items || [];
+                  const rawItems = snap.inventory_snapshot_items || [];
+                  const items = groupSnapshotItems(rawItems);
+                  const totalItems = (snap.total_rolls || 0) + (snap.total_thans || 0);
                   const isCurrentMonth = snap.month === currentMonthStr();
+                  const isConfirmDelete = confirmDeleteSnapshotId === snap.id;
 
                   return (
                     <div key={snap.id}>
@@ -5696,7 +5751,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             )}
                           </div>
                           <div className="text-xs text-stone-400 mt-0.5">
-                            {snap.total_items} items · {items.length} fabric groups
+                            {totalItems} items · {items.length} fabric groups
                             {snap.created_by_name ? ` · Taken by ${snap.created_by_name}` : ''}
                           </div>
                         </div>
@@ -5711,9 +5766,39 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                               <Download className="w-4 h-4" />
                             </span>
                           )}
+                          {isAdmin && (
+                            <span
+                              role="button"
+                              onClick={e => { e.stopPropagation(); setConfirmDeleteSnapshotId(snap.id); }}
+                              className="p-1.5 rounded hover:bg-red-100 text-stone-400 hover:text-red-600 transition-colors"
+                              title="Delete snapshot"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </span>
+                          )}
                           {isExpanded ? <ChevronUp className="w-4 h-4 text-stone-400" /> : <ChevronDown className="w-4 h-4 text-stone-400" />}
                         </div>
                       </button>
+
+                      {/* Delete confirmation inline */}
+                      {isConfirmDelete && (
+                        <div className="flex items-center gap-3 px-4 py-3 bg-red-50 border-t border-red-200">
+                          <span className="text-sm text-red-800 flex-1">Delete the <strong>{fmtMonth(snap.month)}</strong> snapshot? This cannot be undone.</span>
+                          <button
+                            onClick={() => { setDeletingSnapshotId(snap.id); deleteSnapshot(snap.id); }}
+                            disabled={deletingSnapshotId === snap.id}
+                            className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 disabled:opacity-50 transition-colors"
+                          >
+                            {deletingSnapshotId === snap.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteSnapshotId(null)}
+                            className="px-3 py-1.5 bg-white border border-stone-300 text-stone-700 text-xs font-medium rounded hover:bg-stone-50 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
 
                       {isExpanded && (
                         <div className="border-t border-stone-100 bg-stone-50">
@@ -5734,19 +5819,19 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-stone-100">
-                                  {[...items].sort((a, b) => (parseFloat(b.total_value) || 0) - (parseFloat(a.total_value) || 0)).map((item, i) => (
+                                  {[...items].sort((a, b) => b.total_value - a.total_value).map((item, i) => (
                                     <tr key={i} className="hover:bg-white transition-colors">
                                       <td className="px-4 py-2 text-stone-900 font-medium">{item.fabric_type_name || '—'}</td>
                                       <td className="px-4 py-2 text-stone-600">{item.supplier_name || '—'}</td>
                                       <td className="px-4 py-2 text-stone-500 capitalize">{item.format || '—'}</td>
                                       <td className="px-4 py-2 text-right text-stone-600">{item.item_count}</td>
                                       <td className="px-4 py-2 text-right text-stone-900">
-                                        {parseFloat(item.total_qty).toFixed(2)}
+                                        {item.total_qty.toFixed(2)}
                                         <span className="text-stone-400 ml-0.5">{item.format === 'roll' ? 'kg' : 'm'}</span>
                                       </td>
-                                      <td className="px-4 py-2 text-right text-stone-600">₹{parseFloat(item.avg_rate).toFixed(2)}</td>
+                                      <td className="px-4 py-2 text-right text-stone-600">₹{item.avg_rate.toFixed(2)}</td>
                                       <td className="px-4 py-2 text-right font-medium text-stone-900">
-                                        ₹{parseFloat(item.total_value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                        ₹{item.total_value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                                       </td>
                                     </tr>
                                   ))}
