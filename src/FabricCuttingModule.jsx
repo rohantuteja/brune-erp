@@ -1462,7 +1462,7 @@ function RecordCuttingModal({ context, existingRun, inventory, getFabricType, on
 
   const updatePiece = (idx, field, value) => {
     const u = [...piecesAdded];
-    u[idx][field] = field === 'qty' ? parseInt(value) || 0 : value;
+    u[idx][field] = field === 'qty' ? Math.max(0, parseInt(value) || 0) : value;
     setPiecesAdded(u);
   };
 
@@ -1616,6 +1616,7 @@ function RecordCuttingModal({ context, existingRun, inventory, getFabricType, on
                   <input
                     type="number"
                     inputMode="numeric"
+                    min="0"
                     value={p.qty || ''}
                     onChange={e => updatePiece(i, 'qty', e.target.value)}
                     placeholder="0"
@@ -1736,7 +1737,7 @@ function EditCutEntryModal({ run, entry, inventory, getFabricType, onClose, onSa
 
   const updatePiece = (idx, field, value) => {
     const u = [...piecesAdded];
-    u[idx][field] = field === 'qty' ? parseInt(value) || 0 : value;
+    u[idx][field] = field === 'qty' ? Math.max(0, parseInt(value) || 0) : value;
     setPiecesAdded(u);
   };
 
@@ -1885,6 +1886,7 @@ function EditCutEntryModal({ run, entry, inventory, getFabricType, onClose, onSa
                   <input
                     type="number"
                     inputMode="numeric"
+                    min="0"
                     value={p.qty || ''}
                     onChange={e => updatePiece(i, 'qty', e.target.value)}
                     placeholder="0"
