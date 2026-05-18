@@ -2,11 +2,12 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
-import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck } from 'lucide-react';
+import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
 import { supabase } from './lib/supabase';
 import UserManagementPage from './pages/UserManagementPage';
+import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 
 const PAGE_TO_PATH = {
   home: '/',
@@ -399,6 +400,7 @@ export default function FabricCuttingModule() {
                 activePage === 'cuttings' ? 'Cuttings' :
                 activePage === 'costing' ? 'Costing' :
                 activePage === 'production' ? 'Production' :
+                activePage === 'shopify' ? 'Shopify Inventory' :
                 activePage === 'payments' ? 'Payments' :
                 activePage === 'analytics' ? 'Analytics' :
                 activePage === 'users' ? 'User Management' : 'Master Data'
@@ -549,6 +551,14 @@ export default function FabricCuttingModule() {
             onDeleteBatch={deleteProductionBatch}
             onEditCompletedDate={editBatchCompletedDate}
             onEditBatch={editProductionBatch}
+          />
+        )}
+
+        {activePage === 'shopify' && isAdmin && (
+          <ShopifyInventoryPage
+            runs={runs}
+            productionBatches={productionBatches}
+            showToast={showToast}
           />
         )}
 
@@ -2569,13 +2579,18 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
     { id: 'inventory', label: 'Inventory', icon: <Boxes className="w-5 h-5" />, sub: 'Fabric rolls & thans', permKey: 'can_view_inventory' },
     { id: 'cuttings', label: 'Cuttings', icon: <Scissors className="w-5 h-5" />, sub: 'Style runs & stock', permKey: 'can_view_cuttings' },
     { id: 'production', label: 'Production', icon: <Users className="w-5 h-5" />, sub: 'Karigar-level tracking', permKey: 'can_view_production' },
+    { id: 'shopify', label: 'Shopify Inventory', icon: <ShoppingBag className="w-5 h-5" />, sub: 'Live stock from your store', adminOnly: true },
     { id: 'payments', label: 'Payments', icon: <Wallet className="w-5 h-5" />, sub: 'Karigar piece-rate payouts', permKey: 'can_view_payments' },
     { id: 'costing', label: 'Costing', icon: <Calculator className="w-5 h-5" />, sub: 'Cost per piece per style', permKey: 'can_view_costing' },
     { id: 'analytics', label: 'Analytics', icon: <BarChart2 className="w-5 h-5" />, sub: 'Insights & reports', permKey: 'can_view_analytics' },
     { id: 'masters', label: 'Master Data', icon: <Database className="w-5 h-5" />, sub: 'Fabric, suppliers, styles', permKey: 'can_view_masters' },
   ];
 
-  const navItems = allNavItems.filter(item => !item.permKey || can(item.permKey));
+  const navItems = allNavItems.filter(item => {
+    if (item.adminOnly && !isAdmin) return false;
+    if (item.permKey && !can(item.permKey)) return false;
+    return true;
+  });
   const showUsers = can('can_manage_users');
 
   return (
