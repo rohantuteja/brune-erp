@@ -69,8 +69,7 @@ export default function FabricCuttingModule() {
   const [prodView, setProdView] = useState('batches');
   const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
-  // Dashboard alert thresholds
-  const [thresholdCuttingsLeft, setThresholdCuttingsLeft] = useState(20);
+  // Dashboard alert thresholds — loaded from DB via useAppData
 
   const [expandedRunId, setExpandedRunId] = useState(null);
   const [cuttingsView, setCuttingsView] = useState('list');
@@ -97,6 +96,7 @@ export default function FabricCuttingModule() {
     saveCutting, updateCutEntry, deleteCutEntry,
     createProductionBatch, completeBatch, deleteProductionBatch,
     editBatchCompletedDate, editProductionBatch,
+    alertSettings, saveAlertSettings,
   } = useAppData({ showToast });
 
 
@@ -431,8 +431,8 @@ export default function FabricCuttingModule() {
             productionBatches={productionBatches}
             costings={costings}
             getCostingTotal={getCostingTotal}
-            thresholdCuttingsLeft={thresholdCuttingsLeft}
-            setThresholdCuttingsLeft={setThresholdCuttingsLeft}
+            alertSettings={alertSettings}
+            saveAlertSettings={saveAlertSettings}
             onNavigate={setActivePage}
             setCuttingsView={setCuttingsView}
             setInvFabricFilter={setInvFabricFilter}
@@ -2664,12 +2664,19 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
   );
 }
 
-function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, thresholdCuttingsLeft, setThresholdCuttingsLeft, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection }) {
+function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection }) {
   const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsVal, setSettingsVal] = useState(String(thresholdCuttingsLeft));
+  const [settingsForm, setSettingsForm] = useState(null); // null = not yet initialised
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  // Initialise form when panel opens or alertSettings changes
+  const effectiveForm = settingsForm ?? {
+    cuttings_left: String(alertSettings.cuttings_left),
+    rolls_threshold: String(alertSettings.rolls_threshold),
+    thans_threshold_m: String(alertSettings.thans_threshold_m),
+  };
 
   // ── ALERTS ────────────────────────────────────────────────────────
   const alerts = useMemo(() => {
@@ -2740,7 +2747,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       // Find fabric type ID for filter
       const ft = fabricTypes.find(f => f.name === d.name);
       const fabricTypeId = ft?.id || 'all';
-      if (d.format === 'roll' && d.fullRolls <= 2) {
+      if (d.format === 'roll' && d.fullRolls <= alertSettings.rolls_threshold) {
         list.push({
           level: d.fullRolls === 0 ? 'red' : 'amber',
           text: `${d.name} · ${d.color}: only ${d.fullRolls} full roll${d.fullRolls !== 1 ? 's' : ''} left — used by ${styleList}`,
@@ -2748,7 +2755,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
           filters: { fabricTypeId, color: d.color },
         });
       }
-      if (d.format === 'than' && d.totalM < 50) {
+      if (d.format === 'than' && d.totalM < alertSettings.thans_threshold_m) {
         list.push({
           level: 'amber',
           text: `${d.name} · ${d.color}: ${d.totalM.toFixed(1)}m left — used by ${styleList}`,
@@ -2780,7 +2787,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
           text: `${r.style_code}: 0 cuttings left — all issued, awaiting production completion`,
           page: 'cuttings',
         });
-      } else if (leftToIssue <= thresholdCuttingsLeft) {
+      } else if (leftToIssue <= alertSettings.cuttings_left) {
         // Low but not zero
         list.push({
           level: 'amber',
@@ -2813,7 +2820,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
     }
 
     return list;
-  }, [inventory, fabricTypes, runs, productionBatches, thresholdCuttingsLeft]);
+  }, [inventory, fabricTypes, runs, productionBatches, alertSettings]);
 
   // ── KEY NUMBERS ───────────────────────────────────────────────────
   const keyNumbers = useMemo(() => {
@@ -3050,40 +3057,69 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
           <ChevronDown className={`w-4 h-4 transition-transform ${showSettings ? 'rotate-180' : ''}`} />
         </button>
         {showSettings && (
-          <div className="px-3 sm:px-4 pb-4 border-t border-stone-100 pt-3 space-y-4">
+          <div className="px-3 sm:px-4 pb-4 border-t border-stone-100 pt-3 space-y-5">
+
+            {/* Cuttings left */}
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Low cuttings left threshold</div>
               <div className="text-xs text-stone-400 mb-2">Alert when a style has this many or fewer pieces left to issue</div>
               <div className="flex items-center gap-2">
                 <input
-                  type="number"
-                  inputMode="numeric"
-                  min="1"
-                  max="500"
-                  value={settingsVal}
-                  onChange={e => setSettingsVal(e.target.value)}
+                  type="number" inputMode="numeric" min="1" max="500"
+                  value={effectiveForm.cuttings_left}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), cuttings_left: e.target.value }))}
                   className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
                 />
                 <span className="text-sm text-stone-500">pieces</span>
-                <button
-                  onClick={() => {
-                    const v = parseInt(settingsVal);
-                    if (!isNaN(v) && v > 0) setThresholdCuttingsLeft(v);
-                  }}
-                  className="px-3 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 min-h-[40px]"
-                >
-                  Save
-                </button>
               </div>
-              <div className="text-xs text-stone-400 mt-1.5">Currently: alert when ≤ <span className="font-medium text-stone-600">{thresholdCuttingsLeft}</span> pieces left</div>
             </div>
+
+            {/* Rolls */}
             <div>
-              <div className="text-xs font-medium text-stone-700 mb-1">Fabric type low stock thresholds</div>
-              <div className="text-xs text-stone-400 leading-relaxed">
-                Rolls: alert when ≤ <span className="font-medium text-stone-600">2 full rolls</span> remaining for a fabric type<br />
-                Thans: alert when &lt; <span className="font-medium text-stone-600">50m</span> total remaining for a fabric type
+              <div className="text-xs font-medium text-stone-700 mb-1">Fabric type — rolls threshold</div>
+              <div className="text-xs text-stone-400 mb-2">Alert when a fabric type has this many or fewer full rolls remaining</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="1" max="50"
+                  value={effectiveForm.rolls_threshold}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), rolls_threshold: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">full rolls</span>
               </div>
             </div>
+
+            {/* Thans */}
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Fabric type — thans threshold</div>
+              <div className="text-xs text-stone-400 mb-2">Alert when a fabric type has less than this total metres remaining</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="1" max="5000"
+                  value={effectiveForm.thans_threshold_m}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), thans_threshold_m: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">metres</span>
+              </div>
+            </div>
+
+            <button
+              disabled={settingsSaving}
+              onClick={async () => {
+                const cl  = parseInt(effectiveForm.cuttings_left);
+                const rt  = parseInt(effectiveForm.rolls_threshold);
+                const ttm = parseInt(effectiveForm.thans_threshold_m);
+                if (isNaN(cl) || cl < 1 || isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
+                setSettingsSaving(true);
+                await saveAlertSettings({ cuttings_left: cl, rolls_threshold: rt, thans_threshold_m: ttm });
+                setSettingsForm(null);
+                setSettingsSaving(false);
+              }}
+              className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 min-h-[40px]"
+            >
+              {settingsSaving ? 'Saving…' : 'Save Settings'}
+            </button>
           </div>
         )}
       </div>

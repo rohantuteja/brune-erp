@@ -94,6 +94,13 @@ export function useAppData({ showToast }) {
   const [productionBatches, setProductionBatches] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // ── Alert settings ──────────────────────────────────────────────────────────
+  const [alertSettings, setAlertSettings] = useState({
+    cuttings_left: 20,
+    rolls_threshold: 2,
+    thans_threshold_m: 50,
+  });
+
   // ── Fetch ───────────────────────────────────────────────────────────────────
 
   const fetchAll = async () => {
@@ -110,6 +117,7 @@ export function useAppData({ showToast }) {
         { data: invData },
         { data: runsData },
         { data: pbData },
+        { data: settingsData },
       ] = await Promise.all([
         supabase.from('fabric_types')
           .select('*, fabric_type_supplier_rates(*)')
@@ -127,6 +135,7 @@ export function useAppData({ showToast }) {
           .select('*, run_pieces(*), run_entries(*, run_entry_usage(*), run_entry_pieces_added(*))')
           .order('id'),
         supabase.from('production_batches').select('*').order('id'),
+        supabase.from('app_settings').select('*'),
       ]);
 
       setFabricTypes((ftData || []).map(transformFabricType));
@@ -139,6 +148,14 @@ export function useAppData({ showToast }) {
       setInventory(invData || []);
       setRuns((runsData || []).map(transformRun));
       setProductionBatches(pbData || []);
+      if (settingsData?.length) {
+        const s = Object.fromEntries(settingsData.map(r => [r.key, r.value]));
+        setAlertSettings({
+          cuttings_left:    s['alert_cuttings_left_threshold'] ?? 20,
+          rolls_threshold:  s['alert_rolls_threshold'] ?? 2,
+          thans_threshold_m: s['alert_thans_threshold_m'] ?? 50,
+        });
+      }
     } catch (err) {
       console.error('[useAppData] fetchAll error:', err);
       showToast('Could not load data from database');
@@ -1181,6 +1198,9 @@ export function useAppData({ showToast }) {
     showToast('Cut entry deleted');
   };
 
+  const saveAlertSettings = (values) =>
+    saveAlertSettingsImpl(supabase, values, setAlertSettings, showToast);
+
   // ── Public API ──────────────────────────────────────────────────────────────
   return {
     // State
@@ -1207,5 +1227,20 @@ export function useAppData({ showToast }) {
     addInventory, updateInventory, deleteInventory,
     // Runs
     saveCutting, updateCutEntry, deleteCutEntry,
+    // Alert settings
+    alertSettings, saveAlertSettings,
   };
+}
+
+async function saveAlertSettingsImpl(supabase, values, setAlertSettings, showToast) {
+  const rows = [
+    { key: 'alert_cuttings_left_threshold', value: values.cuttings_left },
+    { key: 'alert_rolls_threshold',         value: values.rolls_threshold },
+    { key: 'alert_thans_threshold_m',       value: values.thans_threshold_m },
+  ];
+  const { error } = await supabase.from('app_settings').upsert(rows, { onConflict: 'key' });
+  if (error) { showToast('Failed to save settings'); return false; }
+  setAlertSettings(values);
+  showToast('Settings saved');
+  return true;
 }
