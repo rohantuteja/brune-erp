@@ -358,30 +358,50 @@ export function useAppData({ showToast }) {
   };
 
   /**
-   * Apply a fabric delta map: updates React state AND writes to Supabase.
+   * Apply a fabric delta map: writes to Supabase then updates React state.
    * A positive delta means more fabric consumed (current stock decreases).
+   *
+   * Fetches fresh DB values before computing to avoid stale-closure bugs
+   * and React StrictMode double-invocation of state updaters.
    */
   const applyInventoryDelta = async (deltaMap) => {
-    const dbUpdates = [];
-    setInventory(prev => prev.map(i => {
-      if (!deltaMap.has(i.id)) return i;
+    if (!deltaMap || deltaMap.size === 0) return;
+
+    // Fetch current values directly from DB — avoids any stale React state
+    const ids = [...deltaMap.keys()];
+    const { data: freshItems, error: fetchErr } = await supabase
+      .from('inventory')
+      .select('id, format, current_weight_kg, current_length_m, status')
+      .in('id', ids);
+    if (fetchErr || !freshItems?.length) return;
+
+    // Compute new values
+    const updates = [];
+    for (const i of freshItems) {
       const delta = deltaMap.get(i.id);
-      if (delta === 0) return i;
+      if (!delta || delta === 0) continue;
       const isRoll = i.format === 'roll';
       const current = isRoll ? i.current_weight_kg : i.current_length_m;
       const newCurrent = parseFloat((current - delta).toFixed(3));
       const newStatus = newCurrent <= (isRoll ? 0.05 : 0.1) ? 'finished' : 'available';
-      if (isRoll) {
-        dbUpdates.push({ id: i.id, current_weight_kg: newCurrent, status: newStatus });
-        return { ...i, current_weight_kg: newCurrent, status: newStatus };
-      } else {
-        dbUpdates.push({ id: i.id, current_length_m: newCurrent, status: newStatus });
-        return { ...i, current_length_m: newCurrent, status: newStatus };
-      }
-    }));
-    for (const { id, ...fields } of dbUpdates) {
+      updates.push(isRoll
+        ? { id: i.id, current_weight_kg: newCurrent, status: newStatus }
+        : { id: i.id, current_length_m: newCurrent, status: newStatus }
+      );
+    }
+
+    if (updates.length === 0) return;
+
+    // Write to DB first (pure side-effect, no React state dependency)
+    for (const { id, ...fields } of updates) {
       await supabase.from('inventory').update(fields).eq('id', id);
     }
+
+    // Then update React state with the same computed values (pure updater)
+    setInventory(prev => prev.map(i => {
+      const u = updates.find(x => x.id === i.id);
+      return u ? { ...i, ...u } : i;
+    }));
   };
 
   // ── Fabric types ────────────────────────────────────────────────────────────
