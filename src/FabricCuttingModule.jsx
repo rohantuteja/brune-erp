@@ -1105,20 +1105,26 @@ function RunsListView({
                   </div>
                 </div>
 
-                <div className="bg-stone-50 rounded p-3">
-                  <div className="text-xs uppercase tracking-wide text-stone-500 mb-2">Size breakdown (cut)</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {r.pieces.map((p, i) => {
-                      const isEmpty = p.quantity === 0;
-                      return (
-                        <div key={i} className={`border rounded px-2 py-1 text-sm ${isEmpty ? 'bg-stone-50 border-stone-200 text-stone-400' : 'bg-white border-stone-200'}`}>
-                          <span className="font-medium">{p.size}</span><span className="text-stone-400 mx-1">·</span>
-                          <span className={isEmpty ? 'text-stone-400' : 'text-stone-700'}>{p.quantity}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                {(() => {
+                  const issuedBySize = getIssuedBySizeMap(r.style_code, r.id);
+                  return (
+                    <div className="bg-stone-50 rounded p-3">
+                      <div className="text-xs uppercase tracking-wide text-stone-500 mb-2">Size breakdown (available)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {r.pieces.map((p, i) => {
+                          const available = Math.max(0, p.quantity - (issuedBySize[p.size] || 0));
+                          const isEmpty = available === 0;
+                          return (
+                            <div key={i} className={`border rounded px-2 py-1 text-sm ${isEmpty ? 'bg-stone-50 border-stone-200 text-stone-400' : 'bg-white border-stone-200'}`}>
+                              <span className="font-medium">{p.size}</span><span className="text-stone-400 mx-1">·</span>
+                              <span className={isEmpty ? 'text-stone-400' : 'text-stone-700'}>{available}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="mt-3 flex justify-between items-center flex-wrap gap-2">
                   <button onClick={() => setExpandedRunId(isExpanded ? null : r.id)} className="text-xs text-stone-600 hover:text-stone-900 flex items-center gap-1 py-1.5">
