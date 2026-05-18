@@ -478,6 +478,7 @@ export default function FabricCuttingModule() {
                 onAddCutting={() => setShowStylePicker(true)}
                 onIssue={(r) => setIssuingForRun(r)}
                 getIssuedQty={getIssuedQty}
+                getIssuedBySizeMap={getIssuedBySizeMap}
                 expandedRunId={expandedRunId} setExpandedRunId={setExpandedRunId}
                 getInventory={getInventory}
                 onEditEntry={(runId, entryId) => setEditingEntry({ runId, entryId })}
@@ -1017,7 +1018,7 @@ function ConfirmDialog({ title, message, confirmLabel, danger, onConfirm, onCanc
 function RunsListView({
   runs, allRuns, stats, runStatusFilter, setRunStatusFilter,
   searchTerm, setSearchTerm, dateRange, setDateRange, sortBy, setSortBy,
-  onAddCutting, onIssue, getIssuedQty, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry
+  onAddCutting, onIssue, getIssuedQty, getIssuedBySizeMap, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry
 }) {
   const { can } = usePermissions();
   const canEditCuttings = can('can_edit_cuttings');
