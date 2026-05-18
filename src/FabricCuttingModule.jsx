@@ -15,6 +15,7 @@ const PAGE_TO_PATH = {
   cuttings: '/cuttings',
   costing: '/costing',
   production: '/production',
+  shopify: '/shopify',
   payments: '/payments',
   analytics: '/analytics',
   masters: '/masters',
