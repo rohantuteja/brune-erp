@@ -2107,6 +2107,7 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     quantity: source ? (source.format === 'roll' ? source.initial_weight_kg : source.initial_length_m) : '',
     received_date: existing?.received_date || localToday(),
     notes: existing?.notes || '',
+    inventory_number_override: '',  // empty = use auto-generated
   });
 
   const selectedFabric = fabricTypes.find(f => f.id === parseInt(form.fabric_type_id));
@@ -2164,10 +2165,12 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     if (!form.color) newErrors.color = 'Color is required';
     if (!form.width_cm) newErrors.width = 'Width is required';
     if (!form.quantity) newErrors.quantity = 'Quantity is required';
+    if (!isEdit && isDuplicateNumber) newErrors.inventory_number = `${previewNumber} already exists. Please use a different number.`;
     if (Object.keys(newErrors).length > 0) { setErrors(newErrors); return; }
     setSaving(true);
     try {
-      await onSave({ ...form, format, rate: derivedRate });
+      const inventoryNumber = isEdit ? existing.inventory_number : previewNumber;
+      await onSave({ ...form, format, rate: derivedRate, inventory_number: inventoryNumber });
       onClose();
     } finally { setSaving(false); }
   };
@@ -2178,7 +2181,12 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     const match = i.inventory_number?.match(/(\d+)$/);
     return match ? Math.max(max, parseInt(match[1])) : max;
   }, 0);
-  const previewNumber = isEdit ? existing.inventory_number : (selectedFabric ? `${isRoll ? 'ROLL' : 'THAN'}-${String(maxNum + 1).padStart(4, '0')}` : '—');
+  const autoNumber = selectedFabric ? `${isRoll ? 'ROLL' : 'THAN'}-${String(maxNum + 1).padStart(4, '0')}` : '';
+  const previewNumber = isEdit ? existing.inventory_number : (form.inventory_number_override.trim() || autoNumber || '—');
+
+  // Check duplicate against all existing inventory numbers (excluding self on edit)
+  const isDuplicateNumber = !isEdit && previewNumber !== '—' &&
+    inventory.some(i => i.inventory_number?.toLowerCase() === previewNumber.toLowerCase() && i.id !== existing?.id);
 
   return (
     <Modal
@@ -2251,8 +2259,29 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
         </Field>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label={isEdit ? 'Number' : 'Number (auto)'}>
-            <input value={previewNumber} readOnly className="form-input bg-stone-50 font-mono" />
+          <Field label={isEdit ? 'Number' : 'Number'}>
+            {isEdit ? (
+              <input value={previewNumber} readOnly className="form-input bg-stone-50 font-mono" />
+            ) : (
+              <>
+                <input
+                  value={form.inventory_number_override || autoNumber}
+                  onChange={e => {
+                    const val = e.target.value.toUpperCase().replace(/\s/g, '');
+                    setForm(f => ({ ...f, inventory_number_override: val === autoNumber ? '' : val }));
+                    setErrors(er => ({ ...er, inventory_number: null }));
+                  }}
+                  className={`form-input font-mono ${isDuplicateNumber || errors.inventory_number ? 'border-red-400' : ''}`}
+                  placeholder={autoNumber}
+                  spellCheck={false}
+                />
+                {isDuplicateNumber || errors.inventory_number ? (
+                  <div className="text-xs text-red-600 mt-1">{errors.inventory_number || `${previewNumber} already exists`}</div>
+                ) : (
+                  <div className="text-[10px] text-stone-400 mt-1">Auto-assigned · tap to edit</div>
+                )}
+              </>
+            )}
           </Field>
           <Field label="Received Date" required>
             <input type="date" value={form.received_date} onChange={e => setForm({ ...form, received_date: e.target.value })} className="form-input" />

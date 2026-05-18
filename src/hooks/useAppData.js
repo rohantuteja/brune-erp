@@ -819,8 +819,9 @@ export function useAppData({ showToast }) {
         return match ? Math.max(max, parseInt(match[1])) : max;
       }, 0);
     const qty = parseFloat(data.quantity);
+    const autoNumber = `${prefix}-${String(maxNum + 1).padStart(4, '0')}`;
     const payload = {
-      inventory_number:  `${prefix}-${String(maxNum + 1).padStart(4, '0')}`,
+      inventory_number:  data.inventory_number || autoNumber,
       format:            data.format,
       fabric_type_id:    parseInt(data.fabric_type_id),
       color:             data.color,
