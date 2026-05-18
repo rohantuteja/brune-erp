@@ -30,7 +30,21 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
     setLoading(false);
   };
 
-  useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => {
+    fetchProducts();
+
+    // Realtime: update UI + timestamp instantly when cron sync writes changes
+    const channel = supabase
+      .channel('shopify_inventory_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'shopify_inventory' },
+        () => { fetchProducts(); }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   const syncNow = async () => {
     if (syncing) return;
