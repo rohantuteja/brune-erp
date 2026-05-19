@@ -2858,9 +2858,8 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
 
       // Evaluate each size independently
       r.pieces.forEach(p => {
-        if (!p.quantity || p.quantity === 0) return;
         const issued = issuedBySize[p.size] || 0;
-        const leftToIssue = Math.max(0, p.quantity - issued);
+        const leftToIssue = Math.max(0, (p.quantity || 0) - issued);
 
         if (leftToIssue === 0) {
           list.push({
