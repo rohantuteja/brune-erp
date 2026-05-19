@@ -5232,6 +5232,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [expandedShopifySnapshotId, setExpandedShopifySnapshotId] = useState(null);
   const [deletingShopifySnapshotId, setDeletingShopifySnapshotId] = useState(null);
   const [confirmDeleteShopifySnapshotId, setConfirmDeleteShopifySnapshotId] = useState(null);
+  const [shopifyCostedExpanded, setShopifyCostedExpanded] = useState(false);
   const [shopifyUncostedExpanded, setShopifyUncostedExpanded] = useState(false);
   const [shopifyNegativeExpanded, setShopifyNegativeExpanded] = useState(false);
 
@@ -6652,38 +6653,48 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 </div>
               )}
 
-              {/* Per-style table */}
+              {/* Per-style table — Costed */}
               <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-                <div className="p-3 sm:p-4 border-b border-stone-200">
-                  <div className="text-sm font-medium text-stone-900">By Style — Costed</div>
-                  <div className="text-xs text-stone-500 mt-0.5">Sorted by stock value, highest first</div>
-                </div>
-                {shopifyStockStats.costed.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-stone-400">No costed styles with stock.</div>
-                ) : (
-                  <div className="divide-y divide-stone-100">
-                    {shopifyStockStats.costed.map((row) => {
-                      const pct = shopifyStockStats.totalValue > 0
-                        ? Math.round(row.styleValue / shopifyStockStats.totalValue * 100) : 0;
-                      return (
-                        <div key={row.style_code} className="p-3 sm:p-4">
-                          <div className="flex items-start justify-between gap-3 mb-1.5">
-                            <div className="min-w-0">
-                              <span className="font-mono text-sm font-medium text-stone-900">{row.style_code}</span>
-                              <span className="text-xs text-stone-400 ml-2">{row.qty} pcs × ₹{row.fabricCostPerPc.toFixed(2)}</span>
-                            </div>
-                            <span className="text-sm font-semibold text-stone-900 shrink-0">
-                              ₹{row.styleValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                            </span>
-                          </div>
-                          <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
-                            <div className="h-full bg-stone-700 rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                          <div className="text-[11px] text-stone-400">{pct}% of total</div>
-                        </div>
-                      );
-                    })}
+                <button
+                  onClick={() => setShopifyCostedExpanded(v => !v)}
+                  className="w-full flex items-center justify-between p-3 sm:p-4 hover:bg-stone-50 transition-colors"
+                >
+                  <div className="text-left">
+                    <div className="text-sm font-medium text-stone-900">By Style — Costed</div>
+                    <div className="text-xs text-stone-500 mt-0.5">{shopifyStockStats.costed.length} styles · sorted by stock value, highest first</div>
                   </div>
+                  {shopifyCostedExpanded
+                    ? <ChevronUp className="w-4 h-4 text-stone-400 shrink-0" />
+                    : <ChevronDown className="w-4 h-4 text-stone-400 shrink-0" />}
+                </button>
+                {shopifyCostedExpanded && (
+                  shopifyStockStats.costed.length === 0 ? (
+                    <div className="border-t border-stone-100 p-8 text-center text-sm text-stone-400">No costed styles with stock.</div>
+                  ) : (
+                    <div className="border-t border-stone-100 divide-y divide-stone-100">
+                      {shopifyStockStats.costed.map((row) => {
+                        const pct = shopifyStockStats.totalValue > 0
+                          ? Math.round(row.styleValue / shopifyStockStats.totalValue * 100) : 0;
+                        return (
+                          <div key={row.style_code} className="p-3 sm:p-4">
+                            <div className="flex items-start justify-between gap-3 mb-1.5">
+                              <div className="min-w-0">
+                                <span className="font-mono text-sm font-medium text-stone-900">{row.style_code}</span>
+                                <span className="text-xs text-stone-400 ml-2">{row.qty} pcs × ₹{row.fabricCostPerPc.toFixed(2)}</span>
+                              </div>
+                              <span className="text-sm font-semibold text-stone-900 shrink-0">
+                                ₹{row.styleValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
+                              <div className="h-full bg-stone-700 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <div className="text-[11px] text-stone-400">{pct}% of total</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
                 )}
               </div>
 
