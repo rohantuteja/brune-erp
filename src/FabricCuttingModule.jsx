@@ -30,6 +30,26 @@ export default function FabricCuttingModule() {
   const setActivePage = (page) => navigate(PAGE_TO_PATH[page] ?? '/');
   const { signOut, user } = useAuth();
   const { can, profile, isAdmin } = usePermissions();
+
+  // Redirect to home if the user navigates directly to a URL they lack permission for
+  const PAGE_PERM = {
+    inventory: 'can_view_inventory',
+    cuttings:  'can_view_cuttings',
+    production:'can_view_production',
+    payments:  'can_view_payments',
+    costing:   'can_view_costing',
+    analytics: 'can_view_analytics',
+    masters:   'can_view_masters',
+    users:     'can_manage_users',
+    shopify:   null, // handled separately via isAdmin below
+  };
+  useEffect(() => {
+    if (!profile) return; // permissions not loaded yet
+    const perm = PAGE_PERM[activePage];
+    if (perm && !can(perm)) { navigate('/', { replace: true }); return; }
+    if (activePage === 'shopify' && !isAdmin) { navigate('/', { replace: true }); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePage, profile]);
   const [navOpen, setNavOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editingStockId, setEditingStockId] = useState(null);
