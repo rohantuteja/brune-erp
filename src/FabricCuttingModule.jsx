@@ -596,6 +596,8 @@ export default function FabricCuttingModule() {
             activeSection={analyticsSection}
             setActiveSection={setAnalyticsSection}
             showToast={showToast}
+            alertSettings={alertSettings}
+            saveAlertSettings={saveAlertSettings}
           />
         )}
 
@@ -2714,9 +2716,11 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const [settingsSaving, setSettingsSaving] = useState(false);
   // Initialise form when panel opens or alertSettings changes
   const effectiveForm = settingsForm ?? {
-    cuttings_left: String(alertSettings.cuttings_left),
-    rolls_threshold: String(alertSettings.rolls_threshold),
-    thans_threshold_m: String(alertSettings.thans_threshold_m),
+    cuttings_left:          String(alertSettings.cuttings_left),
+    rolls_threshold:        String(alertSettings.rolls_threshold),
+    thans_threshold_m:      String(alertSettings.thans_threshold_m),
+    pipeline_critical_days: String(alertSettings.pipeline_critical_days ?? 6),
+    pipeline_watch_days:    String(alertSettings.pipeline_watch_days ?? 12),
   };
 
   // ── ALERTS ────────────────────────────────────────────────────────
@@ -3148,15 +3152,48 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               </div>
             </div>
 
+            {/* Pipeline Health — critical */}
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — critical threshold</div>
+              <div className="text-xs text-stone-400 mb-2">Mark a size as 🔴 Critical when days of stock drops below this</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="1" max="365"
+                  value={effectiveForm.pipeline_critical_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), pipeline_critical_days: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">days</span>
+              </div>
+            </div>
+
+            {/* Pipeline Health — watch */}
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — watch threshold</div>
+              <div className="text-xs text-stone-400 mb-2">Mark a size as 🟡 Watch when days of stock drops below this</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="1" max="365"
+                  value={effectiveForm.pipeline_watch_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), pipeline_watch_days: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">days</span>
+              </div>
+            </div>
+
             <button
               disabled={settingsSaving}
               onClick={async () => {
                 const cl  = parseInt(effectiveForm.cuttings_left);
                 const rt  = parseInt(effectiveForm.rolls_threshold);
                 const ttm = parseInt(effectiveForm.thans_threshold_m);
+                const pcd = parseInt(effectiveForm.pipeline_critical_days);
+                const pwd = parseInt(effectiveForm.pipeline_watch_days);
                 if (isNaN(cl) || cl < 1 || isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
+                if (isNaN(pcd) || pcd < 1 || isNaN(pwd) || pwd < 1) return;
                 setSettingsSaving(true);
-                await saveAlertSettings({ cuttings_left: cl, rolls_threshold: rt, thans_threshold_m: ttm });
+                await saveAlertSettings({ cuttings_left: cl, rolls_threshold: rt, thans_threshold_m: ttm, pipeline_critical_days: pcd, pipeline_watch_days: pwd });
                 setSettingsForm(null);
                 setSettingsSaving(false);
               }}
@@ -5305,7 +5342,7 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 }
 
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
-function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast }) {
+function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
   const { isAdmin, can } = usePermissions();
   const [snapshotDate, setSnapshotDate] = useState(localToday());
 
@@ -7049,9 +7086,19 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
           {/* Summary + refresh */}
           {!pipelineHealthLoading && pipelineHealthData.length > 0 && (() => {
-            const critical = pipelineHealthData.filter(r => r.alert_level === 'critical').length;
-            const warning  = pipelineHealthData.filter(r => r.alert_level === 'warning').length;
-            const watch    = pipelineHealthData.filter(r => r.alert_level === 'watch').length;
+            const critDaysSummary = alertSettings.pipeline_critical_days ?? 6;
+            const watchDaysSummary = alertSettings.pipeline_watch_days ?? 12;
+            const computeAlertSummary = (r) => {
+              const dos = r.days_of_stock; const vel = parseFloat(r.daily_velocity) || 0;
+              if (vel === 0 || dos == null) return 'ok';
+              if (dos < critDaysSummary && r.cuttings_available === 0) return 'critical';
+              if (dos < critDaysSummary && r.cuttings_available > 0) return 'warning';
+              if (dos <= watchDaysSummary) return 'watch';
+              return 'ok';
+            };
+            const critical = pipelineHealthData.filter(r => computeAlertSummary(r) === 'critical').length;
+            const warning  = pipelineHealthData.filter(r => computeAlertSummary(r) === 'warning').length;
+            const watch    = pipelineHealthData.filter(r => computeAlertSummary(r) === 'watch').length;
             return (
               <div className="flex items-center gap-3 flex-wrap">
                 {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
@@ -7120,8 +7167,24 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               <div className="text-xs text-stone-400 mt-1">Sync Shopify inventory to populate pipeline health data.</div>
             </div>
           ) : (() => {
+            const critDays = alertSettings.pipeline_critical_days ?? 6;
+            const watchDays = alertSettings.pipeline_watch_days ?? 12;
+
+            // Recompute alert_level using current threshold settings
+            const computeAlert = (r) => {
+              const dos = r.days_of_stock;
+              const vel = parseFloat(r.daily_velocity) || 0;
+              if (vel === 0 || dos == null) return 'ok';
+              if (dos < critDays && r.cuttings_available === 0) return 'critical';
+              if (dos < critDays && r.cuttings_available > 0) return 'warning';
+              if (dos <= watchDays) return 'watch';
+              return 'ok';
+            };
+
+            const enriched = pipelineHealthData.map(r => ({ ...r, alert_level: computeAlert(r) }));
+
             const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
-            const filtered = pipelineHealthData
+            const filtered = enriched
               .filter(r => {
                 if (pipelineActiveRunsOnly && !r.has_active_run) return false;
                 if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
@@ -7136,7 +7199,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 return aDos - bDos;
               });
 
-            const allOk = pipelineHealthData.every(r => r.alert_level === 'ok');
+            const allOk = enriched.every(r => r.alert_level === 'ok');
             if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthSearch) {
               return (
                 <div className="bg-white rounded-lg border border-emerald-200 p-8 text-center">
@@ -7188,7 +7251,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             </td>
                             <td className="px-4 py-3 text-right">
                               {row.days_of_stock != null
-                                ? <span className={row.days_of_stock < 6 ? 'text-red-600 font-semibold' : row.days_of_stock <= 12 ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
+                                ? <span className={row.days_of_stock < critDays ? 'text-red-600 font-semibold' : row.days_of_stock <= watchDays ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
                                     {parseFloat(row.days_of_stock).toFixed(1)}d
                                   </span>
                                 : <span className="text-stone-300 text-xs">No data</span>
