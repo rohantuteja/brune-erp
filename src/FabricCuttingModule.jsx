@@ -3143,7 +3143,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             {/* Cuttings left */}
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Low cuttings left threshold</div>
-              <div className="text-xs text-stone-400 mb-2">Alert when a style has this many or fewer pieces left to issue</div>
+              <div className="text-xs text-stone-400 mb-2">Alert when a size within an active run has this many or fewer pieces left to issue</div>
               <div className="flex items-center gap-2">
                 <input
                   type="number" inputMode="numeric" min="1" max="500"
