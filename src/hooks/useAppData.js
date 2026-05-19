@@ -750,12 +750,13 @@ export function useAppData({ showToast }) {
     }
 
     const payload = {
-      style_code:     trimmedCode,
-      cutting_cost:   parseFloat(data.cutting_cost)   || 0,
-      stitching_cost: parseFloat(data.stitching_cost) || 0,
-      trims_cost:     parseFloat(data.trims_cost)     || 0,
-      finishing_cost: parseFloat(data.finishing_cost) || 0,
-      updated_date:   localToday(),
+      style_code:           trimmedCode,
+      cutting_cost:         parseFloat(data.cutting_cost)   || 0,
+      stitching_cost:       parseFloat(data.stitching_cost) || 0,
+      trims_cost:           parseFloat(data.trims_cost)     || 0,
+      finishing_cost:       parseFloat(data.finishing_cost) || 0,
+      fabric_cost_override: data.fabric_cost_override ?? null,
+      updated_date:         localToday(),
     };
     const existingCosting = costings.find(c => c.style_code === trimmedCode);
 
@@ -785,6 +786,7 @@ export function useAppData({ showToast }) {
         ...c, ...payload,
         fabric_lines: data.fabric_lines || [],
         custom_lines: data.custom_lines || [],
+        fabric_cost_override: data.fabric_cost_override ?? null,
       } : c));
       showToast('Costing updated');
     } else {
@@ -813,6 +815,7 @@ export function useAppData({ showToast }) {
         ...newC,
         fabric_lines: data.fabric_lines || [],
         custom_lines: data.custom_lines || [],
+        fabric_cost_override: data.fabric_cost_override ?? null,
       }]);
       showToast('Costing added');
     }
