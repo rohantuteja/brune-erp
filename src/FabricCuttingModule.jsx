@@ -1137,18 +1137,8 @@ function RunsListView({
                         {r.pieces.map((p, i) => {
                           const available = Math.max(0, p.quantity - (issuedBySize[p.size] || 0));
                           const isEmpty = available === 0;
-                          const pAlert = pipelineHealthAlerts?.find(a =>
-                            a.run_id === r.id && a.size === p.size
-                          );
-                          const dotColor = pAlert?.alert_level === 'critical' ? 'bg-red-500'
-                            : pAlert?.alert_level === 'warning' ? 'bg-orange-500'
-                            : pAlert?.alert_level === 'watch' ? 'bg-yellow-400'
-                            : null;
                           return (
-                            <div key={i} className={`relative border rounded px-2 py-1 text-sm ${isEmpty ? 'bg-stone-50 border-stone-200 text-stone-400' : 'bg-white border-stone-200'}`}>
-                              {dotColor && (
-                                <span className={`absolute -top-1 -right-1 w-2 h-2 rounded-full ${dotColor} ring-1 ring-white`} />
-                              )}
+                            <div key={i} className={`border rounded px-2 py-1 text-sm ${isEmpty ? 'bg-stone-50 border-stone-200 text-stone-400' : 'bg-white border-stone-200'}`}>
                               <span className="font-medium">{p.size}</span><span className="text-stone-400 mx-1">·</span>
                               <span className={isEmpty ? 'text-stone-400' : 'text-stone-700'}>{available}</span>
                             </div>
