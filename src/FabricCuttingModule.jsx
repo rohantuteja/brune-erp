@@ -5593,8 +5593,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
   // ── SECTION 1: Inventory Value ──────────────────────────────────────
   const invStats = useMemo(() => {
-    // Filter to items received on or before snapshot date
-    const snap = inventory.filter(i => !i.received_date || i.received_date <= snapshotDate);
+    // Filter to items received on or before snapshot date that still have remaining stock
+    // (excludes finished/used-up items regardless of their status field)
+    const snap = inventory.filter(i => {
+      if (i.received_date && i.received_date > snapshotDate) return false;
+      const remaining = parseFloat(i.format === 'roll' ? i.current_weight_kg : i.current_length_m) || 0;
+      return remaining > 0;
+    });
     const rolls = snap.filter(i => i.format === 'roll');
     const thans = snap.filter(i => i.format === 'than');
 
@@ -6074,7 +6079,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   const isExpanded = expandedSnapshotId === snap.id;
                   const rawItems = snap.inventory_snapshot_items || [];
                   const items = groupSnapshotItems(rawItems);
-                  const totalItems = (snap.total_rolls || 0) + (snap.total_thans || 0);
+                  const totalItems = (snap.total_active_rolls || 0) + (snap.total_active_thans || 0);
                   const isCurrentMonth = snap.month === currentMonthStr();
                   const isConfirmDelete = confirmDeleteSnapshotId === snap.id;
 
