@@ -2728,9 +2728,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
     return pipelineRawData
       .filter(r => {
         if (!r.has_active_run) return false;
-        const level = computeAlert(r);
-        // Show all non-ok sizes, plus any active-run size with 0 cuttings available
-        return level !== 'ok' || r.cuttings_available === 0;
+        return computeAlert(r) !== 'ok';
       })
       .map(r => ({ ...r, alert_level: computeAlert(r) }));
   }, [pipelineRawData, alertSettings]);
