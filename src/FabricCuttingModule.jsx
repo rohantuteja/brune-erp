@@ -2975,7 +2975,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             {cuttingAlerts.length > 0 && (
               <AlertGroup label="Low Cuttings" alerts={cuttingAlerts} onAlertTap={handleAlertTap} />
             )}
-            {pipelineAlerts.length > 0 && can('can_view_analytics') && (
+            {pipelineAlerts.length > 0 && can('can_view_stock_alerts') && (
               <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setAnalyticsSection={setAnalyticsSection} />
             )}
             {otherAlerts.map((a, i) => (
@@ -3117,7 +3117,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       )}
 
       {/* ── ALERT SETTINGS ── */}
-      <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+      {can('can_edit_alert_settings') && <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
         <button
           onClick={() => setShowSettings(s => !s)}
           className="w-full flex items-center justify-between px-3 sm:px-4 py-3 text-sm text-stone-600 hover:bg-stone-50"
@@ -3224,7 +3224,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             </button>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

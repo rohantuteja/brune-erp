@@ -21,6 +21,8 @@ const PERM_GROUPS = [
   {
     label: 'Dashboard', perms: [
       { key: 'can_view_dashboard', label: 'View Dashboard' },
+      { key: 'can_view_stock_alerts', label: 'View Stock Pipeline Alerts' },
+      { key: 'can_edit_alert_settings', label: 'Edit Alert Settings' },
     ],
   },
   {
