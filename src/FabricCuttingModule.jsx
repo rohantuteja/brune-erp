@@ -4190,7 +4190,8 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
       if (!l.fabric_type_id) { alert('Each fabric line needs a fabric type'); return; }
       if (!l.avg_meters || parseFloat(l.avg_meters) <= 0) { alert('Each fabric line needs avg meters > 0'); return; }
     }
-    if (validLines.length === 0) { alert('Add at least one fabric line'); return; }
+    // Fabric lines are only required when not using a manual override
+    if (!fabricOverride && validLines.length === 0) { alert('Add at least one fabric line'); return; }
 
     const cleanCustomLines = customLines
       .filter(l => l.label.trim() || l.amount)
