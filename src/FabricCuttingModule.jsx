@@ -5335,6 +5335,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
   const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
   const [pipelineHealthSearch, setPipelineHealthSearch] = useState('');
+  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(false);
 
   const currentMonthStr = () => {
     const now = new Date();
@@ -7043,7 +7044,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {activeSection === 'pipeline_health' && (
         <div className="space-y-3">
           <div className="text-xs text-stone-500 px-0.5">
-            Size-level pipeline status for all active cutting runs. Combines Shopify stock, sales velocity, and cutting availability.
+            Size-level pipeline status for all non-zero Shopify stock items. Combines Shopify stock, sales velocity, and cutting availability.
           </div>
 
           {/* Summary + refresh */}
@@ -7097,6 +7098,16 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
                 </button>
               ))}
+              <button
+                onClick={() => setPipelineActiveRunsOnly(v => !v)}
+                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
+                  pipelineActiveRunsOnly
+                    ? 'bg-stone-900 text-white border-stone-900'
+                    : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
+                }`}
+              >
+                Active runs only
+              </button>
             </div>
           )}
 
@@ -7105,13 +7116,14 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="bg-white rounded-lg border border-stone-200 p-12 text-center text-sm text-stone-400">Loading pipeline data…</div>
           ) : pipelineHealthData.length === 0 ? (
             <div className="bg-white rounded-lg border border-stone-200 p-12 text-center">
-              <div className="text-sm text-stone-500">No active cutting runs found.</div>
-              <div className="text-xs text-stone-400 mt-1">Pipeline health requires active runs with cut pieces.</div>
+              <div className="text-sm text-stone-500">No pipeline data found.</div>
+              <div className="text-xs text-stone-400 mt-1">Sync Shopify inventory to populate pipeline health data.</div>
             </div>
           ) : (() => {
             const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
             const filtered = pipelineHealthData
               .filter(r => {
+                if (pipelineActiveRunsOnly && !r.has_active_run) return false;
                 if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
                 if (pipelineHealthSearch && !r.style_code.toLowerCase().includes(pipelineHealthSearch.toLowerCase())) return false;
                 return true;
@@ -7166,6 +7178,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                           <tr key={i} className="hover:bg-stone-50 transition-colors">
                             <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
                               {row.style_code} <span className="text-stone-400">·</span> {row.size}
+                              {row.has_active_run && (
+                                <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded-full font-medium not-font-mono">Run</span>
+                              )}
                             </td>
                             <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
                             <td className="px-4 py-3 text-right text-stone-500 text-xs">
@@ -7193,7 +7208,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   </table>
                 </div>
                 <div className="px-4 py-2 border-t border-stone-100 text-xs text-stone-400">
-                  Showing {filtered.length} of {pipelineHealthData.length} size-run combinations
+                  Showing {filtered.length} of {pipelineActiveRunsOnly ? pipelineHealthData.filter(r => r.has_active_run).length : pipelineHealthData.length} size combinations
+                  {pipelineActiveRunsOnly && ` (active runs only)`}
                 </div>
               </div>
             );
