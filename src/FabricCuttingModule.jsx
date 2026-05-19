@@ -5330,6 +5330,27 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     finally { setTakingShopifySnapshot(false); }
   };
 
+  const downloadShopifySnapshotCSV = (snap) => {
+    const rows = Array.isArray(snap.style_breakdown) ? snap.style_breakdown : [];
+    if (rows.length === 0) { showToast('No costed styles in this snapshot', 'info'); return; }
+    const header = ['Style Code', 'Title', 'Pcs', 'Fabric Cost/pc (₹)', 'Total Value (₹)'];
+    const dataRows = rows.map(r => [
+      r.style_code || '',
+      r.title || '',
+      r.total_pcs,
+      parseFloat(r.fabric_cost_per_pc || 0).toFixed(2),
+      parseFloat(r.total_value || 0).toFixed(2),
+    ]);
+    const csv = [header, ...dataRows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `shopify-stock-snapshot-${snap.month}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const deleteShopifySnapshot = async (snapId) => {
     try {
       const { error } = await supabase.from('shopify_stock_snapshots').delete().eq('id', snapId);
@@ -6803,6 +6824,14 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                               </div>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
+                              <span
+                                role="button"
+                                onClick={e => { e.stopPropagation(); downloadShopifySnapshotCSV(snap); }}
+                                className="p-1.5 rounded hover:bg-stone-100 text-stone-400 hover:text-stone-600 transition-colors"
+                                title="Download CSV"
+                              >
+                                <Download className="w-4 h-4" />
+                              </span>
                               {isAdmin && (
                                 <span
                                   role="button"
