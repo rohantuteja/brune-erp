@@ -2940,7 +2940,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
     <div className="space-y-4">
 
       {/* ── ALERTS ── */}
-      {(() => {
+      {can('can_view_alerts') && (() => {
         const inventoryAlerts = alerts.filter(a => a.page === 'inventory');
         const cuttingAlerts = alerts.filter(a => a.page === 'cuttings');
         const otherAlerts = alerts.filter(a => a.page !== 'inventory' && a.page !== 'cuttings');
@@ -2975,7 +2975,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             {cuttingAlerts.length > 0 && (
               <AlertGroup label="Low Cuttings" alerts={cuttingAlerts} onAlertTap={handleAlertTap} />
             )}
-            {pipelineAlerts.length > 0 && can('can_view_stock_alerts') && (
+            {pipelineAlerts.length > 0 && (
               <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setAnalyticsSection={setAnalyticsSection} />
             )}
             {otherAlerts.map((a, i) => (

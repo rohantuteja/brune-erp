@@ -15,7 +15,7 @@ export const ROLE_PRESETS = {
     can_view_analytics: true,
     can_view_masters: true, can_edit_masters: true, can_delete_masters: true,
     can_manage_users: true,
-    can_view_stock_alerts: true, can_edit_alert_settings: true,
+    can_view_alerts: true, can_edit_alert_settings: true,
   },
   production_incharge: {
     can_view_dashboard: true,
@@ -27,7 +27,7 @@ export const ROLE_PRESETS = {
     can_view_analytics: false,
     can_view_masters: false, can_edit_masters: false, can_delete_masters: false,
     can_manage_users: false,
-    can_view_stock_alerts: true, can_edit_alert_settings: false,
+    can_view_alerts: true, can_edit_alert_settings: false,
   },
   floor_supervisor: {
     can_view_dashboard: true,
@@ -39,7 +39,7 @@ export const ROLE_PRESETS = {
     can_view_analytics: false,
     can_view_masters: false, can_edit_masters: false, can_delete_masters: false,
     can_manage_users: false,
-    can_view_stock_alerts: false, can_edit_alert_settings: false,
+    can_view_alerts: false, can_edit_alert_settings: false,
   },
   manager: {
     can_view_dashboard: true,
@@ -51,7 +51,7 @@ export const ROLE_PRESETS = {
     can_view_analytics: true,
     can_view_masters: false, can_edit_masters: false, can_delete_masters: false,
     can_manage_users: false,
-    can_view_stock_alerts: true, can_edit_alert_settings: false,
+    can_view_alerts: true, can_edit_alert_settings: false,
   },
 };
 
