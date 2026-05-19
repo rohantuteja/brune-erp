@@ -67,6 +67,7 @@ function transformCosting(c) {
     stitching_cost: c.stitching_cost,
     trims_cost: c.trims_cost,
     finishing_cost: c.finishing_cost,
+    fabric_cost_override: c.fabric_cost_override != null ? parseFloat(c.fabric_cost_override) : null,
     updated_date: c.updated_date,
     fabric_lines: (c.costing_fabric_lines || []).map(l => ({
       fabric_type_id: l.fabric_type_id,
