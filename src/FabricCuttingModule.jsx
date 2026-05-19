@@ -7099,27 +7099,45 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         </div>
       )}
 
-      {activeSection === 'pipeline_health' && (
+      {activeSection === 'pipeline_health' && (() => {
+        // ── Compute enriched + filtered once so badges and table share the same data ──
+        const critDays = alertSettings.pipeline_critical_days ?? 6;
+        const watchDays = alertSettings.pipeline_watch_days ?? 12;
+        const computeAlert = (r) => {
+          const dos = r.days_of_stock;
+          const vel = parseFloat(r.daily_velocity) || 0;
+          if (vel === 0 || dos == null) return 'ok';
+          if (dos < critDays && r.cuttings_available === 0) return 'critical';
+          if (dos < critDays && r.cuttings_available > 0) return 'warning';
+          if (dos <= watchDays) return 'watch';
+          return 'ok';
+        };
+        const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
+        const enriched = pipelineHealthData.map(r => ({ ...r, alert_level: computeAlert(r) }));
+        const filtered = enriched
+          .filter(r => {
+            if (pipelineActiveRunsOnly && !r.has_active_run) return false;
+            if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
+            if (pipelineHealthSearch && !r.style_code.toLowerCase().includes(pipelineHealthSearch.toLowerCase())) return false;
+            return true;
+          })
+          .sort((a, b) => {
+            const lvlDiff = (ALERT_ORDER[a.alert_level] ?? 3) - (ALERT_ORDER[b.alert_level] ?? 3);
+            if (lvlDiff !== 0) return lvlDiff;
+            return (a.days_of_stock ?? 9999) - (b.days_of_stock ?? 9999);
+          });
+
+        return (
         <div className="space-y-3">
           <div className="text-xs text-stone-500 px-0.5">
             Size-level pipeline status for all non-zero Shopify stock items. Combines Shopify stock, sales velocity, and cutting availability.
           </div>
 
-          {/* Summary + refresh */}
+          {/* Summary + refresh — counts reflect current filters */}
           {!pipelineHealthLoading && pipelineHealthData.length > 0 && (() => {
-            const critDaysSummary = alertSettings.pipeline_critical_days ?? 6;
-            const watchDaysSummary = alertSettings.pipeline_watch_days ?? 12;
-            const computeAlertSummary = (r) => {
-              const dos = r.days_of_stock; const vel = parseFloat(r.daily_velocity) || 0;
-              if (vel === 0 || dos == null) return 'ok';
-              if (dos < critDaysSummary && r.cuttings_available === 0) return 'critical';
-              if (dos < critDaysSummary && r.cuttings_available > 0) return 'warning';
-              if (dos <= watchDaysSummary) return 'watch';
-              return 'ok';
-            };
-            const critical = pipelineHealthData.filter(r => computeAlertSummary(r) === 'critical').length;
-            const warning  = pipelineHealthData.filter(r => computeAlertSummary(r) === 'warning').length;
-            const watch    = pipelineHealthData.filter(r => computeAlertSummary(r) === 'watch').length;
+            const critical = filtered.filter(r => r.alert_level === 'critical').length;
+            const warning  = filtered.filter(r => r.alert_level === 'warning').length;
+            const watch    = filtered.filter(r => r.alert_level === 'watch').length;
             return (
               <div className="flex items-center gap-3 flex-wrap">
                 {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
@@ -7188,38 +7206,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               <div className="text-xs text-stone-400 mt-1">Sync Shopify inventory to populate pipeline health data.</div>
             </div>
           ) : (() => {
-            const critDays = alertSettings.pipeline_critical_days ?? 6;
-            const watchDays = alertSettings.pipeline_watch_days ?? 12;
-
-            // Recompute alert_level using current threshold settings
-            const computeAlert = (r) => {
-              const dos = r.days_of_stock;
-              const vel = parseFloat(r.daily_velocity) || 0;
-              if (vel === 0 || dos == null) return 'ok';
-              if (dos < critDays && r.cuttings_available === 0) return 'critical';
-              if (dos < critDays && r.cuttings_available > 0) return 'warning';
-              if (dos <= watchDays) return 'watch';
-              return 'ok';
-            };
-
-            const enriched = pipelineHealthData.map(r => ({ ...r, alert_level: computeAlert(r) }));
-
-            const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
-            const filtered = enriched
-              .filter(r => {
-                if (pipelineActiveRunsOnly && !r.has_active_run) return false;
-                if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
-                if (pipelineHealthSearch && !r.style_code.toLowerCase().includes(pipelineHealthSearch.toLowerCase())) return false;
-                return true;
-              })
-              .sort((a, b) => {
-                const lvlDiff = (ALERT_ORDER[a.alert_level] ?? 3) - (ALERT_ORDER[b.alert_level] ?? 3);
-                if (lvlDiff !== 0) return lvlDiff;
-                const aDos = a.days_of_stock ?? 9999;
-                const bDos = b.days_of_stock ?? 9999;
-                return aDos - bDos;
-              });
-
             const allOk = enriched.every(r => r.alert_level === 'ok');
             if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthSearch) {
               return (
@@ -7299,7 +7285,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             );
           })()}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
