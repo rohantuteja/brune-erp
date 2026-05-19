@@ -102,6 +102,7 @@ export function useAppData({ showToast }) {
     thans_threshold_m: 50,
     pipeline_critical_days: 6,
     pipeline_watch_days: 12,
+    overdue_batch_days: 14,
   });
 
   // ── Fetch ───────────────────────────────────────────────────────────────────
@@ -159,6 +160,7 @@ export function useAppData({ showToast }) {
           thans_threshold_m:      s['alert_thans_threshold_m'] ?? 50,
           pipeline_critical_days: Number(s['pipeline_critical_days'] ?? 6),
           pipeline_watch_days:    Number(s['pipeline_watch_days'] ?? 12),
+          overdue_batch_days:     Number(s['overdue_batch_days'] ?? 14),
         });
       }
     } catch (err) {
@@ -1247,6 +1249,7 @@ async function saveAlertSettingsImpl(supabase, values, setAlertSettings, showToa
     { key: 'alert_thans_threshold_m',       value: values.thans_threshold_m },
     { key: 'pipeline_critical_days',        value: values.pipeline_critical_days },
     { key: 'pipeline_watch_days',           value: values.pipeline_watch_days },
+    { key: 'overdue_batch_days',            value: values.overdue_batch_days },
   ];
   const { error } = await supabase.from('app_settings').upsert(rows, { onConflict: 'key' });
   if (error) { showToast('Failed to save settings'); return false; }

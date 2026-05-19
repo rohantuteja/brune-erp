@@ -2751,6 +2751,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
     thans_threshold_m:      String(alertSettings.thans_threshold_m),
     pipeline_critical_days: String(alertSettings.pipeline_critical_days ?? 6),
     pipeline_watch_days:    String(alertSettings.pipeline_watch_days ?? 12),
+    overdue_batch_days:     String(alertSettings.overdue_batch_days ?? 14),
   };
 
   // ── ALERTS ────────────────────────────────────────────────────────
@@ -2877,10 +2878,10 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       });
     });
 
-    // Alert 3 — Overdue batches (open ≥14 days)
+    // Alert 3 — Overdue batches
     productionBatches.filter(b => b.status === 'issued').forEach(b => {
       const days = Math.round((new Date() - new Date(b.issued_date + 'T00:00:00')) / (1000 * 60 * 60 * 24));
-      if (days >= 14) {
+      if (days >= alertSettings.overdue_batch_days) {
         list.push({
           level: 'red',
           text: `${b.style_code} batch issued to ${(b.karigar_names || []).join(', ')} is ${days} days open — overdue`,
@@ -3207,6 +3208,21 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               </div>
             </div>
 
+            {/* Overdue batch */}
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Overdue production batch threshold</div>
+              <div className="text-xs text-stone-400 mb-2">Alert when a batch has been open (issued but not completed) for this many days or more</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="1" max="365"
+                  value={effectiveForm.overdue_batch_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), overdue_batch_days: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">days</span>
+              </div>
+            </div>
+
             <button
               disabled={settingsSaving}
               onClick={async () => {
@@ -3215,10 +3231,11 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 const ttm = parseInt(effectiveForm.thans_threshold_m);
                 const pcd = parseInt(effectiveForm.pipeline_critical_days);
                 const pwd = parseInt(effectiveForm.pipeline_watch_days);
+                const obd = parseInt(effectiveForm.overdue_batch_days);
                 if (isNaN(cl) || cl < 1 || isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
-                if (isNaN(pcd) || pcd < 1 || isNaN(pwd) || pwd < 1) return;
+                if (isNaN(pcd) || pcd < 1 || isNaN(pwd) || pwd < 1 || isNaN(obd) || obd < 1) return;
                 setSettingsSaving(true);
-                await saveAlertSettings({ cuttings_left: cl, rolls_threshold: rt, thans_threshold_m: ttm, pipeline_critical_days: pcd, pipeline_watch_days: pwd });
+                await saveAlertSettings({ cuttings_left: cl, rolls_threshold: rt, thans_threshold_m: ttm, pipeline_critical_days: pcd, pipeline_watch_days: pwd, overdue_batch_days: obd });
                 setSettingsForm(null);
                 setSettingsSaving(false);
               }}
