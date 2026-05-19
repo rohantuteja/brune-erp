@@ -5233,6 +5233,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [deletingShopifySnapshotId, setDeletingShopifySnapshotId] = useState(null);
   const [confirmDeleteShopifySnapshotId, setConfirmDeleteShopifySnapshotId] = useState(null);
   const [shopifyUncostedExpanded, setShopifyUncostedExpanded] = useState(false);
+  const [shopifyNegativeExpanded, setShopifyNegativeExpanded] = useState(false);
 
   const currentMonthStr = () => {
     const now = new Date();
@@ -6622,24 +6623,32 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 </div>
               )}
               {shopifyStockStats.negativeStyles.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800 space-y-2">
-                  <div>
-                    <span className="font-semibold">{shopifyStockStats.negativeStyles.length} {shopifyStockStats.negativeStyles.length === 1 ? 'style has' : 'styles have'} negative size stock</span> in Shopify — each negative size is treated as 0 for valuation. Fix overselling in Shopify.
-                  </div>
-                  <div className="space-y-1.5">
-                    {shopifyStockStats.negativeStyles.map(ns => (
-                      <div key={ns.style_code} className="flex items-start gap-2 flex-wrap">
-                        <span className="font-medium shrink-0">{ns.title}{ns.style_code ? ` (${ns.style_code})` : ''}:</span>
-                        <div className="flex flex-wrap gap-1">
-                          {ns.sizes.map(s => (
-                            <span key={s.size} className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-mono font-semibold">
-                              {s.size}: {s.qty}
-                            </span>
-                          ))}
+                <div className="bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 overflow-hidden">
+                  <button
+                    onClick={() => setShopifyNegativeExpanded(v => !v)}
+                    className="w-full flex items-center justify-between gap-2 p-3 text-left hover:bg-red-100/50 transition-colors"
+                  >
+                    <span>
+                      <span className="font-semibold">{shopifyStockStats.negativeStyles.length} {shopifyStockStats.negativeStyles.length === 1 ? 'style has' : 'styles have'} negative size stock</span> in Shopify — each negative size is treated as 0 for valuation. Fix overselling in Shopify.
+                    </span>
+                    <span className="shrink-0 font-medium">{shopifyNegativeExpanded ? '▲ Hide' : '▼ Show'}</span>
+                  </button>
+                  {shopifyNegativeExpanded && (
+                    <div className="border-t border-red-200 px-3 pb-3 pt-2 space-y-1.5">
+                      {shopifyStockStats.negativeStyles.map(ns => (
+                        <div key={ns.style_code} className="flex items-start gap-2 flex-wrap">
+                          <span className="font-medium shrink-0">{ns.title}{ns.style_code ? ` (${ns.style_code})` : ''}:</span>
+                          <div className="flex flex-wrap gap-1">
+                            {ns.sizes.map(s => (
+                              <span key={s.size} className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-mono font-semibold">
+                                {s.size}: {s.qty}
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
