@@ -5409,7 +5409,11 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const fetchPipelineHealth = async () => {
     setPipelineHealthLoading(true);
     const { data, error } = await supabase.rpc('pipeline_health');
-    if (!error) setPipelineHealthData(data || []);
+    if (error) {
+      showToast(`Pipeline Health error: ${error.message}`, 'error');
+    } else {
+      setPipelineHealthData(data || []);
+    }
     setPipelineHealthLoading(false);
   };
 
