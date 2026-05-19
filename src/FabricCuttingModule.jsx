@@ -2810,36 +2810,47 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       }
     });
 
-    // Alert 2 — Style low cuttings left (pieces cut but not yet issued)
+    // Alert 2 — Low cuttings left per style per size
     runs.forEach(r => {
       const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
       if (totalCut === 0) return;
-      const totalIssued = productionBatches
-        .filter(b => b.run_id === r.id)
-        .reduce((s, b) => s + (b.total_issued || 0), 0);
-      const totalCompleted = productionBatches
-        .filter(b => b.run_id === r.id && b.status === 'completed')
-        .reduce((s, b) => s + (b.completed_qty || 0), 0);
-      const leftToIssue = Math.max(0, totalCut - totalIssued);
+
+      const runBatches = productionBatches.filter(b => b.run_id === r.id);
 
       // Run is still alive (not all completed in production)
+      const totalCompleted = runBatches
+        .filter(b => b.status === 'completed')
+        .reduce((s, b) => s + (b.completed_qty || 0), 0);
       if (totalCompleted >= totalCut) return;
 
-      if (leftToIssue === 0) {
-        // All issued but stitching still in progress — no cuttings left to issue
-        list.push({
-          level: 'red',
-          text: `${r.style_code}: 0 cuttings left — all issued, awaiting production completion`,
-          page: 'cuttings',
+      // Build per-size issued totals from issued_sizes JSONB on each batch
+      const issuedBySize = {};
+      runBatches.forEach(b => {
+        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
         });
-      } else if (leftToIssue <= alertSettings.cuttings_left) {
-        // Low but not zero
-        list.push({
-          level: 'amber',
-          text: `${r.style_code}: only ${leftToIssue} piece${leftToIssue !== 1 ? 's' : ''} left to issue — cut more soon`,
-          page: 'cuttings',
-        });
-      }
+      });
+
+      // Evaluate each size independently
+      r.pieces.forEach(p => {
+        if (!p.quantity || p.quantity === 0) return;
+        const issued = issuedBySize[p.size] || 0;
+        const leftToIssue = Math.max(0, p.quantity - issued);
+
+        if (leftToIssue === 0) {
+          list.push({
+            level: 'red',
+            text: `${r.style_code} · ${p.size}: 0 cuttings left — all issued, awaiting production`,
+            page: 'cuttings',
+          });
+        } else if (leftToIssue <= alertSettings.cuttings_left) {
+          list.push({
+            level: 'amber',
+            text: `${r.style_code} · ${p.size}: only ${leftToIssue} piece${leftToIssue !== 1 ? 's' : ''} left to issue — cut more soon`,
+            page: 'cuttings',
+          });
+        }
+      });
     });
 
     // Alert 3 — Overdue batches (open ≥14 days)
