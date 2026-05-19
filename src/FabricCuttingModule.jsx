@@ -2706,12 +2706,34 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
-  const [pipelineAlerts, setPipelineAlerts] = useState([]);
+  const [pipelineRawData, setPipelineRawData] = useState([]);
   useEffect(() => {
     supabase.rpc('pipeline_health').then(({ data }) => {
-      setPipelineAlerts((data || []).filter(r => r.alert_level !== 'ok'));
+      setPipelineRawData(data || []);
     });
   }, []);
+
+  const pipelineAlerts = useMemo(() => {
+    const critDays = alertSettings.pipeline_critical_days ?? 6;
+    const watchDays = alertSettings.pipeline_watch_days ?? 12;
+    const computeAlert = (r) => {
+      const dos = r.days_of_stock;
+      const vel = parseFloat(r.daily_velocity) || 0;
+      if (vel === 0 || dos == null) return 'ok';
+      if (dos < critDays && r.cuttings_available === 0) return 'critical';
+      if (dos < critDays && r.cuttings_available > 0) return 'warning';
+      if (dos <= watchDays) return 'watch';
+      return 'ok';
+    };
+    return pipelineRawData
+      .filter(r => {
+        if (!r.has_active_run) return false;
+        const level = computeAlert(r);
+        // Show all non-ok sizes, plus any active-run size with 0 cuttings available
+        return level !== 'ok' || r.cuttings_available === 0;
+      })
+      .map(r => ({ ...r, alert_level: computeAlert(r) }));
+  }, [pipelineRawData, alertSettings]);
   const [settingsForm, setSettingsForm] = useState(null); // null = not yet initialised
   const [settingsSaving, setSettingsSaving] = useState(false);
   // Initialise form when panel opens or alertSettings changes
