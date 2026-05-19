@@ -5316,7 +5316,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-          body: JSON.stringify({ force: false }),
+          body: JSON.stringify({ force: true }),
         }
       );
       const json = await res.json();
