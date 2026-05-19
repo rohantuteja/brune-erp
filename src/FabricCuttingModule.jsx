@@ -71,6 +71,12 @@ export default function FabricCuttingModule() {
   const [prodView, setProdView] = useState('batches');
   const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
+  const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState([]);
+  useEffect(() => {
+    supabase.rpc('pipeline_health').then(({ data }) => {
+      setPipelineHealthAlerts((data || []).filter(r => r.alert_level !== 'ok'));
+    });
+  }, []);
   // Dashboard alert thresholds — loaded from DB via useAppData
 
   const [expandedRunId, setExpandedRunId] = useState(null);
@@ -486,7 +492,8 @@ export default function FabricCuttingModule() {
                 expandedRunId={expandedRunId} setExpandedRunId={setExpandedRunId}
                 getInventory={getInventory}
                 onEditEntry={(runId, entryId) => setEditingEntry({ runId, entryId })}
-                onDeleteEntry={(runId, entryId) => setConfirmDeleteEntry({ runId, entryId })} />
+                onDeleteEntry={(runId, entryId) => setConfirmDeleteEntry({ runId, entryId })}
+                pipelineHealthAlerts={pipelineHealthAlerts} />
             )}
 
             {cuttingsView === 'by_style' && (
@@ -1030,7 +1037,8 @@ function ConfirmDialog({ title, message, confirmLabel, danger, onConfirm, onCanc
 function RunsListView({
   runs, allRuns, stats, runStatusFilter, setRunStatusFilter,
   searchTerm, setSearchTerm, dateRange, setDateRange, sortBy, setSortBy,
-  onAddCutting, onIssue, getIssuedQty, getIssuedBySizeMap, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry
+  onAddCutting, onIssue, getIssuedQty, getIssuedBySizeMap, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry,
+  pipelineHealthAlerts
 }) {
   const { can } = usePermissions();
   const canEditCuttings = can('can_edit_cuttings');
@@ -1127,8 +1135,18 @@ function RunsListView({
                         {r.pieces.map((p, i) => {
                           const available = Math.max(0, p.quantity - (issuedBySize[p.size] || 0));
                           const isEmpty = available === 0;
+                          const pAlert = pipelineHealthAlerts?.find(a =>
+                            a.run_id === r.id && a.size === p.size
+                          );
+                          const dotColor = pAlert?.alert_level === 'critical' ? 'bg-red-500'
+                            : pAlert?.alert_level === 'warning' ? 'bg-orange-500'
+                            : pAlert?.alert_level === 'watch' ? 'bg-yellow-400'
+                            : null;
                           return (
-                            <div key={i} className={`border rounded px-2 py-1 text-sm ${isEmpty ? 'bg-stone-50 border-stone-200 text-stone-400' : 'bg-white border-stone-200'}`}>
+                            <div key={i} className={`relative border rounded px-2 py-1 text-sm ${isEmpty ? 'bg-stone-50 border-stone-200 text-stone-400' : 'bg-white border-stone-200'}`}>
+                              {dotColor && (
+                                <span className={`absolute -top-1 -right-1 w-2 h-2 rounded-full ${dotColor} ring-1 ring-white`} />
+                              )}
                               <span className="font-medium">{p.size}</span><span className="text-stone-400 mx-1">·</span>
                               <span className={isEmpty ? 'text-stone-400' : 'text-stone-700'}>{available}</span>
                             </div>
@@ -2686,6 +2704,12 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
+  const [pipelineAlerts, setPipelineAlerts] = useState([]);
+  useEffect(() => {
+    supabase.rpc('pipeline_health').then(({ data }) => {
+      setPipelineAlerts((data || []).filter(r => r.alert_level !== 'ok'));
+    });
+  }, []);
   const [settingsForm, setSettingsForm] = useState(null); // null = not yet initialised
   const [settingsSaving, setSettingsSaving] = useState(false);
   // Initialise form when panel opens or alertSettings changes
@@ -2895,7 +2919,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
         const inventoryAlerts = alerts.filter(a => a.page === 'inventory');
         const cuttingAlerts = alerts.filter(a => a.page === 'cuttings');
         const otherAlerts = alerts.filter(a => a.page !== 'inventory' && a.page !== 'cuttings');
-        const hasAny = alerts.length > 0;
+        const hasAny = alerts.length > 0 || pipelineAlerts.length > 0;
 
         const pagePermMap = {
           inventory: 'can_view_inventory', cuttings: 'can_view_cuttings',
@@ -2925,6 +2949,9 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             )}
             {cuttingAlerts.length > 0 && (
               <AlertGroup label="Low Cuttings" alerts={cuttingAlerts} onAlertTap={handleAlertTap} />
+            )}
+            {pipelineAlerts.length > 0 && can('can_view_analytics') && (
+              <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setAnalyticsSection={setAnalyticsSection} />
             )}
             {otherAlerts.map((a, i) => (
               <button
@@ -3180,6 +3207,73 @@ function AlertGroup({ label, alerts, onAlertTap }) {
               <ArrowRight className="w-3 h-3 flex-shrink-0 mt-0.5 opacity-40" />
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
+  const [open, setOpen] = useState(false);
+  const hasCritical = alerts.some(a => a.alert_level === 'critical');
+  const hasWarning  = alerts.some(a => a.alert_level === 'warning');
+  const headerColor = hasCritical ? 'bg-red-50 border-red-200 text-red-900 hover:bg-red-100'
+    : hasWarning ? 'bg-orange-50 border-orange-200 text-orange-900 hover:bg-orange-100'
+    : 'bg-yellow-50 border-yellow-200 text-yellow-900 hover:bg-yellow-100';
+  const divideColor = hasCritical ? 'divide-red-100 bg-red-50'
+    : hasWarning ? 'divide-orange-100 bg-orange-50'
+    : 'divide-yellow-100 bg-yellow-50';
+  const headerEmoji = hasCritical ? '🔴' : hasWarning ? '🟠' : '🟡';
+  const badgeColor  = hasCritical ? 'bg-red-200 text-red-800'
+    : hasWarning ? 'bg-orange-200 text-orange-800'
+    : 'bg-yellow-200 text-yellow-800';
+
+  const alertMsg = (a) => {
+    const dos = a.days_of_stock != null ? `~${parseFloat(a.days_of_stock).toFixed(0)}d stock` : 'no velocity data';
+    if (a.alert_level === 'critical') return `${a.style_code} · ${a.size}: ${dos}, 0 cuttings — cut fabric now`;
+    if (a.alert_level === 'warning')  return `${a.style_code} · ${a.size}: ${dos}, ${a.cuttings_available} cuttings — issue to production now`;
+    return `${a.style_code} · ${a.size}: ${dos} — plan next cutting run`;
+  };
+
+  const sorted = [...alerts].sort((a, b) => {
+    const o = { critical: 0, warning: 1, watch: 2 };
+    return (o[a.alert_level] ?? 3) - (o[b.alert_level] ?? 3);
+  });
+
+  return (
+    <div className={`rounded-lg border overflow-hidden ${hasCritical ? 'border-red-200' : hasWarning ? 'border-orange-200' : 'border-yellow-200'}`}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-medium transition ${headerColor}`}
+      >
+        <span className="flex-shrink-0">{headerEmoji}</span>
+        <span className="flex-1 text-left">Stock Pipeline</span>
+        <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${badgeColor}`}>{alerts.length}</span>
+        <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className={`divide-y ${divideColor}`}>
+          {sorted.map((a, i) => {
+            const emoji = a.alert_level === 'critical' ? '🔴' : a.alert_level === 'warning' ? '🟠' : '🟡';
+            const rowColor = hasCritical ? 'text-red-800 hover:bg-red-100' : hasWarning ? 'text-orange-800 hover:bg-orange-100' : 'text-yellow-800 hover:bg-yellow-100';
+            return (
+              <button
+                key={i}
+                onClick={() => { setAnalyticsSection('pipeline_health'); onNavigate('analytics'); }}
+                className={`w-full text-left flex items-start gap-2.5 px-3 py-2.5 text-xs transition ${rowColor}`}
+              >
+                <span className="flex-shrink-0 mt-0.5 opacity-70">{emoji}</span>
+                <span className="flex-1 leading-relaxed">{alertMsg(a)}</span>
+                <ArrowRight className="w-3 h-3 flex-shrink-0 mt-0.5 opacity-40" />
+              </button>
+            );
+          })}
+          <button
+            onClick={() => { setAnalyticsSection('pipeline_health'); onNavigate('analytics'); }}
+            className={`w-full text-center px-3 py-2 text-xs font-medium opacity-60 hover:opacity-100 transition ${hasCritical ? 'text-red-700 hover:bg-red-100' : hasWarning ? 'text-orange-700 hover:bg-orange-100' : 'text-yellow-700 hover:bg-yellow-100'}`}
+          >
+            View all in Pipeline Health →
+          </button>
         </div>
       )}
     </div>
@@ -5236,6 +5330,12 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [shopifyUncostedExpanded, setShopifyUncostedExpanded] = useState(false);
   const [shopifyNegativeExpanded, setShopifyNegativeExpanded] = useState(false);
 
+  // ── Pipeline Health state ────────────────────────────────────────────
+  const [pipelineHealthData, setPipelineHealthData] = useState([]);
+  const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
+  const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
+  const [pipelineHealthSearch, setPipelineHealthSearch] = useState('');
+
   const currentMonthStr = () => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -5304,6 +5404,18 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         () => fetchShopifyProducts())
       .subscribe();
     return () => { supabase.removeChannel(channel); };
+  }, [activeSection]);
+
+  const fetchPipelineHealth = async () => {
+    setPipelineHealthLoading(true);
+    const { data, error } = await supabase.rpc('pipeline_health');
+    if (!error) setPipelineHealthData(data || []);
+    setPipelineHealthLoading(false);
+  };
+
+  useEffect(() => {
+    if (activeSection !== 'pipeline_health') return;
+    fetchPipelineHealth();
   }, [activeSection]);
 
   const takeShopifySnapshot = async () => {
@@ -5802,6 +5914,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const sections = [
     { id: 'inventory', label: 'Inventory Value' },
     { id: 'shopify_stock', label: 'Shopify Stock Value' },
+    { id: 'pipeline_health', label: 'Pipeline Health' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
     { id: 'costing', label: 'Costing' },
@@ -6912,6 +7025,167 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {activeSection === 'pipeline_health' && (
+        <div className="space-y-3">
+          <div className="text-xs text-stone-500 px-0.5">
+            Size-level pipeline status for all active cutting runs. Combines Shopify stock, sales velocity, and cutting availability.
+          </div>
+
+          {/* Summary + refresh */}
+          {!pipelineHealthLoading && pipelineHealthData.length > 0 && (() => {
+            const critical = pipelineHealthData.filter(r => r.alert_level === 'critical').length;
+            const warning  = pipelineHealthData.filter(r => r.alert_level === 'warning').length;
+            const watch    = pipelineHealthData.filter(r => r.alert_level === 'watch').length;
+            return (
+              <div className="flex items-center gap-3 flex-wrap">
+                {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
+                {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Warning</span>}
+                {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Watch</span>}
+                {critical === 0 && warning === 0 && watch === 0 && (
+                  <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full">✅ All healthy</span>
+                )}
+                <button onClick={fetchPipelineHealth} className="ml-auto flex items-center gap-1 text-xs text-stone-500 hover:text-stone-800 px-2 py-1 border border-stone-200 rounded-lg hover:bg-stone-50 transition-colors">
+                  <RefreshCw className="w-3 h-3" /> Refresh
+                </button>
+              </div>
+            );
+          })()}
+
+          {/* Filters */}
+          {!pipelineHealthLoading && pipelineHealthData.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative flex-1 min-w-[140px] max-w-xs">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Filter by style…"
+                  value={pipelineHealthSearch}
+                  onChange={e => setPipelineHealthSearch(e.target.value)}
+                  className="w-full pl-8 pr-8 py-2 text-sm border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+                />
+                {pipelineHealthSearch && (
+                  <button onClick={() => setPipelineHealthSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {['all', 'critical', 'warning', 'watch', 'ok'].map(f => (
+                <button
+                  key={f}
+                  onClick={() => setPipelineHealthFilter(f)}
+                  className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors capitalize ${
+                    pipelineHealthFilter === f
+                      ? 'bg-stone-900 text-white border-stone-900'
+                      : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
+                  }`}
+                >
+                  {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Table */}
+          {pipelineHealthLoading ? (
+            <div className="bg-white rounded-lg border border-stone-200 p-12 text-center text-sm text-stone-400">Loading pipeline data…</div>
+          ) : pipelineHealthData.length === 0 ? (
+            <div className="bg-white rounded-lg border border-stone-200 p-12 text-center">
+              <div className="text-sm text-stone-500">No active cutting runs found.</div>
+              <div className="text-xs text-stone-400 mt-1">Pipeline health requires active runs with cut pieces.</div>
+            </div>
+          ) : (() => {
+            const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
+            const filtered = pipelineHealthData
+              .filter(r => {
+                if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
+                if (pipelineHealthSearch && !r.style_code.toLowerCase().includes(pipelineHealthSearch.toLowerCase())) return false;
+                return true;
+              })
+              .sort((a, b) => {
+                const lvlDiff = (ALERT_ORDER[a.alert_level] ?? 3) - (ALERT_ORDER[b.alert_level] ?? 3);
+                if (lvlDiff !== 0) return lvlDiff;
+                const aDos = a.days_of_stock ?? 9999;
+                const bDos = b.days_of_stock ?? 9999;
+                return aDos - bDos;
+              });
+
+            const allOk = pipelineHealthData.every(r => r.alert_level === 'ok');
+            if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthSearch) {
+              return (
+                <div className="bg-white rounded-lg border border-emerald-200 p-8 text-center">
+                  <div className="text-sm font-medium text-emerald-700">✅ All sizes are healthy — no pipeline alerts.</div>
+                </div>
+              );
+            }
+            if (filtered.length === 0) {
+              return <div className="bg-white rounded-lg border border-stone-200 p-8 text-center text-sm text-stone-400">No sizes match your filters.</div>;
+            }
+
+            const alertMeta = {
+              critical: { emoji: '🔴', label: 'Critical', bg: 'bg-red-50',     text: 'text-red-700',    border: 'border-red-200' },
+              warning:  { emoji: '🟠', label: 'Warning',  bg: 'bg-orange-50',  text: 'text-orange-700', border: 'border-orange-200' },
+              watch:    { emoji: '🟡', label: 'Watch',     bg: 'bg-yellow-50',  text: 'text-yellow-700', border: 'border-yellow-200' },
+              ok:       { emoji: '✅', label: 'OK',        bg: 'bg-stone-50',   text: 'text-stone-500',  border: 'border-stone-200' },
+            };
+
+            return (
+              <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[680px]">
+                    <thead>
+                      <tr className="border-b border-stone-100 bg-stone-50 text-xs text-stone-500 uppercase tracking-wide">
+                        <th className="text-left px-4 py-3 font-medium">Style · Size</th>
+                        <th className="text-right px-4 py-3 font-medium">Shopify Stock</th>
+                        <th className="text-right px-4 py-3 font-medium">Velocity/day</th>
+                        <th className="text-right px-4 py-3 font-medium">Days of Stock</th>
+                        <th className="text-right px-4 py-3 font-medium">Available</th>
+                        <th className="text-right px-4 py-3 font-medium">In Production</th>
+                        <th className="text-right px-4 py-3 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-100">
+                      {filtered.map((row, i) => {
+                        const meta = alertMeta[row.alert_level] || alertMeta.ok;
+                        const hasVelocity = parseFloat(row.daily_velocity) > 0;
+                        return (
+                          <tr key={i} className="hover:bg-stone-50 transition-colors">
+                            <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
+                              {row.style_code} <span className="text-stone-400">·</span> {row.size}
+                            </td>
+                            <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
+                            <td className="px-4 py-3 text-right text-stone-500 text-xs">
+                              {hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              {row.days_of_stock != null
+                                ? <span className={row.days_of_stock < 6 ? 'text-red-600 font-semibold' : row.days_of_stock <= 12 ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
+                                    {parseFloat(row.days_of_stock).toFixed(1)}d
+                                  </span>
+                                : <span className="text-stone-300 text-xs">No data</span>
+                              }
+                            </td>
+                            <td className="px-4 py-3 text-right text-stone-700">{row.cuttings_available}</td>
+                            <td className="px-4 py-3 text-right text-stone-500">{row.cuttings_in_production}</td>
+                            <td className="px-4 py-3 text-right">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${meta.bg} ${meta.text} ${meta.border}`}>
+                                {meta.emoji} {meta.label}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-4 py-2 border-t border-stone-100 text-xs text-stone-400">
+                  Showing {filtered.length} of {pipelineHealthData.length} size-run combinations
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
