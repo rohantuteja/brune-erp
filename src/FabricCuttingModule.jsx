@@ -2889,16 +2889,6 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       }
     });
 
-    // Alert 4 — Stock with no rate
-    const noRate = inventory.filter(i => !i.rate || parseFloat(i.rate) === 0);
-    if (noRate.length > 0) {
-      list.push({
-        level: 'amber',
-        text: `${noRate.length} stock item${noRate.length !== 1 ? 's' : ''} ${noRate.length !== 1 ? 'have' : 'has'} no rate set — WIP value will be incomplete`,
-        page: 'inventory',
-      });
-    }
-
     return list;
   }, [inventory, fabricTypes, runs, productionBatches, alertSettings]);
 
