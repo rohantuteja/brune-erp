@@ -5530,17 +5530,20 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         };
       }
       const g = map[key];
-      g.item_count += 1;
-      g.total_qty += parseFloat(item.closing_quantity) || 0;
+      const closingQty = parseFloat(item.closing_quantity) || 0;
+      if (closingQty > 0) g.item_count += 1;   // only count items that had stock at snapshot time
+      g.total_qty += closingQty;
       const rate = parseFloat(item.rate) || 0;
       const val = parseFloat(item.closing_value) || 0;
       g.total_value += val;
-      if (rate > 0) { g._rate_sum += rate; g._rate_count += 1; }
+      if (rate > 0 && closingQty > 0) { g._rate_sum += rate; g._rate_count += 1; }
     }
-    return Object.values(map).map(g => ({
-      ...g,
-      avg_rate: g._rate_count > 0 ? g._rate_sum / g._rate_count : 0,
-    }));
+    return Object.values(map)
+      .filter(g => g.total_qty > 0)   // drop groups where all items were used up at snapshot time
+      .map(g => ({
+        ...g,
+        avg_rate: g._rate_count > 0 ? g._rate_sum / g._rate_count : 0,
+      }));
   };
 
   const downloadSnapshotCSV = (snapshot) => {
