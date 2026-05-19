@@ -2842,16 +2842,11 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
 
     // Alert 2 — Low cuttings left per style per size
     runs.forEach(r => {
-      const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
-      if (totalCut === 0) return;
-
       const runBatches = productionBatches.filter(b => b.run_id === r.id);
 
-      // Run is still alive (not all completed in production)
-      const totalCompleted = runBatches
-        .filter(b => b.status === 'completed')
-        .reduce((s, b) => s + (b.completed_qty || 0), 0);
-      if (totalCompleted >= totalCut) return;
+      // Only alert for active runs: no batches yet, or at least one non-completed batch
+      const isActiveRun = runBatches.length === 0 || runBatches.some(b => b.status !== 'completed');
+      if (!isActiveRun) return;
 
       // Build per-size issued totals from issued_sizes JSONB on each batch
       const issuedBySize = {};
