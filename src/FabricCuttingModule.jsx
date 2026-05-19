@@ -5274,7 +5274,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     setShopifyLoading(true);
     const { data } = await supabase
       .from('shopify_inventory')
-      .select('id, style_code, title, total_inventory')
+      .select('id, style_code, title, total_inventory, variants')
       .order('style_code');
     setShopifyProducts(data || []);
     setShopifyLoading(false);
@@ -5721,9 +5721,23 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     let negativeCount = 0;
 
     for (const product of shopifyProducts) {
-      const rawQty = product.total_inventory || 0;
-      if (rawQty < 0) negativeCount++;
-      const qty = Math.max(0, rawQty);
+      const variants = Array.isArray(product.variants) ? product.variants : [];
+      // Clamp each size variant to 0 (negative stock on a size = 0, not dragging down total)
+      let qty = 0;
+      let hasNegativeVariant = false;
+      if (variants.length > 0) {
+        for (const v of variants) {
+          const vQty = v.qty ?? 0;
+          if (vQty < 0) hasNegativeVariant = true;
+          qty += Math.max(0, vQty);
+        }
+      } else {
+        // Fallback: no variant breakdown available, clamp whole-product total
+        const rawQty = product.total_inventory || 0;
+        if (rawQty < 0) hasNegativeVariant = true;
+        qty = Math.max(0, rawQty);
+      }
+      if (hasNegativeVariant) negativeCount++;
       if (qty === 0) continue;
 
       const costing = costings.find(c =>
