@@ -5717,27 +5717,29 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     if (shopifyProducts.length === 0) return null;
     const costed = [];
     const uncosted = [];
+    const negativeStyles = []; // { style_code, title, sizes: [{ size, qty }] }
     let totalValue = 0;
-    let negativeCount = 0;
 
     for (const product of shopifyProducts) {
       const variants = Array.isArray(product.variants) ? product.variants : [];
       // Clamp each size variant to 0 (negative stock on a size = 0, not dragging down total)
       let qty = 0;
-      let hasNegativeVariant = false;
+      const negativeSizes = [];
       if (variants.length > 0) {
         for (const v of variants) {
           const vQty = v.qty ?? 0;
-          if (vQty < 0) hasNegativeVariant = true;
+          if (vQty < 0) negativeSizes.push({ size: v.size, qty: vQty });
           qty += Math.max(0, vQty);
         }
       } else {
         // Fallback: no variant breakdown available, clamp whole-product total
         const rawQty = product.total_inventory || 0;
-        if (rawQty < 0) hasNegativeVariant = true;
+        if (rawQty < 0) negativeSizes.push({ size: 'All', qty: rawQty });
         qty = Math.max(0, rawQty);
       }
-      if (hasNegativeVariant) negativeCount++;
+      if (negativeSizes.length > 0) {
+        negativeStyles.push({ style_code: product.style_code, title: product.title, sizes: negativeSizes });
+      }
       if (qty === 0) continue;
 
       const costing = costings.find(c =>
@@ -5771,7 +5773,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
     costed.sort((a, b) => b.styleValue - a.styleValue);
     uncosted.sort((a, b) => b.qty - a.qty);
-    return { totalValue, costed, uncosted, negativeCount };
+    return { totalValue, costed, uncosted, negativeStyles };
   }, [shopifyProducts, costings, fabricTypes]);
 
   const sections = [
@@ -6609,7 +6611,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 <div className="text-3xl sm:text-4xl font-bold">₹{shopifyStockStats.totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
                 <div className="text-xs text-stone-400 mt-1">
                   {shopifyStockStats.costed.length} costed styles · {shopifyStockStats.uncosted.length} uncosted
-                  {shopifyStockStats.negativeCount > 0 && ` · ${shopifyStockStats.negativeCount} with negative stock (treated as 0)`}
+                  {shopifyStockStats.negativeStyles.length > 0 && ` · ${shopifyStockStats.negativeStyles.length} with negative sizes`}
                 </div>
               </div>
 
@@ -6619,9 +6621,25 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   <span className="font-semibold">{shopifyStockStats.uncosted.length} styles</span> have no costing entry — their fabric cost is excluded from the total. Add costings to get a complete picture.
                 </div>
               )}
-              {shopifyStockStats.negativeCount > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800">
-                  <span className="font-semibold">{shopifyStockStats.negativeCount} variants</span> have negative stock in Shopify — treated as 0 for valuation. Fix overselling in Shopify.
+              {shopifyStockStats.negativeStyles.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800 space-y-2">
+                  <div>
+                    <span className="font-semibold">{shopifyStockStats.negativeStyles.length} {shopifyStockStats.negativeStyles.length === 1 ? 'style has' : 'styles have'} negative size stock</span> in Shopify — each negative size is treated as 0 for valuation. Fix overselling in Shopify.
+                  </div>
+                  <div className="space-y-1.5">
+                    {shopifyStockStats.negativeStyles.map(ns => (
+                      <div key={ns.style_code} className="flex items-start gap-2 flex-wrap">
+                        <span className="font-medium shrink-0">{ns.title}{ns.style_code ? ` (${ns.style_code})` : ''}:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {ns.sizes.map(s => (
+                            <span key={s.size} className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-mono font-semibold">
+                              {s.size}: {s.qty}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
