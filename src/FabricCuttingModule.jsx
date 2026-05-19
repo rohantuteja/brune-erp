@@ -5223,6 +5223,17 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [deletingSnapshotId, setDeletingSnapshotId] = useState(null);
   const [confirmDeleteSnapshotId, setConfirmDeleteSnapshotId] = useState(null);
 
+  // ── Shopify Stock Value state ────────────────────────────────────────
+  const [shopifyProducts, setShopifyProducts] = useState([]);
+  const [shopifyLoading, setShopifyLoading] = useState(false);
+  const [shopifySnapshots, setShopifySnapshots] = useState([]);
+  const [shopifySnapshotsLoading, setShopifySnapshotsLoading] = useState(false);
+  const [takingShopifySnapshot, setTakingShopifySnapshot] = useState(false);
+  const [expandedShopifySnapshotId, setExpandedShopifySnapshotId] = useState(null);
+  const [deletingShopifySnapshotId, setDeletingShopifySnapshotId] = useState(null);
+  const [confirmDeleteShopifySnapshotId, setConfirmDeleteShopifySnapshotId] = useState(null);
+  const [shopifyUncostedExpanded, setShopifyUncostedExpanded] = useState(false);
+
   const currentMonthStr = () => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -5257,6 +5268,76 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       fetchSnapshots();
     }
   }, [activeSection]);
+
+  // ── Shopify Stock Value fetch + realtime ─────────────────────────────
+  const fetchShopifyProducts = async () => {
+    setShopifyLoading(true);
+    const { data } = await supabase
+      .from('shopify_inventory')
+      .select('id, style_code, title, total_inventory')
+      .order('style_code');
+    setShopifyProducts(data || []);
+    setShopifyLoading(false);
+  };
+
+  const fetchShopifyStockSnapshots = async () => {
+    setShopifySnapshotsLoading(true);
+    const { data } = await supabase
+      .from('shopify_stock_snapshots')
+      .select('*')
+      .order('month', { ascending: false })
+      .limit(24);
+    setShopifySnapshots(data || []);
+    setShopifySnapshotsLoading(false);
+  };
+
+  useEffect(() => {
+    if (activeSection !== 'shopify_stock') return;
+    fetchShopifyProducts();
+    fetchShopifyStockSnapshots();
+    // Auto-update when cron resyncs Shopify inventory
+    const channel = supabase
+      .channel('analytics_shopify_inv')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shopify_inventory' },
+        () => fetchShopifyProducts())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [activeSection]);
+
+  const takeShopifySnapshot = async () => {
+    if (takingShopifySnapshot) return;
+    setTakingShopifySnapshot(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/take-shopify-snapshot`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+          body: JSON.stringify({ force: false }),
+        }
+      );
+      const json = await res.json();
+      if (!res.ok || json?.error) {
+        showToast(json?.error || 'Failed to take snapshot', 'error');
+      } else {
+        showToast('Shopify stock snapshot taken!', 'success');
+        await fetchShopifyStockSnapshots();
+      }
+    } catch { showToast('Error taking snapshot', 'error'); }
+    finally { setTakingShopifySnapshot(false); }
+  };
+
+  const deleteShopifySnapshot = async (snapId) => {
+    try {
+      const { error } = await supabase.from('shopify_stock_snapshots').delete().eq('id', snapId);
+      if (error) throw error;
+      setShopifySnapshots(prev => prev.filter(s => s.id !== snapId));
+      if (expandedShopifySnapshotId === snapId) setExpandedShopifySnapshotId(null);
+      showToast('Snapshot deleted', 'success');
+    } catch { showToast('Failed to delete snapshot', 'error'); }
+    finally { setDeletingShopifySnapshotId(null); setConfirmDeleteShopifySnapshotId(null); }
+  };
 
   const toggleExpand = (id) => {
     setExpandedSnapshotId(prev => (prev === id ? null : id));
@@ -5631,8 +5712,57 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     return { stockValue, productionWip, totalWip, byStyle, uncostyledQty };
   }, [inventory, productionBatches, costings, getCostingTotal]);
 
+  // ── Shopify Stock Value stats ────────────────────────────────────────
+  const shopifyStockStats = useMemo(() => {
+    if (shopifyProducts.length === 0) return null;
+    const costed = [];
+    const uncosted = [];
+    let totalValue = 0;
+    let negativeCount = 0;
+
+    for (const product of shopifyProducts) {
+      const rawQty = product.total_inventory || 0;
+      if (rawQty < 0) negativeCount++;
+      const qty = Math.max(0, rawQty);
+      if (qty === 0) continue;
+
+      const costing = costings.find(c =>
+        (c.style_code || '').toUpperCase() === (product.style_code || '').toUpperCase()
+      );
+      if (!costing) {
+        uncosted.push({ style_code: product.style_code, title: product.title, qty });
+        continue;
+      }
+
+      const autoFabricCost = (costing.fabric_lines || []).reduce((sum, line) => {
+        const ft = fabricTypes.find(f => f.id === line.fabric_type_id);
+        if (!ft?.supplier_rates?.length) return sum;
+        const maxCpm = Math.max(
+          ...ft.supplier_rates.map(r => {
+            if (ft.format === 'roll' && r.cost_per_kg && r.chadti > 0) return r.cost_per_kg / r.chadti;
+            return r.cost_per_m || 0;
+          }).filter(Boolean)
+        );
+        return sum + maxCpm * (parseFloat(line.avg_meters) || 0);
+      }, 0);
+
+      const fabricCostPerPc = costing.fabric_cost_override != null
+        ? parseFloat(costing.fabric_cost_override)
+        : autoFabricCost;
+
+      const styleValue = qty * fabricCostPerPc;
+      totalValue += styleValue;
+      costed.push({ style_code: product.style_code, title: product.title, qty, fabricCostPerPc, styleValue });
+    }
+
+    costed.sort((a, b) => b.styleValue - a.styleValue);
+    uncosted.sort((a, b) => b.qty - a.qty);
+    return { totalValue, costed, uncosted, negativeCount };
+  }, [shopifyProducts, costings, fabricTypes]);
+
   const sections = [
     { id: 'inventory', label: 'Inventory Value' },
+    { id: 'shopify_stock', label: 'Shopify Stock Value' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
     { id: 'costing', label: 'Costing' },
@@ -6442,6 +6572,264 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="bg-stone-50 border border-stone-200 rounded-lg p-3 text-xs text-stone-600 text-center">
               No production WIP right now — all issued batches are completed. Your capital is currently in fabric stock only.
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ── SHOPIFY STOCK VALUE ── */}
+      {activeSection === 'shopify_stock' && (
+        <div className="space-y-3">
+          <div className="text-xs text-stone-500 px-0.5">
+            Fabric cost value of finished goods currently in your Shopify store. Updates automatically when Shopify syncs.
+          </div>
+
+          {shopifyLoading ? (
+            <div className="bg-white rounded-lg border border-stone-200 p-12 text-center text-sm text-stone-400">Loading Shopify inventory…</div>
+          ) : !shopifyStockStats ? (
+            <div className="bg-white rounded-lg border border-stone-200 p-12 text-center text-sm text-stone-400">No Shopify products found. Run a sync first.</div>
+          ) : (
+            <>
+              {/* KPI */}
+              <div className="bg-stone-900 text-white rounded-lg p-4 sm:p-5">
+                <div className="text-xs uppercase tracking-wide text-stone-400 mb-1">Total Shopify Stock Value (Fabric Cost)</div>
+                <div className="text-3xl sm:text-4xl font-bold">₹{shopifyStockStats.totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                <div className="text-xs text-stone-400 mt-1">
+                  {shopifyStockStats.costed.length} costed styles · {shopifyStockStats.uncosted.length} uncosted
+                  {shopifyStockStats.negativeCount > 0 && ` · ${shopifyStockStats.negativeCount} with negative stock (treated as 0)`}
+                </div>
+              </div>
+
+              {/* Warnings */}
+              {shopifyStockStats.uncosted.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+                  <span className="font-semibold">{shopifyStockStats.uncosted.length} styles</span> have no costing entry — their fabric cost is excluded from the total. Add costings to get a complete picture.
+                </div>
+              )}
+              {shopifyStockStats.negativeCount > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800">
+                  <span className="font-semibold">{shopifyStockStats.negativeCount} variants</span> have negative stock in Shopify — treated as 0 for valuation. Fix overselling in Shopify.
+                </div>
+              )}
+
+              {/* Per-style table */}
+              <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                <div className="p-3 sm:p-4 border-b border-stone-200">
+                  <div className="text-sm font-medium text-stone-900">By Style — Costed</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Sorted by stock value, highest first</div>
+                </div>
+                {shopifyStockStats.costed.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-stone-400">No costed styles with stock.</div>
+                ) : (
+                  <div className="divide-y divide-stone-100">
+                    {shopifyStockStats.costed.map((row) => {
+                      const pct = shopifyStockStats.totalValue > 0
+                        ? Math.round(row.styleValue / shopifyStockStats.totalValue * 100) : 0;
+                      return (
+                        <div key={row.style_code} className="p-3 sm:p-4">
+                          <div className="flex items-start justify-between gap-3 mb-1.5">
+                            <div className="min-w-0">
+                              <span className="font-mono text-sm font-medium text-stone-900">{row.style_code}</span>
+                              <span className="text-xs text-stone-400 ml-2">{row.qty} pcs × ₹{row.fabricCostPerPc.toFixed(2)}</span>
+                            </div>
+                            <span className="text-sm font-semibold text-stone-900 shrink-0">
+                              ₹{row.styleValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
+                            <div className="h-full bg-stone-700 rounded-full" style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="text-[11px] text-stone-400">{pct}% of total</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Uncosted styles */}
+              {shopifyStockStats.uncosted.length > 0 && (
+                <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                  <button
+                    onClick={() => setShopifyUncostedExpanded(v => !v)}
+                    className="w-full flex items-center justify-between p-3 sm:p-4 hover:bg-stone-50 transition-colors"
+                  >
+                    <div className="text-left">
+                      <div className="text-sm font-medium text-stone-900">Uncosted Styles</div>
+                      <div className="text-xs text-stone-500 mt-0.5">{shopifyStockStats.uncosted.length} styles with Shopify stock but no costing entry</div>
+                    </div>
+                    {shopifyUncostedExpanded
+                      ? <ChevronUp className="w-4 h-4 text-stone-400 shrink-0" />
+                      : <ChevronDown className="w-4 h-4 text-stone-400 shrink-0" />}
+                  </button>
+                  {shopifyUncostedExpanded && (
+                    <div className="border-t border-stone-100 divide-y divide-stone-100">
+                      {shopifyStockStats.uncosted.map(row => (
+                        <div key={row.style_code} className="px-4 py-2.5 flex items-center justify-between">
+                          <div>
+                            <span className="font-mono text-sm font-medium text-stone-700">{row.style_code}</span>
+                            {row.title && <span className="text-xs text-stone-400 ml-2">{row.title}</span>}
+                          </div>
+                          <span className="text-xs text-stone-500">{row.qty} pcs</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Monthly Snapshots */}
+              <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <div className="text-sm font-medium text-stone-900">Monthly Snapshots</div>
+                    <div className="text-xs text-stone-500 mt-0.5">
+                      Auto-captured on the last day of each month. Records Shopify stock value at that point in time.
+                    </div>
+                  </div>
+                  {isAdmin && (
+                    <button
+                      onClick={takeShopifySnapshot}
+                      disabled={takingShopifySnapshot}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      {takingShopifySnapshot ? 'Taking…' : 'Take Now'}
+                    </button>
+                  )}
+                </div>
+
+                {shopifySnapshotsLoading ? (
+                  <div className="p-6 text-center text-sm text-stone-400">Loading snapshots…</div>
+                ) : shopifySnapshots.length === 0 ? (
+                  <div className="p-6 text-center">
+                    <Camera className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+                    <div className="text-sm text-stone-500">No snapshots yet</div>
+                    <div className="text-xs text-stone-400 mt-0.5">Auto-captured on the last day of each month, or take one manually.</div>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-stone-100">
+                    {shopifySnapshots.map((snap, idx) => {
+                      const prevSnap = shopifySnapshots[idx + 1];
+                      const totalVal = parseFloat(snap.total_value) || 0;
+                      const prevVal = prevSnap ? (parseFloat(prevSnap.total_value) || 0) : null;
+                      const momDiff = prevVal !== null ? totalVal - prevVal : null;
+                      const momPct = prevVal && prevVal > 0 ? (momDiff / prevVal) * 100 : null;
+                      const isExpanded = expandedShopifySnapshotId === snap.id;
+                      const styleBreakdown = Array.isArray(snap.style_breakdown) ? snap.style_breakdown : [];
+                      const uncostedStyles = Array.isArray(snap.uncosted_styles) ? snap.uncosted_styles : [];
+                      const isCurrentMonth = snap.month === currentMonthStr();
+                      const isConfirmDelete = confirmDeleteShopifySnapshotId === snap.id;
+
+                      return (
+                        <div key={snap.id}>
+                          <button
+                            onClick={() => setExpandedShopifySnapshotId(prev => prev === snap.id ? null : snap.id)}
+                            className="w-full flex items-center gap-3 p-3 sm:p-4 hover:bg-stone-50 transition-colors text-left"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-medium text-stone-900">{fmtMonth(snap.month)}</span>
+                                {isCurrentMonth && (
+                                  <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                                <span className="text-base font-bold text-stone-900">
+                                  ₹{totalVal.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                </span>
+                                {momDiff !== null && (
+                                  <span className={`text-xs font-medium flex items-center gap-0.5 ${momDiff >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                    {momDiff >= 0 ? '▲' : '▼'}
+                                    ₹{Math.abs(momDiff).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                    {momPct !== null && ` (${Math.abs(momPct).toFixed(1)}%)`}
+                                    <span className="text-stone-400 font-normal ml-1">vs prev month</span>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-stone-400 mt-0.5">
+                                {styleBreakdown.length} costed styles · {uncostedStyles.length} uncosted
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {isAdmin && (
+                                <span
+                                  role="button"
+                                  onClick={e => { e.stopPropagation(); setConfirmDeleteShopifySnapshotId(snap.id); }}
+                                  className="p-1.5 rounded hover:bg-red-100 text-stone-400 hover:text-red-600 transition-colors"
+                                  title="Delete snapshot"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </span>
+                              )}
+                              {isExpanded ? <ChevronUp className="w-4 h-4 text-stone-400" /> : <ChevronDown className="w-4 h-4 text-stone-400" />}
+                            </div>
+                          </button>
+
+                          {isConfirmDelete && (
+                            <div className="flex items-center gap-3 px-4 py-3 bg-red-50 border-t border-red-200">
+                              <span className="text-sm text-red-800 flex-1">Delete the <strong>{fmtMonth(snap.month)}</strong> snapshot? This cannot be undone.</span>
+                              <button
+                                onClick={() => { setDeletingShopifySnapshotId(snap.id); deleteShopifySnapshot(snap.id); }}
+                                disabled={deletingShopifySnapshotId === snap.id}
+                                className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 disabled:opacity-50 transition-colors"
+                              >
+                                {deletingShopifySnapshotId === snap.id ? 'Deleting…' : 'Delete'}
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteShopifySnapshotId(null)}
+                                className="px-3 py-1.5 bg-white border border-stone-300 text-stone-700 text-xs font-medium rounded hover:bg-stone-50 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+
+                          {isExpanded && (
+                            <div className="border-t border-stone-100 bg-stone-50">
+                              {styleBreakdown.length === 0 ? (
+                                <div className="p-4 text-sm text-stone-400 text-center">No costed styles in this snapshot.</div>
+                              ) : (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="border-b border-stone-200 text-stone-500">
+                                        <th className="text-left px-4 py-2 font-medium">Style Code</th>
+                                        <th className="text-right px-4 py-2 font-medium">Pcs</th>
+                                        <th className="text-right px-4 py-2 font-medium">Fabric/pc</th>
+                                        <th className="text-right px-4 py-2 font-medium">Value</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-stone-100">
+                                      {[...styleBreakdown].sort((a, b) => b.total_value - a.total_value).map((row, i) => (
+                                        <tr key={i} className="hover:bg-white transition-colors">
+                                          <td className="px-4 py-2 font-mono font-medium text-stone-800">{row.style_code}</td>
+                                          <td className="px-4 py-2 text-right text-stone-600">{row.total_pcs}</td>
+                                          <td className="px-4 py-2 text-right text-stone-600">₹{parseFloat(row.fabric_cost_per_pc).toFixed(2)}</td>
+                                          <td className="px-4 py-2 text-right font-semibold text-stone-900">₹{parseFloat(row.total_value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                                        </tr>
+                                      ))}
+                                      <tr className="border-t-2 border-stone-200 bg-stone-100">
+                                        <td colSpan={3} className="px-4 py-2 font-semibold text-stone-700">Total</td>
+                                        <td className="px-4 py-2 text-right font-bold text-stone-900">₹{totalVal.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                  {uncostedStyles.length > 0 && (
+                                    <div className="px-4 py-2 border-t border-stone-200 text-xs text-amber-700 bg-amber-50">
+                                      {uncostedStyles.length} uncosted styles not included: {uncostedStyles.map(u => u.style_code).join(', ')}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}

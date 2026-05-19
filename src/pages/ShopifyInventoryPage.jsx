@@ -11,6 +11,13 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
   const [showZeroStock, setShowZeroStock] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [notConnected, setNotConnected] = useState(false);
+  const [, setTick] = useState(0);
+
+  // Tick every 30s so the relative timestamp ("5m ago") stays current between syncs
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const fetchProducts = async () => {
     setLoading(true);
