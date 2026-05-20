@@ -4701,6 +4701,96 @@ function KarigarFilterButton({ karigars, value, onChange }) {
   );
 }
 
+// Generic style-code filter button — same visual pattern as KarigarFilterButton
+function StyleFilterButton({ options, value, onChange, placeholder = 'Style' }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setQuery(''); }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const filtered = query.trim()
+    ? options.filter(o => o.toLowerCase().includes(query.toLowerCase().trim()))
+    : options;
+
+  const handleOpen = () => { setOpen(o => !o); setQuery(''); setTimeout(() => inputRef.current?.focus(), 50); };
+  const handleSelect = (code) => { onChange(code); setOpen(false); setQuery(''); };
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button
+        onClick={handleOpen}
+        className={`flex items-center gap-1.5 h-[38px] px-3 rounded-lg border text-sm font-medium transition-colors whitespace-nowrap
+          ${value
+            ? 'bg-stone-900 text-white border-stone-900'
+            : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400 hover:text-stone-900'}`}
+      >
+        <span className="max-w-[140px] truncate font-mono text-xs">{value || placeholder}</span>
+        {value ? (
+          <span
+            role="button"
+            onClick={e => { e.stopPropagation(); onChange(''); setOpen(false); }}
+            className="opacity-60 hover:opacity-100 flex-shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </span>
+        ) : (
+          <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`} />
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute z-50 top-full mt-1.5 left-0 w-64 bg-white border border-stone-200 rounded-lg shadow-lg overflow-hidden">
+          <div className="p-2 border-b border-stone-100">
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-stone-50 rounded-md border border-stone-200">
+              <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+                  if (e.key === 'Enter' && filtered.length === 1) handleSelect(filtered[0]);
+                }}
+                placeholder="Search styles…"
+                className="flex-1 text-sm bg-transparent outline-none text-stone-900 placeholder-stone-400"
+              />
+              {query && (
+                <button onClick={() => setQuery('')} className="text-stone-400 hover:text-stone-600">
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-5 text-center text-xs text-stone-400">No matches for "{query}"</div>
+            ) : filtered.map(code => (
+              <button
+                key={code}
+                onClick={() => handleSelect(code)}
+                className={`w-full text-left px-3 py-2.5 text-xs font-mono flex items-center justify-between gap-2
+                  ${code === value ? 'bg-stone-900 text-white' : 'text-stone-900 hover:bg-stone-50'}`}
+              >
+                <span>{code}</span>
+                {code === value && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
 function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs }) {
   const { can } = usePermissions();
@@ -7205,27 +7295,20 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           {/* Filters */}
           {!pipelineHealthLoading && pipelineHealthData.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex-1 min-w-[160px] max-w-xs">
-                <SearchableSelect
-                  value={pipelineHealthStyle}
-                  onChange={v => setPipelineHealthStyle(v)}
-                  placeholder="All styles"
-                  options={[
-                    { value: '', label: 'All styles' },
-                    ...Array.from(new Set(
-                      enriched
-                        .filter(r => {
-                          if (pipelineActiveRunsOnly && !r.has_active_run) return false;
-                          if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
-                          return true;
-                        })
-                        .map(r => r.style_code)
-                    ))
-                    .sort()
-                    .map(code => ({ value: code, label: code })),
-                  ]}
-                />
-              </div>
+              <StyleFilterButton
+                value={pipelineHealthStyle}
+                onChange={setPipelineHealthStyle}
+                placeholder="Style"
+                options={Array.from(new Set(
+                  enriched
+                    .filter(r => {
+                      if (pipelineActiveRunsOnly && !r.has_active_run) return false;
+                      if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
+                      return true;
+                    })
+                    .map(r => r.style_code)
+                )).sort()}
+              />
               {['all', 'critical', 'warning', 'watch', 'ok'].map(f => (
                 <button
                   key={f}
