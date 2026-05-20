@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
-import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
+import { STANDARD_SIZES, orderSizes, localToday, isRunActive } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
@@ -251,14 +251,24 @@ export default function FabricCuttingModule() {
       return null;
     })();
 
-    // Derive run status from batch data
+    // Derive run status from batch data.
+    // active    — any size still has cuttings available to issue
+    // issued    — all cuttings issued but ≥1 batch not yet completed
+    // completed — all cuttings issued AND all batches completed
     const getRunStatus = (r) => {
       const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
-      if (totalCut === 0) return 'active'; // no pieces recorded yet — still being set up
-      const issued = productionBatches.filter(b => b.run_id === r.id).reduce((s, b) => s + (b.total_issued || 0), 0);
-      const completed = productionBatches.filter(b => b.run_id === r.id && b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-      if (completed >= totalCut) return 'completed';
-      if (issued >= totalCut) return 'issued';
+      if (totalCut === 0) return 'active';
+      const batches = productionBatches.filter(b => b.run_id === r.id);
+      const issuedBySize = {};
+      batches.forEach(b => {
+        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
+        });
+      });
+      const hasCuttingsAvailable = r.pieces.some(p => p.quantity > (issuedBySize[p.size] || 0));
+      const hasOpenBatch = batches.some(b => b.status !== 'completed');
+      if (!hasCuttingsAvailable && !hasOpenBatch) return 'completed';
+      if (!hasCuttingsAvailable) return 'issued';
       return 'active';
     };
 
@@ -267,7 +277,7 @@ export default function FabricCuttingModule() {
       if (r._derivedStatus === 'completed' && runStatusFilter !== 'all') return false;
       const matchesStatus =
         runStatusFilter === 'all' ||
-        (runStatusFilter === 'active' && r._derivedStatus === 'active') ||
+        (runStatusFilter === 'active' && (r._derivedStatus === 'active' || r._derivedStatus === 'issued')) ||
         (runStatusFilter === 'issued' && r._derivedStatus === 'issued');
       const matchesSearch = !q || r.style_code.toLowerCase().includes(q);
       const matchesDate = !cutoffDate || r.last_append_date >= cutoffDate;
@@ -307,21 +317,21 @@ export default function FabricCuttingModule() {
     runs.forEach(r => r.pieces.forEach(p => { cut += p.quantity; }));
     const totalIssued = productionBatches.reduce((s, b) => s + (b.total_issued || 0), 0);
     const totalCompleted = productionBatches.filter(b => b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-    const activeCount = runs.filter(r => {
-      const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
-      if (totalCut === 0) return true;
-      const issued = productionBatches.filter(b => b.run_id === r.id).reduce((s, b) => s + (b.total_issued || 0), 0);
-      const completed = productionBatches.filter(b => b.run_id === r.id && b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-      return issued < totalCut && completed < totalCut;
-    }).length;
+    // activeCount = all runs with open work (cuttings available OR batches in progress)
+    const activeCount = runs.filter(r => isRunActive(r, productionBatches)).length;
+    // issuedCount = subset: all cuttings issued but ≥1 batch still in progress
     const issuedCount = runs.filter(r => {
-      const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
-      if (totalCut === 0) return false;
-      const issued = productionBatches.filter(b => b.run_id === r.id).reduce((s, b) => s + (b.total_issued || 0), 0);
-      const completed = productionBatches.filter(b => b.run_id === r.id && b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-      return issued >= totalCut && completed < totalCut;
+      if (!isRunActive(r, productionBatches)) return false;
+      const batches = productionBatches.filter(b => b.run_id === r.id);
+      const issuedBySize = {};
+      batches.forEach(b => {
+        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
+        });
+      });
+      return !r.pieces.some(p => p.quantity > (issuedBySize[p.size] || 0));
     }).length;
-    const openCount = activeCount + issuedCount;
+    const openCount = activeCount;
     return {
       rollCount: rolls.length, thanCount: thans.length, totalKg, totalM,
       runCount: runs.length, activeCount, issuedCount, openCount,

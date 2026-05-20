@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { isRunActive } from '../lib/constants';
 import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye } from 'lucide-react';
 
 export default function ShopifyInventoryPage({ runs = [], productionBatches = [], showToast }) {
@@ -91,11 +92,8 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
   const activeStyleCodes = useMemo(() => {
     const result = new Set();
     for (const run of runs) {
-      const runBatches = productionBatches.filter(b => b.run_id === run.id);
-      const isActive =
-        runBatches.length === 0 ||
-        runBatches.some(b => b.status !== 'completed');
-      if (isActive && run.style_code) result.add(run.style_code.toUpperCase());
+      if (isRunActive(run, productionBatches) && run.style_code)
+        result.add(run.style_code.toUpperCase());
     }
     return result;
   }, [runs, productionBatches]);
