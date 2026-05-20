@@ -393,11 +393,15 @@ export function useAppData({ showToast }) {
     STANDARD_SIZES.forEach(s => { if (!totals.has(s)) totals.set(s, 0); });
     const oldFinishedMap = new Map(oldPieces.map(p => [p.size, p.finished || 0]));
     return orderSizes(
-      Array.from(totals.entries()).map(([size, quantity]) => ({
-        size,
-        quantity,
-        finished: Math.min(oldFinishedMap.get(size) || 0, quantity),
-      }))
+      Array.from(totals.entries())
+        // Custom (non-standard) sizes with net qty 0 are dropped — they only appear
+        // when all entries contributing to them have been deleted.
+        .filter(([size, quantity]) => STANDARD_SIZES.includes(size) || quantity > 0)
+        .map(([size, quantity]) => ({
+          size,
+          quantity,
+          finished: Math.min(oldFinishedMap.get(size) || 0, quantity),
+        }))
     );
   };
 
@@ -966,11 +970,15 @@ export function useAppData({ showToast }) {
     if (!cuttingContext) return;
     const { mode, style_code, existingRunId } = cuttingContext;
 
-    // Normalise pieces_added to cover every standard size
+    // Normalise pieces_added to cover every standard size.
+    // Custom (non-standard) sizes are only stored when their qty > 0 so that
+    // a zero-value placeholder never pollutes other entries' piece counts.
     const piecesMap = new Map(data.pieces_added.map(p => [p.size, p.qty]));
     STANDARD_SIZES.forEach(s => { if (!piecesMap.has(s)) piecesMap.set(s, 0); });
     const normPieces = orderSizes(
-      Array.from(piecesMap.entries()).map(([size, qty]) => ({ size, qty }))
+      Array.from(piecesMap.entries())
+        .filter(([size, qty]) => STANDARD_SIZES.includes(size) || qty > 0)
+        .map(([size, qty]) => ({ size, qty }))
     );
 
     // Update inventory consumption
@@ -1113,11 +1121,14 @@ export function useAppData({ showToast }) {
     const oldEntry = run.entries.find(e => e.id === entryId);
     if (!oldEntry) return;
 
-    // Normalise new pieces_added
+    // Normalise new pieces_added.
+    // Custom (non-standard) sizes are only stored when qty > 0.
     const piecesMap = new Map(newData.pieces_added.map(p => [p.size, p.qty]));
     STANDARD_SIZES.forEach(s => { if (!piecesMap.has(s)) piecesMap.set(s, 0); });
     const normPieces = orderSizes(
-      Array.from(piecesMap.entries()).map(([size, qty]) => ({ size, qty }))
+      Array.from(piecesMap.entries())
+        .filter(([size, qty]) => STANDARD_SIZES.includes(size) || qty > 0)
+        .map(([size, qty]) => ({ size, qty }))
     );
 
     // Check: would the edited piece counts leave issued batches with more pieces
