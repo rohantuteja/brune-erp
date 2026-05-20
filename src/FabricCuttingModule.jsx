@@ -2908,35 +2908,44 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
 
     // Alert 2 — Low cuttings left per style per size
     runs.forEach(r => {
-      const runBatches = productionBatches.filter(b => b.run_id === r.id);
+      // Use the shared isRunActive definition (cuttings available OR open batch)
+      if (!isRunActive(r, productionBatches)) return;
 
-      // Only alert for active runs: no batches yet, or at least one non-completed batch
-      const isActiveRun = runBatches.length === 0 || runBatches.some(b => b.status !== 'completed');
-      if (!isActiveRun) return;
+      // Build per-size cut totals from run_pieces
+      const cutBySize = {};
+      r.pieces.forEach(p => { cutBySize[p.size] = (cutBySize[p.size] || 0) + (p.quantity || 0); });
 
       // Build per-size issued totals from issued_sizes JSONB on each batch
       const issuedBySize = {};
-      runBatches.forEach(b => {
+      productionBatches.filter(b => b.run_id === r.id).forEach(b => {
         Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
           issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
         });
       });
 
-      // Evaluate each size independently
-      r.pieces.forEach(p => {
-        const issued = issuedBySize[p.size] || 0;
-        const leftToIssue = Math.max(0, (p.quantity || 0) - issued);
+      // Evaluate ALL standard sizes (catches sizes never cut, not just those in run_pieces)
+      // Then also evaluate any custom sizes that have been cut
+      const sizesToCheck = [
+        ...STANDARD_SIZES,
+        ...Object.keys(cutBySize).filter(s => !STANDARD_SIZES.includes(s)),
+      ];
+
+      sizesToCheck.forEach(size => {
+        const cut = cutBySize[size] || 0;
+        const issued = issuedBySize[size] || 0;
+        const leftToIssue = Math.max(0, cut - issued);
 
         if (leftToIssue === 0) {
+          const reason = cut > 0 ? 'all issued, awaiting production' : 'no fabric cut yet';
           list.push({
             level: 'red',
-            text: `${r.style_code} · ${p.size}: 0 cuttings left — all issued, awaiting production`,
+            text: `${r.style_code} · ${size}: 0 cuttings left — ${reason}`,
             page: 'cuttings',
           });
         } else if (leftToIssue <= alertSettings.cuttings_left) {
           list.push({
             level: 'amber',
-            text: `${r.style_code} · ${p.size}: only ${leftToIssue} piece${leftToIssue !== 1 ? 's' : ''} left to issue — cut more soon`,
+            text: `${r.style_code} · ${size}: only ${leftToIssue} piece${leftToIssue !== 1 ? 's' : ''} left to issue — cut more soon`,
             page: 'cuttings',
           });
         }
