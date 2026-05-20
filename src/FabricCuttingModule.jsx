@@ -3356,19 +3356,19 @@ function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
     const fab  = a.fabric_available; // true | false | null
     const loc  = `${a.style_code} · ${a.size}: ${eStr}`;
     if (a.alert_level === 'critical') {
-      if (cuts > 0)       return `${loc}, ${cuts} cuttings — issue to production NOW`;
+      if (cuts > 0)       return `${loc} — issue to production NOW`;
       if (fab === true)   return `${loc} — cut fabric NOW`;
       if (fab === false)  return `${loc} — order fabric URGENTLY`;
       return `${loc} — check fabric and act NOW`;
     }
     if (a.alert_level === 'warning') {
-      if (cuts > 0)       return `${loc}, ${cuts} cuttings — issue to production soon`;
+      if (cuts > 0)       return `${loc} — issue to production soon`;
       if (fab === true)   return `${loc} — cut fabric now`;
       if (fab === false)  return `${loc} — order fabric urgently`;
       return `${loc} — cut or order fabric`;
     }
     // watch
-    if (cuts > 0)         return `${loc}, ${cuts} cuttings — plan to issue soon`;
+    if (cuts > 0)         return `${loc} — plan to issue soon`;
     if (fab === true)     return `${loc} — plan a cut`;
     if (fab === false)    return `${loc} — order fabric`;
     return `${loc} — check fabric availability`;
@@ -7424,19 +7424,19 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 : null;
               const actionText = (() => {
                 if (row.alert_level === 'critical') {
-                  if (cuts > 0)      return effStr ? `${effStr} — issue ${cuts} cutting${cuts!==1?'s':''} to production NOW` : `Issue ${cuts} cutting${cuts!==1?'s':''} to production NOW`;
+                  if (cuts > 0)      return effStr ? `${effStr} — issue to production NOW` : 'Issue to production NOW';
                   if (fab === true)  return effStr ? `${effStr} — cut fabric NOW` : 'Cut fabric NOW';
                   if (fab === false) return effStr ? `${effStr} — order fabric URGENTLY` : 'Order fabric URGENTLY';
                   return effStr ? `${effStr} — check fabric and act NOW` : 'Check fabric availability and act NOW';
                 }
                 if (row.alert_level === 'warning') {
-                  if (cuts > 0)      return effStr ? `${effStr} — issue ${cuts} cutting${cuts!==1?'s':''} to production soon` : `Issue ${cuts} cutting${cuts!==1?'s':''} to production soon`;
+                  if (cuts > 0)      return effStr ? `${effStr} — issue to production soon` : 'Issue to production soon';
                   if (fab === true)  return effStr ? `${effStr} — cut fabric now` : 'Cut fabric now';
                   if (fab === false) return effStr ? `${effStr} — order fabric urgently` : 'Order fabric urgently';
                   return effStr ? `${effStr} — cut or order fabric` : 'Cut or order fabric';
                 }
                 if (row.alert_level === 'watch') {
-                  if (cuts > 0)      return effStr ? `${effStr} — plan to issue ${cuts} cutting${cuts!==1?'s':''} soon` : `Plan to issue ${cuts} cutting${cuts!==1?'s':''} soon`;
+                  if (cuts > 0)      return effStr ? `${effStr} — plan to issue soon` : 'Plan to issue soon';
                   if (fab === true)  return effStr ? `${effStr} — plan a cut` : 'Plan a cut';
                   if (fab === false) return effStr ? `${effStr} — order fabric` : 'Order fabric';
                   return effStr ? `${effStr} — check fabric availability` : 'Check fabric availability';
