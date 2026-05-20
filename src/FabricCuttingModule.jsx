@@ -21,7 +21,7 @@ import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 //     promise; the cache is updated for the next open.
 //   - A module-level in-flight promise deduplicates concurrent callers so the
 //     network request is made at most once even when multiple effects fire.
-const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v2';
+const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v3';
 const _PIPELINE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 let _pipelineInflight = null;
 
@@ -2803,34 +2803,21 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       .then(data => setPipelineRawData(data));
   }, []);
 
+  // alert_level now comes directly from the SQL function (driven by lead-time settings)
   const pipelineAlerts = useMemo(() => {
-    const critDays = alertSettings.pipeline_critical_days ?? 6;
-    const watchDays = alertSettings.pipeline_watch_days ?? 12;
-    const computeAlert = (r) => {
-      const dos = r.days_of_stock;
-      const vel = parseFloat(r.daily_velocity) || 0;
-      if (vel === 0 || dos == null) return 'ok';
-      if (dos < critDays && r.cuttings_available === 0) return 'critical';
-      if (dos < critDays && r.cuttings_available > 0) return 'warning';
-      if (dos <= watchDays) return 'watch';
-      return 'ok';
-    };
-    return pipelineRawData
-      .filter(r => {
-        if (!r.has_active_run) return false;
-        return computeAlert(r) !== 'ok';
-      })
-      .map(r => ({ ...r, alert_level: computeAlert(r) }));
-  }, [pipelineRawData, alertSettings]);
+    return pipelineRawData.filter(r => r.has_active_run && r.alert_level !== 'ok');
+  }, [pipelineRawData]);
   const [settingsForm, setSettingsForm] = useState(null); // null = not yet initialised
   const [settingsSaving, setSettingsSaving] = useState(false);
   // Initialise form when panel opens or alertSettings changes
   const effectiveForm = settingsForm ?? {
-    rolls_threshold:        String(alertSettings.rolls_threshold),
-    thans_threshold_m:      String(alertSettings.thans_threshold_m),
-    pipeline_critical_days: String(alertSettings.pipeline_critical_days ?? 6),
-    pipeline_watch_days:    String(alertSettings.pipeline_watch_days ?? 12),
-    overdue_batch_days:     String(alertSettings.overdue_batch_days ?? 14),
+    rolls_threshold:      String(alertSettings.rolls_threshold),
+    thans_threshold_m:    String(alertSettings.thans_threshold_m),
+    production_lead_days: String(alertSettings.production_lead_days ?? 3),
+    cutting_lead_days:    String(alertSettings.cutting_lead_days    ?? 3),
+    fabric_lead_days:     String(alertSettings.fabric_lead_days     ?? 7),
+    safety_buffer_days:   String(alertSettings.safety_buffer_days   ?? 1),
+    overdue_batch_days:   String(alertSettings.overdue_batch_days   ?? 14),
   };
 
   // ── ALERTS ────────────────────────────────────────────────────────
@@ -3202,30 +3189,57 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               </div>
             </div>
 
-            {/* Pipeline Health — critical */}
+            {/* Pipeline Health — lead times */}
             <div>
-              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — critical threshold</div>
-              <div className="text-xs text-stone-400 mb-2">Mark a size as 🔴 Critical when days of stock drops below this</div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — production lead time</div>
+              <div className="text-xs text-stone-400 mb-2">Days from issuing cuttings to karigar → finished pieces back. 🔴 Issue Now fires when effective stock &lt; this + buffer.</div>
               <div className="flex items-center gap-2">
                 <input
                   type="number" inputMode="numeric" min="1" max="365"
-                  value={effectiveForm.pipeline_critical_days}
-                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), pipeline_critical_days: e.target.value }))}
+                  value={effectiveForm.production_lead_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), production_lead_days: e.target.value }))}
                   className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
                 />
                 <span className="text-sm text-stone-500">days</span>
               </div>
             </div>
 
-            {/* Pipeline Health — watch */}
             <div>
-              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — watch threshold</div>
-              <div className="text-xs text-stone-400 mb-2">Mark a size as 🟡 Watch when days of stock drops below this</div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — cutting lead time</div>
+              <div className="text-xs text-stone-400 mb-2">Days from deciding to cut → cuttings ready to issue. 🟠 Cut Now fires when effective stock &lt; cutting + production + buffer.</div>
               <div className="flex items-center gap-2">
                 <input
                   type="number" inputMode="numeric" min="1" max="365"
-                  value={effectiveForm.pipeline_watch_days}
-                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), pipeline_watch_days: e.target.value }))}
+                  value={effectiveForm.cutting_lead_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), cutting_lead_days: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">days</span>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — fabric procurement lead time</div>
+              <div className="text-xs text-stone-400 mb-2">Days from ordering fabric → fabric received. 🟡 Plan Ahead fires when effective stock &lt; fabric + cutting + production + buffer.</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="1" max="365"
+                  value={effectiveForm.fabric_lead_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), fabric_lead_days: e.target.value }))}
+                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
+                />
+                <span className="text-sm text-stone-500">days</span>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — safety buffer</div>
+              <div className="text-xs text-stone-400 mb-2">Extra cushion added to every threshold to account for delays and weekends.</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" inputMode="numeric" min="0" max="30"
+                  value={effectiveForm.safety_buffer_days}
+                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), safety_buffer_days: e.target.value }))}
                   className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
                 />
                 <span className="text-sm text-stone-500">days</span>
@@ -3252,13 +3266,18 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               onClick={async () => {
                 const rt  = parseInt(effectiveForm.rolls_threshold);
                 const ttm = parseInt(effectiveForm.thans_threshold_m);
-                const pcd = parseInt(effectiveForm.pipeline_critical_days);
-                const pwd = parseInt(effectiveForm.pipeline_watch_days);
+                const pld = parseInt(effectiveForm.production_lead_days);
+                const cld = parseInt(effectiveForm.cutting_lead_days);
+                const fld = parseInt(effectiveForm.fabric_lead_days);
+                const sbd = parseInt(effectiveForm.safety_buffer_days);
                 const obd = parseInt(effectiveForm.overdue_batch_days);
                 if (isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
-                if (isNaN(pcd) || pcd < 1 || isNaN(pwd) || pwd < 1 || isNaN(obd) || obd < 1) return;
+                if (isNaN(pld) || pld < 1 || isNaN(cld) || cld < 1 || isNaN(fld) || fld < 1) return;
+                if (isNaN(sbd) || sbd < 0 || isNaN(obd) || obd < 1) return;
                 setSettingsSaving(true);
-                await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, pipeline_critical_days: pcd, pipeline_watch_days: pwd, overdue_batch_days: obd });
+                // Invalidate pipeline health cache so new thresholds take effect immediately
+                try { localStorage.removeItem('brune_pipeline_health_v3'); } catch {}
+                await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, production_lead_days: pld, cutting_lead_days: cld, fabric_lead_days: fld, safety_buffer_days: sbd, overdue_batch_days: obd });
                 setSettingsForm(null);
                 setSettingsSaving(false);
               }}
@@ -3331,12 +3350,28 @@ function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
     : 'bg-yellow-200 text-yellow-800';
 
   const alertMsg = (a) => {
-    const dos = a.days_of_stock != null ? `~${parseFloat(a.days_of_stock).toFixed(0)}d stock` : 'no velocity data';
-    if (a.alert_level === 'critical') return `${a.style_code} · ${a.size}: ${dos}, 0 cuttings — cut fabric now`;
-    if (a.alert_level === 'warning')  return `${a.style_code} · ${a.size}: ${dos}, ${a.cuttings_available} cuttings — issue to production now`;
-    // watch — branch on cuttings availability
-    if (a.cuttings_available > 0)     return `${a.style_code} · ${a.size}: ${dos}, ${a.cuttings_available} cuttings — issue to production soon`;
-    return `${a.style_code} · ${a.size}: ${dos}, 0 cuttings — plan a cut soon`;
+    const eff  = a.effective_days;
+    const eStr = eff != null ? `~${parseFloat(eff).toFixed(0)}d effective` : 'no velocity data';
+    const cuts = a.cuttings_available;
+    const fab  = a.fabric_available; // true | false | null
+    const loc  = `${a.style_code} · ${a.size}: ${eStr}`;
+    if (a.alert_level === 'critical') {
+      if (cuts > 0)       return `${loc}, ${cuts} cuttings — issue to production NOW`;
+      if (fab === true)   return `${loc} — cut fabric NOW`;
+      if (fab === false)  return `${loc} — order fabric URGENTLY`;
+      return `${loc} — check fabric and act NOW`;
+    }
+    if (a.alert_level === 'warning') {
+      if (cuts > 0)       return `${loc}, ${cuts} cuttings — issue to production soon`;
+      if (fab === true)   return `${loc} — cut fabric now`;
+      if (fab === false)  return `${loc} — order fabric urgently`;
+      return `${loc} — cut or order fabric`;
+    }
+    // watch
+    if (cuts > 0)         return `${loc}, ${cuts} cuttings — plan to issue soon`;
+    if (fab === true)     return `${loc} — plan a cut`;
+    if (fab === false)    return `${loc} — order fabric`;
+    return `${loc} — check fabric availability`;
   };
 
   const sorted = [...alerts].sort((a, b) => {
@@ -7256,20 +7291,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       )}
 
       {activeSection === 'pipeline_health' && (() => {
-        // ── Compute enriched + filtered once so badges and table share the same data ──
-        const critDays = alertSettings.pipeline_critical_days ?? 6;
-        const watchDays = alertSettings.pipeline_watch_days ?? 12;
-        const computeAlert = (r) => {
-          const dos = r.days_of_stock;
-          const vel = parseFloat(r.daily_velocity) || 0;
-          if (vel === 0 || dos == null) return 'ok';
-          if (dos < critDays && r.cuttings_available === 0) return 'critical';
-          if (dos < critDays && r.cuttings_available > 0) return 'warning';
-          if (dos <= watchDays) return 'watch';
-          return 'ok';
-        };
+        // alert_level comes directly from SQL (driven by configurable lead-time thresholds)
         const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
-        const enriched = pipelineHealthData.map(r => ({ ...r, alert_level: computeAlert(r) }));
+        const enriched = pipelineHealthData; // no client-side override needed
         const filtered = enriched
           .filter(r => {
             if (pipelineActiveRunsOnly && !r.has_active_run) return false;
@@ -7280,13 +7304,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           .sort((a, b) => {
             const lvlDiff = (ALERT_ORDER[a.alert_level] ?? 3) - (ALERT_ORDER[b.alert_level] ?? 3);
             if (lvlDiff !== 0) return lvlDiff;
-            return (a.days_of_stock ?? 9999) - (b.days_of_stock ?? 9999);
+            return (a.effective_days ?? 9999) - (b.effective_days ?? 9999);
           });
 
         return (
         <div className="space-y-3">
           <div className="text-xs text-stone-500 px-0.5">
-            Size-level pipeline status for all non-zero Shopify stock items. Combines Shopify stock, sales velocity, and cutting availability.
+            Size-level pipeline status. Effective days = (Shopify stock + pieces in production) ÷ daily velocity. Thresholds based on your configured lead times.
           </div>
 
           {/* Summary + refresh — counts reflect current filters */}
@@ -7296,9 +7320,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             const watch    = filtered.filter(r => r.alert_level === 'watch').length;
             return (
               <div className="flex items-center gap-3 flex-wrap">
-                {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
-                {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Warning</span>}
-                {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Watch</span>}
+                {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Issue Now</span>}
+                {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Cut Now</span>}
+                {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Plan Ahead</span>}
                 {critical === 0 && warning === 0 && watch === 0 && (
                   <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full">✅ All healthy</span>
                 )}
@@ -7327,17 +7351,23 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 )).sort()}
               />
               <span className="text-stone-300 select-none">|</span>
-              {['all', 'critical', 'warning', 'watch', 'ok'].map(f => (
+              {[
+                { value: 'all',      label: 'All' },
+                { value: 'critical', label: '🔴 Issue Now' },
+                { value: 'warning',  label: '🟠 Cut Now' },
+                { value: 'watch',    label: '🟡 Plan Ahead' },
+                { value: 'ok',       label: '✅ OK' },
+              ].map(f => (
                 <button
-                  key={f}
-                  onClick={() => setPipelineHealthFilter(f)}
-                  className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors capitalize ${
-                    pipelineHealthFilter === f
+                  key={f.value}
+                  onClick={() => setPipelineHealthFilter(f.value)}
+                  className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
+                    pipelineHealthFilter === f.value
                       ? 'bg-stone-900 text-white border-stone-900'
                       : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
                   }`}
                 >
-                  {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
+                  {f.label}
                 </button>
               ))}
               <span className="text-stone-300 select-none">|</span>
@@ -7376,41 +7406,44 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             }
 
             const alertMeta = {
-              critical: { emoji: '🔴', label: 'Critical', bg: 'bg-red-50',     text: 'text-red-700',    border: 'border-red-200' },
-              warning:  { emoji: '🟠', label: 'Warning',  bg: 'bg-orange-50',  text: 'text-orange-700', border: 'border-orange-200' },
-              watch:    { emoji: '🟡', label: 'Watch',     bg: 'bg-yellow-50',  text: 'text-yellow-700', border: 'border-yellow-200' },
-              ok:       { emoji: '✅', label: 'OK',        bg: 'bg-stone-50',   text: 'text-stone-500',  border: 'border-stone-200' },
+              critical: { emoji: '🔴', label: 'Issue Now',  bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
+              warning:  { emoji: '🟠', label: 'Cut Now',    bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+              watch:    { emoji: '🟡', label: 'Plan Ahead', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
+              ok:       { emoji: '✅', label: 'OK',          bg: 'bg-stone-50',  text: 'text-stone-500',  border: 'border-stone-200' },
             };
 
             // Shared per-row derived values — used by both mobile cards and desktop table
             const rowData = filtered.map(row => {
-              const meta = alertMeta[row.alert_level] || alertMeta.ok;
+              const meta        = alertMeta[row.alert_level] || alertMeta.ok;
               const hasVelocity = parseFloat(row.daily_velocity) > 0;
-              const dos = row.days_of_stock != null ? `${parseFloat(row.days_of_stock).toFixed(1)}d of stock` : null;
+              const cuts        = row.cuttings_available;
+              const fab         = row.fabric_available; // true | false | null
+              // effective_days = Shopify + in-production, drives alert level
+              const effStr = row.effective_days != null
+                ? `${parseFloat(row.effective_days).toFixed(1)}d effective`
+                : null;
               const actionText = (() => {
                 if (row.alert_level === 'critical') {
-                  return dos
-                    ? `${dos} left — no cuttings available. Cut fabric immediately.`
-                    : 'No cuttings available. Cut fabric immediately.';
+                  if (cuts > 0)      return effStr ? `${effStr} — issue ${cuts} cutting${cuts!==1?'s':''} to production NOW` : `Issue ${cuts} cutting${cuts!==1?'s':''} to production NOW`;
+                  if (fab === true)  return effStr ? `${effStr} — cut fabric NOW` : 'Cut fabric NOW';
+                  if (fab === false) return effStr ? `${effStr} — order fabric URGENTLY` : 'Order fabric URGENTLY';
+                  return effStr ? `${effStr} — check fabric and act NOW` : 'Check fabric availability and act NOW';
                 }
                 if (row.alert_level === 'warning') {
-                  return dos
-                    ? `${dos} left — ${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`
-                    : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`;
+                  if (cuts > 0)      return effStr ? `${effStr} — issue ${cuts} cutting${cuts!==1?'s':''} to production soon` : `Issue ${cuts} cutting${cuts!==1?'s':''} to production soon`;
+                  if (fab === true)  return effStr ? `${effStr} — cut fabric now` : 'Cut fabric now';
+                  if (fab === false) return effStr ? `${effStr} — order fabric urgently` : 'Order fabric urgently';
+                  return effStr ? `${effStr} — cut or order fabric` : 'Cut or order fabric';
                 }
                 if (row.alert_level === 'watch') {
-                  if (row.cuttings_available > 0) {
-                    return dos
-                      ? `${dos} left — ${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production soon.`
-                      : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production soon.`;
-                  }
-                  return dos
-                    ? `${dos} left — no cuttings available. Plan a cut soon.`
-                    : 'No cuttings available. Plan a cut soon.';
+                  if (cuts > 0)      return effStr ? `${effStr} — plan to issue ${cuts} cutting${cuts!==1?'s':''} soon` : `Plan to issue ${cuts} cutting${cuts!==1?'s':''} soon`;
+                  if (fab === true)  return effStr ? `${effStr} — plan a cut` : 'Plan a cut';
+                  if (fab === false) return effStr ? `${effStr} — order fabric` : 'Order fabric';
+                  return effStr ? `${effStr} — check fabric availability` : 'Check fabric availability';
                 }
-                return 'Stock and cuttings are healthy — no action needed.';
+                return 'Stock levels are healthy — no action needed.';
               })();
-              return { ...row, meta, hasVelocity, dos, actionText };
+              return { ...row, meta, hasVelocity, effStr, actionText };
             });
 
             const footerText = (
@@ -7454,9 +7487,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                           </div>
                         </div>
                         <div className="bg-stone-50 rounded-lg px-2 py-2">
-                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Days left</div>
-                          <div className={`text-sm font-semibold ${row.days_of_stock != null ? (row.days_of_stock < critDays ? 'text-red-600' : row.days_of_stock <= watchDays ? 'text-yellow-600' : 'text-stone-800') : 'text-stone-300'}`}>
-                            {row.days_of_stock != null ? `${parseFloat(row.days_of_stock).toFixed(1)}d` : '—'}
+                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Effective</div>
+                          <div className={`text-sm font-semibold ${row.effective_days != null ? (row.alert_level === 'critical' ? 'text-red-600' : row.alert_level === 'warning' ? 'text-orange-600' : row.alert_level === 'watch' ? 'text-yellow-600' : 'text-stone-800') : 'text-stone-300'}`}>
+                            {row.effective_days != null ? `${parseFloat(row.effective_days).toFixed(1)}d` : '—'}
                           </div>
                         </div>
                       </div>
@@ -7492,7 +7525,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                         <th className="text-left px-4 py-3 font-medium">Style · Size</th>
                         <th className="text-right px-4 py-3 font-medium">Shopify Stock</th>
                         <th className="text-right px-4 py-3 font-medium">Velocity/day</th>
-                        <th className="text-right px-4 py-3 font-medium">Days of Stock</th>
+                        <th className="text-right px-4 py-3 font-medium">Effective Days</th>
                         <th className="text-right px-4 py-3 font-medium">Available</th>
                         <th className="text-right px-4 py-3 font-medium">In Production</th>
                         <th className="text-right px-4 py-3 font-medium">Status</th>
@@ -7512,9 +7545,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            {row.days_of_stock != null
-                              ? <span className={row.days_of_stock < critDays ? 'text-red-600 font-semibold' : row.days_of_stock <= watchDays ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
-                                  {parseFloat(row.days_of_stock).toFixed(1)}d
+                            {row.effective_days != null
+                              ? <span className={row.alert_level === 'critical' ? 'text-red-600 font-semibold' : row.alert_level === 'warning' ? 'text-orange-600 font-semibold' : row.alert_level === 'watch' ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
+                                  {parseFloat(row.effective_days).toFixed(1)}d
                                 </span>
                               : <span className="text-stone-300 text-xs">No data</span>
                             }
