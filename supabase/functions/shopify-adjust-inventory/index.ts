@@ -120,13 +120,11 @@ serve(async (req) => {
     }
 
     // ── Always save audit trail, even on partial failure ────────────────────────
-    const status = failed.length === 0 && adjusted.length > 0
-      ? 'synced'
-      : failed.length > 0 && adjusted.length > 0
-        ? 'partial'
-        : failed.length > 0 && adjusted.length === 0
-          ? 'failed'
-          : 'skipped'; // nothing to adjust (all skipped)
+    const status =
+      failed.length === 0 && skipped.length === 0 ? 'synced' :
+      adjusted.length > 0 ? 'partial' :
+      failed.length > 0 ? 'failed' :
+      'skipped'; // nothing to adjust (all skipped)
 
     await supabase
       .from('production_batches')
