@@ -1211,6 +1211,27 @@ export function useAppData({ showToast }) {
     const oldEntry = run.entries.find(e => e.id === entryId);
     if (!oldEntry) return;
 
+    // Block if removing this entry would make any size's cut total fall below what's already issued
+    const newPiecesPreview = recalcRunPieces(run.entries.filter(e => e.id !== entryId), run.pieces);
+    const newCutMap = new Map(newPiecesPreview.map(p => [p.size, p.quantity]));
+    // Also account for custom sizes that may vanish entirely after deletion
+    const issuedBySize = new Map();
+    productionBatches
+      .filter(b => b.run_id === runId || b.style_code === run.style_code)
+      .forEach(b => {
+        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+          issuedBySize.set(size, (issuedBySize.get(size) || 0) + qty);
+        });
+      });
+    const blockedSize = [...issuedBySize.entries()].find(([size, issued]) => {
+      const newCut = newCutMap.get(size) ?? 0;
+      return issued > newCut;
+    });
+    if (blockedSize) {
+      showToast(`Cannot delete: ${blockedSize[0]} has ${blockedSize[1]} pieces already issued to production.`);
+      return;
+    }
+
     // Reverse fabric consumption
     const { deltaMap } = computeFabricDelta(oldEntry.usage, []);
     await applyInventoryDelta(deltaMap);
