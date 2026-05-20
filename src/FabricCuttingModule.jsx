@@ -5441,7 +5441,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
   const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
-  const [pipelineHealthSearch, setPipelineHealthSearch] = useState('');
+  const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
   const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(true);
 
   const currentMonthStr = () => {
@@ -7167,7 +7167,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           .filter(r => {
             if (pipelineActiveRunsOnly && !r.has_active_run) return false;
             if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
-            if (pipelineHealthSearch && !r.style_code.toLowerCase().includes(pipelineHealthSearch.toLowerCase())) return false;
+            if (pipelineHealthStyle && r.style_code !== pipelineHealthStyle) return false;
             return true;
           })
           .sort((a, b) => {
@@ -7205,20 +7205,18 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           {/* Filters */}
           {!pipelineHealthLoading && pipelineHealthData.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="relative flex-1 min-w-[140px] max-w-xs">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="Filter by style…"
-                  value={pipelineHealthSearch}
-                  onChange={e => setPipelineHealthSearch(e.target.value)}
-                  className="w-full pl-8 pr-8 py-2 text-sm border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+              <div className="flex-1 min-w-[160px] max-w-xs">
+                <SearchableSelect
+                  value={pipelineHealthStyle}
+                  onChange={v => setPipelineHealthStyle(v)}
+                  placeholder="All styles"
+                  options={[
+                    { value: '', label: 'All styles' },
+                    ...Array.from(new Set(pipelineHealthData.map(r => r.style_code)))
+                      .sort()
+                      .map(code => ({ value: code, label: code })),
+                  ]}
                 />
-                {pipelineHealthSearch && (
-                  <button onClick={() => setPipelineHealthSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
               </div>
               {['all', 'critical', 'warning', 'watch', 'ok'].map(f => (
                 <button
@@ -7256,7 +7254,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             </div>
           ) : (() => {
             const allOk = enriched.every(r => r.alert_level === 'ok');
-            if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthSearch) {
+            if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthStyle) {
               return (
                 <div className="bg-white rounded-lg border border-emerald-200 p-8 text-center">
                   <div className="text-sm font-medium text-emerald-700">✅ All sizes are healthy — no pipeline alerts.</div>
