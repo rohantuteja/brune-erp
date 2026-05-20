@@ -1248,6 +1248,15 @@ export function useAppData({ showToast }) {
         .update({ quantity: p.quantity })
         .eq('run_id', runId).eq('size', p.size);
     }
+
+    // Delete run_pieces rows for sizes no longer in the recalculated set
+    // (handles custom sizes that only existed in the deleted entry)
+    const newSizeSet = new Set(newPieces.map(p => p.size));
+    const sizesToDelete = run.pieces.map(p => p.size).filter(s => !newSizeSet.has(s));
+    if (sizesToDelete.length > 0) {
+      await supabase.from('run_pieces').delete().eq('run_id', runId).in('size', sizesToDelete);
+    }
+
     await supabase.from('runs').update({ last_append_date: lastDate }).eq('id', runId);
 
     setRuns(prev => prev.map(r => r.id === runId
