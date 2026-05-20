@@ -7309,6 +7309,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     .map(r => r.style_code)
                 )).sort()}
               />
+              <span className="text-stone-300 select-none">|</span>
               {['all', 'critical', 'warning', 'watch', 'ok'].map(f => (
                 <button
                   key={f}
@@ -7322,6 +7323,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
                 </button>
               ))}
+              <span className="text-stone-300 select-none">|</span>
               <button
                 onClick={() => setPipelineActiveRunsOnly(v => !v)}
                 className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
