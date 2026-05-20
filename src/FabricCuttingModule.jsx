@@ -10,46 +10,69 @@ import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 
 // ── Pipeline health cache ─────────────────────────────────────────────────────
-// Caches the heavy pipeline_health RPC result in sessionStorage for 2 minutes.
-// On re-mount (e.g. returning to app on iPhone), stale data is shown instantly
-// while a background refresh runs only when the TTL has expired.
-// A module-level in-flight promise deduplicates concurrent callers so the
-// network request is made at most once even when two effects fire together.
-const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v1';
-const _PIPELINE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+// Caches the heavy pipeline_health RPC result in localStorage (persists across
+// PWA sessions) with a 15-minute TTL.
+//
+// Strategy: stale-while-revalidate.
+//   - On any call, stale-or-fresh cached data is returned immediately so the
+//     UI can paint without waiting for the network.
+//   - If the cache is older than the TTL (or empty), a background fetch is
+//     kicked off concurrently. Callers receive the fresh data via the returned
+//     promise; the cache is updated for the next open.
+//   - A module-level in-flight promise deduplicates concurrent callers so the
+//     network request is made at most once even when multiple effects fire.
+const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v2';
+const _PIPELINE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 let _pipelineInflight = null;
 
 function _readPipelineCache() {
   try {
-    const raw = sessionStorage.getItem(_PIPELINE_CACHE_KEY);
+    const raw = localStorage.getItem(_PIPELINE_CACHE_KEY);
     if (!raw) return null;
     const { data, ts } = JSON.parse(raw);
-    return Date.now() - ts < _PIPELINE_CACHE_TTL ? data : null;
+    return { data, ts, stale: Date.now() - ts > _PIPELINE_CACHE_TTL };
   } catch { return null; }
 }
 
 function _writePipelineCache(data) {
   try {
-    sessionStorage.setItem(_PIPELINE_CACHE_KEY, JSON.stringify({ data, ts: Date.now() }));
+    localStorage.setItem(_PIPELINE_CACHE_KEY, JSON.stringify({ data, ts: Date.now() }));
   } catch {}
 }
 
 /**
- * Returns pipeline_health data, using a 2-minute sessionStorage cache.
- * Multiple simultaneous callers share a single in-flight fetch.
+ * Stale-while-revalidate fetch for pipeline_health.
+ *
+ * Always resolves immediately with cached data if available (even if stale),
+ * and triggers a background refresh when the cache is stale or empty.
+ * Returns a promise that resolves to the freshest data available.
  */
-async function fetchPipelineHealth() {
+async function fetchPipelineHealth(onFreshData) {
   const cached = _readPipelineCache();
-  if (cached) return cached;
-  if (_pipelineInflight) return _pipelineInflight;
-  _pipelineInflight = supabase.rpc('pipeline_health')
-    .then(({ data }) => {
-      const result = data || [];
-      _writePipelineCache(result);
-      _pipelineInflight = null;
-      return result;
-    })
-    .catch(() => { _pipelineInflight = null; return []; });
+
+  // If we have fresh cache, return it immediately — no network needed
+  if (cached && !cached.stale) return cached.data;
+
+  // Kick off a background fetch (deduplicated)
+  if (!_pipelineInflight) {
+    _pipelineInflight = supabase.rpc('pipeline_health')
+      .then(({ data }) => {
+        const result = data || [];
+        _writePipelineCache(result);
+        _pipelineInflight = null;
+        return result;
+      })
+      .catch(() => { _pipelineInflight = null; return cached?.data || []; });
+  }
+
+  // If we have stale data, return it now and let the background fetch call
+  // onFreshData when it resolves — zero-delay paint, silent update
+  if (cached?.data) {
+    _pipelineInflight.then(fresh => onFreshData?.(fresh));
+    return cached.data;
+  }
+
+  // No cache at all — must wait for the network (first-ever load)
   return _pipelineInflight;
 }
 
@@ -135,12 +158,16 @@ export default function FabricCuttingModule() {
   const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
   const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState(() => {
-    // Seed from cache synchronously so the nav badge is visible on first paint
+    // Seed from localStorage synchronously — visible on first paint even after
+    // closing and reopening the PWA
     const cached = _readPipelineCache();
-    return cached ? cached.filter(r => r.alert_level !== 'ok') : [];
+    return cached ? cached.data.filter(r => r.alert_level !== 'ok') : [];
   });
   useEffect(() => {
-    fetchPipelineHealth().then(data => {
+    fetchPipelineHealth(fresh => {
+      // Called when stale cache was served and background refresh completes
+      setPipelineHealthAlerts(fresh.filter(r => r.alert_level !== 'ok'));
+    }).then(data => {
       setPipelineHealthAlerts(data.filter(r => r.alert_level !== 'ok'));
     });
   }, []);
@@ -2768,9 +2795,13 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
-  const [pipelineRawData, setPipelineRawData] = useState(() => _readPipelineCache() || []);
+  const [pipelineRawData, setPipelineRawData] = useState(() => {
+    const cached = _readPipelineCache();
+    return cached ? cached.data : [];
+  });
   useEffect(() => {
-    fetchPipelineHealth().then(data => setPipelineRawData(data));
+    fetchPipelineHealth(fresh => setPipelineRawData(fresh))
+      .then(data => setPipelineRawData(data));
   }, []);
 
   const pipelineAlerts = useMemo(() => {
