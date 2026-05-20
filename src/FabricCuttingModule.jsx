@@ -119,7 +119,6 @@ export default function FabricCuttingModule() {
   // Style runs filters
   const [runStatusFilter, setRunStatusFilter] = useState('active');
   const [runSearchTerm, setRunSearchTerm] = useState('');
-  const [runDateRange, setRunDateRange] = useState('all');
   const [runSort, setRunSort] = useState('last_cut_desc');
 
   // Stock by Style filters
@@ -243,13 +242,6 @@ export default function FabricCuttingModule() {
 
   const filteredRuns = useMemo(() => {
     const q = runSearchTerm.toLowerCase().trim();
-    const now = new Date();
-    const cutoffDate = (() => {
-      if (runDateRange === '30d') { const d = new Date(); d.setDate(d.getDate() - 30); return d.toLocaleDateString('en-CA'); }
-      if (runDateRange === '90d') { const d = new Date(); d.setDate(d.getDate() - 90); return d.toLocaleDateString('en-CA'); }
-      if (runDateRange === 'this_month') return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-      return null;
-    })();
 
     // Derive run status from batch data.
     // active    — any size still has cuttings available to issue
@@ -280,8 +272,7 @@ export default function FabricCuttingModule() {
         (runStatusFilter === 'active' && r._derivedStatus === 'active') ||
         (runStatusFilter === 'issued' && r._derivedStatus === 'issued');
       const matchesSearch = !q || r.style_code.toLowerCase().includes(q);
-      const matchesDate = !cutoffDate || r.last_append_date >= cutoffDate;
-      return matchesStatus && matchesSearch && matchesDate;
+      return matchesStatus && matchesSearch;
     });
 
     // For a given run, the ID of its most recently added cut entry.
@@ -306,7 +297,7 @@ export default function FabricCuttingModule() {
     });
 
     return list;
-  }, [runs, productionBatches, runStatusFilter, runSearchTerm, runDateRange, runSort]);
+  }, [runs, productionBatches, runStatusFilter, runSearchTerm, runSort]);
 
   const stats = useMemo(() => {
     const rolls = inventory.filter(i => i.format === 'roll');
@@ -570,7 +561,6 @@ export default function FabricCuttingModule() {
               <RunsListView runs={filteredRuns} allRuns={runs} stats={stats}
                 runStatusFilter={runStatusFilter} setRunStatusFilter={setRunStatusFilter}
                 searchTerm={runSearchTerm} setSearchTerm={setRunSearchTerm}
-                dateRange={runDateRange} setDateRange={setRunDateRange}
                 sortBy={runSort} setSortBy={setRunSort}
                 onAddCutting={() => setShowStylePicker(true)}
                 onIssue={(r) => setIssuingForRun(r)}
@@ -1125,7 +1115,7 @@ function ConfirmDialog({ title, message, confirmLabel, danger, onConfirm, onCanc
 
 function RunsListView({
   runs, allRuns, stats, runStatusFilter, setRunStatusFilter,
-  searchTerm, setSearchTerm, dateRange, setDateRange, sortBy, setSortBy,
+  searchTerm, setSearchTerm, sortBy, setSortBy,
   onAddCutting, onIssue, getIssuedQty, getIssuedBySizeMap, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry,
   pipelineHealthAlerts
 }) {
@@ -1162,19 +1152,14 @@ function RunsListView({
           <SortMenu value={sortBy} options={sortOptions} onChange={setSortBy} />
         </div>
 
-        {/* Row 2: status chips + date chips */}
+        {/* Row 2: status chips */}
         <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
           <FilterChip active={runStatusFilter === 'active'} onClick={() => setRunStatusFilter('active')} count={stats.activeCount}>Active</FilterChip>
           <FilterChip active={runStatusFilter === 'issued'} onClick={() => setRunStatusFilter('issued')} count={stats.issuedCount}>Issued</FilterChip>
           <FilterChip active={runStatusFilter === 'all'} onClick={() => setRunStatusFilter('all')} count={stats.runCount}>All</FilterChip>
-          <span className="text-stone-300 select-none">|</span>
-          <FilterChip active={dateRange === 'all'} onClick={() => setDateRange('all')}>All time</FilterChip>
-          <FilterChip active={dateRange === 'this_month'} onClick={() => setDateRange('this_month')}>This month</FilterChip>
-          <FilterChip active={dateRange === '30d'} onClick={() => setDateRange('30d')}>Last 30d</FilterChip>
-          <FilterChip active={dateRange === '90d'} onClick={() => setDateRange('90d')}>Last 90d</FilterChip>
         </div>
 
-        {(searchTerm || dateRange !== 'all' || runStatusFilter !== 'active') && (
+        {(searchTerm || runStatusFilter !== 'active') && (
           <div className="mt-2 text-[11px] text-stone-500">
             Showing <span className="font-medium text-stone-700">{runs.length}</span> of {allRuns.length} runs
           </div>
