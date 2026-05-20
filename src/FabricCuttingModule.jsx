@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday } from './lib/constants';
-import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw } from 'lucide-react';
+import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
 import { supabase } from './lib/supabase';
@@ -4883,6 +4883,33 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                         ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200"><CheckCircle2 className="w-3 h-3" /> Completed</span>
                         : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200"><Clock className="w-3 h-3" /> In Progress</span>
                       }
+                      {isComplete && (() => {
+                        const adj = batch.shopify_adjustment;
+                        if (!adj) return (
+                          <span title="Shopify inventory was not updated" className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">
+                            <AlertCircle className="w-3 h-3" /> Shopify not synced
+                          </span>
+                        );
+                        if (adj.status === 'partial') {
+                          const failedSizes = (adj.failed || []).map(f => f.size).join(', ');
+                          return (
+                            <span title={`Failed sizes: ${failedSizes}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                              <AlertCircle className="w-3 h-3" /> Shopify partial
+                            </span>
+                          );
+                        }
+                        if (adj.status === 'failed') return (
+                          <span title="All Shopify inventory updates failed" className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">
+                            <AlertCircle className="w-3 h-3" /> Shopify failed
+                          </span>
+                        );
+                        if (adj.skipped?.length > 0 && adj.adjusted?.length === 0) return (
+                          <span title={`Sizes not found in Shopify: ${adj.skipped.join(', ')}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                            <AlertCircle className="w-3 h-3" /> Shopify not found
+                          </span>
+                        );
+                        return null; // synced — no badge needed, completion badge is enough
+                      })()}
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {canEditProduction && (

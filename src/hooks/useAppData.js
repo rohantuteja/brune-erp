@@ -37,7 +37,11 @@ async function adjustShopifyInventory(batchId, direction, showToast) {
       }
     );
     const data = await res.json();
-    if (!res.ok || data?.error) {
+    if (res.status === 207) {
+      // Partial success — some sizes failed
+      const failedSizes = (data.failed || []).map(f => f.size).join(', ');
+      showToast(`Shopify: ${data.adjusted} size${data.adjusted !== 1 ? 's' : ''} updated, failed: ${failedSizes}`);
+    } else if (!res.ok || data?.error) {
       showToast(`Shopify ${direction === 'revert' ? 'revert' : 'sync'} failed: ${data?.error || `HTTP ${res.status}`}`);
     } else if (direction === 'complete') {
       const n = data.adjusted;
