@@ -108,13 +108,12 @@ export default function FabricCuttingModule() {
     analytics: 'can_view_analytics',
     masters:   'can_view_masters',
     users:     'can_manage_users',
-    shopify:   null, // handled separately via isAdmin below
+    shopify:   'can_view_shopify',
   };
   useEffect(() => {
     if (!profile) return; // permissions not loaded yet
     const perm = PAGE_PERM[activePage];
     if (perm && !can(perm)) { navigate('/', { replace: true }); return; }
-    if (activePage === 'shopify' && !isAdmin) { navigate('/', { replace: true }); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePage, profile]);
   const [navOpen, setNavOpen] = useState(false);
@@ -667,7 +666,7 @@ export default function FabricCuttingModule() {
           />
         )}
 
-        {activePage === 'shopify' && isAdmin && (
+        {activePage === 'shopify' && can('can_view_shopify') && (
           <ShopifyInventoryPage
             runs={runs}
             productionBatches={productionBatches}
@@ -2690,7 +2689,7 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
     { id: 'inventory', label: 'Inventory', icon: <Boxes className="w-5 h-5" />, sub: 'Fabric rolls & thans', permKey: 'can_view_inventory' },
     { id: 'cuttings', label: 'Cuttings', icon: <Scissors className="w-5 h-5" />, sub: 'Style runs & stock', permKey: 'can_view_cuttings' },
     { id: 'production', label: 'Production', icon: <Users className="w-5 h-5" />, sub: 'Karigar-level tracking', permKey: 'can_view_production' },
-    { id: 'shopify', label: 'Shopify Inventory', icon: <ShoppingBag className="w-5 h-5" />, sub: 'Live stock from your store', adminOnly: true },
+    { id: 'shopify', label: 'Shopify Inventory', icon: <ShoppingBag className="w-5 h-5" />, sub: 'Live stock from your store', permKey: 'can_view_shopify' },
     { id: 'payments', label: 'Payments', icon: <Wallet className="w-5 h-5" />, sub: 'Karigar piece-rate payouts', permKey: 'can_view_payments' },
     { id: 'costing', label: 'Costing', icon: <Calculator className="w-5 h-5" />, sub: 'Cost per piece per style', permKey: 'can_view_costing' },
     { id: 'analytics', label: 'Analytics', icon: <BarChart2 className="w-5 h-5" />, sub: 'Insights & reports', permKey: 'can_view_analytics' },

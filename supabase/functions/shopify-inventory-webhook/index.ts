@@ -78,7 +78,8 @@ serve(async (req) => {
 
       // Shopify webhook uses numeric IDs; our table stores GIDs
       const numericItemId: number = payload.inventory_item_id;
-      const available: number     = Math.max(0, payload.available ?? 0);
+      // Preserve negative values — Shopify uses negative qty to represent oversold stock
+      const available: number = payload.available ?? 0;
       const gid = `gid://shopify/InventoryItem/${numericItemId}`;
 
       // Fetch all products — typically <100 rows, small table

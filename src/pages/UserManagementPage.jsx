@@ -72,6 +72,11 @@ const PERM_GROUPS = [
     ],
   },
   {
+    label: 'Shopify Inventory', perms: [
+      { key: 'can_view_shopify', label: 'View' },
+    ],
+  },
+  {
     label: 'User Management', perms: [
       { key: 'can_manage_users', label: 'Manage Users' },
     ],
