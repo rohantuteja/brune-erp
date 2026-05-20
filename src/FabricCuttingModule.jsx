@@ -7382,9 +7382,14 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`;
                 }
                 if (row.alert_level === 'watch') {
+                  if (row.cuttings_available > 0) {
+                    return dos
+                      ? `${dos} left — ${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production soon.`
+                      : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production soon.`;
+                  }
                   return dos
-                    ? `${dos} left — stock running low. Plan a cut or issue soon.`
-                    : 'Stock running low. Monitor closely.';
+                    ? `${dos} left — no cuttings available. Plan a cut soon.`
+                    : 'No cuttings available. Plan a cut soon.';
                 }
                 return 'Stock and cuttings are healthy — no action needed.';
               })();
