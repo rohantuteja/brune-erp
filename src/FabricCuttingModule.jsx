@@ -7212,9 +7212,17 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   placeholder="All styles"
                   options={[
                     { value: '', label: 'All styles' },
-                    ...Array.from(new Set(pipelineHealthData.map(r => r.style_code)))
-                      .sort()
-                      .map(code => ({ value: code, label: code })),
+                    ...Array.from(new Set(
+                      enriched
+                        .filter(r => {
+                          if (pipelineActiveRunsOnly && !r.has_active_run) return false;
+                          if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
+                          return true;
+                        })
+                        .map(r => r.style_code)
+                    ))
+                    .sort()
+                    .map(code => ({ value: code, label: code })),
                   ]}
                 />
               </div>
