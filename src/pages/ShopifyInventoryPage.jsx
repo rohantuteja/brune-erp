@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye, Webhook } from 'lucide-react';
+import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye } from 'lucide-react';
 
 export default function ShopifyInventoryPage({ runs = [], productionBatches = [], showToast }) {
   const [products, setProducts] = useState([]);
@@ -12,8 +12,6 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [notConnected, setNotConnected] = useState(false);
   const [, setTick] = useState(0);
-  const [registeringWebhook, setRegisteringWebhook] = useState(false);
-  const [webhookStatus, setWebhookStatus] = useState(null); // null | 'registered' | 'already'
 
   // Tick every 30s so the relative timestamp ("5m ago") stays current between syncs
   useEffect(() => {
@@ -54,39 +52,6 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
 
     return () => { supabase.removeChannel(channel); };
   }, []);
-
-  const registerWebhook = async () => {
-    if (registeringWebhook) return;
-    setRegisteringWebhook(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/shopify-sync`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({ action: 'register_webhooks' }),
-        }
-      );
-      const json = await res.json();
-      if (!res.ok || json.error) {
-        showToast(json.error || 'Webhook registration failed', 'error');
-      } else if (json.message === 'Already registered') {
-        setWebhookStatus('already');
-        showToast('Webhook already registered — real-time sync is active');
-      } else {
-        setWebhookStatus('registered');
-        showToast('Webhook registered! Shopify will now push inventory updates in real-time.');
-      }
-    } catch {
-      showToast('Webhook registration failed', 'error');
-    } finally {
-      setRegisteringWebhook(false);
-    }
-  };
 
   const syncNow = async () => {
     if (syncing) return;
@@ -169,41 +134,20 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
             <p className="text-xs text-stone-400 mt-0.5 flex items-center gap-1">
               <Clock className="w-3 h-3" />
               Last synced {fmtRelative(lastSyncedAt)}
-              {webhookStatus === 'registered'
-                ? ' · webhook just activated'
-                : ' · real-time via webhook · daily reconciliation'}
+              {' · real-time via webhook · daily reconciliation'}
             </p>
           ) : !loading && (
             <p className="text-xs text-stone-400 mt-0.5">No sync yet — click Sync Now to load products</p>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={registerWebhook}
-            disabled={registeringWebhook}
-            title="Register Shopify webhook for real-time inventory updates"
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-              webhookStatus
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
-            }`}
-          >
-            <Webhook className="w-3.5 h-3.5" />
-            {registeringWebhook
-              ? 'Registering…'
-              : webhookStatus
-              ? 'Webhook Active'
-              : 'Register Webhook'}
-          </button>
-          <button
-            onClick={syncNow}
-            disabled={syncing}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing…' : 'Sync Now'}
-          </button>
-        </div>
+        <button
+          onClick={syncNow}
+          disabled={syncing}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+          {syncing ? 'Syncing…' : 'Sync Now'}
+        </button>
       </div>
 
       {/* Not connected banner */}
