@@ -7293,6 +7293,27 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                       {filtered.map((row, i) => {
                         const meta = alertMeta[row.alert_level] || alertMeta.ok;
                         const hasVelocity = parseFloat(row.daily_velocity) > 0;
+                        const dos = row.days_of_stock != null ? `${parseFloat(row.days_of_stock).toFixed(1)}d of stock` : null;
+
+                        const statusTooltip = (() => {
+                          if (row.alert_level === 'critical') {
+                            return dos
+                              ? `${dos} left — no cuttings available. Cut fabric for this size immediately.`
+                              : 'No cuttings available. Cut fabric for this size immediately.';
+                          }
+                          if (row.alert_level === 'warning') {
+                            return dos
+                              ? `${dos} left — ${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`
+                              : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`;
+                          }
+                          if (row.alert_level === 'watch') {
+                            return dos
+                              ? `${dos} left — stock running low. Plan a cut or issue soon.`
+                              : 'Stock running low. Monitor closely.';
+                          }
+                          return 'Stock and cuttings are healthy — no action needed.';
+                        })();
+
                         return (
                           <tr key={i} className="hover:bg-stone-50 transition-colors">
                             <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
@@ -7316,7 +7337,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             <td className="px-4 py-3 text-right text-stone-700">{row.cuttings_available}</td>
                             <td className="px-4 py-3 text-right text-stone-500">{row.cuttings_in_production}</td>
                             <td className="px-4 py-3 text-right">
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${meta.bg} ${meta.text} ${meta.border}`}>
+                              <span
+                                title={statusTooltip}
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${meta.bg} ${meta.text} ${meta.border}`}
+                              >
                                 {meta.emoji} {meta.label}
                               </span>
                             </td>
