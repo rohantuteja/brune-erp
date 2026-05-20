@@ -169,9 +169,9 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
             <p className="text-xs text-stone-400 mt-0.5 flex items-center gap-1">
               <Clock className="w-3 h-3" />
               Last synced {fmtRelative(lastSyncedAt)}
-              {webhookStatus
-                ? ' · real-time webhook active'
-                : ' · auto-syncs daily'}
+              {webhookStatus === 'registered'
+                ? ' · webhook just activated'
+                : ' · real-time via webhook · daily reconciliation'}
             </p>
           ) : !loading && (
             <p className="text-xs text-stone-400 mt-0.5">No sync yet — click Sync Now to load products</p>
