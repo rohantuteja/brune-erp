@@ -13,6 +13,45 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { STANDARD_SIZES, orderSizes, localToday } from '../lib/constants';
 
+// ── Shopify inventory helper ──────────────────────────────────────────────────
+// Uses env vars directly (supabase client internals are protected at runtime).
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+async function adjustShopifyInventory(batchId, direction, showToast) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) { showToast('Shopify sync: not authenticated'); return; }
+
+    const res = await fetch(
+      `${SUPABASE_URL}/functions/v1/shopify-adjust-inventory`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'apikey': SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ batch_id: batchId, direction }),
+      }
+    );
+    const data = await res.json();
+    if (!res.ok || data?.error) {
+      showToast(`Shopify ${direction === 'revert' ? 'revert' : 'sync'} failed: ${data?.error || `HTTP ${res.status}`}`);
+    } else if (direction === 'complete') {
+      const n = data.adjusted;
+      const skippedNote = data.skipped?.length ? ` (${data.skipped.length} SKU${data.skipped.length !== 1 ? 's' : ''} not found in Shopify)` : '';
+      showToast(`Shopify: ${n} size${n !== 1 ? 's' : ''} updated${skippedNote}`);
+    } else {
+      const n = data.adjusted;
+      showToast(`Shopify: ${n} size${n !== 1 ? 's' : ''} reverted`);
+    }
+  } catch (err) {
+    showToast(`Shopify ${direction === 'revert' ? 'revert' : 'sync'}: ${err.message || 'network error'}`);
+  }
+}
+
 // ── Data-shape transformers ───────────────────────────────────────────────────
 
 function transformFabricType(ft) {
@@ -704,6 +743,9 @@ export function useAppData({ showToast }) {
       b.id === batchId ? { ...b, ...updates } : b
     ));
     showToast('Batch marked complete');
+
+    // Push inventory to Shopify (non-blocking — completion is never gated on this)
+    adjustShopifyInventory(batchId, 'complete', showToast);
   };
 
   const deleteProductionBatch = async (batchId) => {
@@ -716,6 +758,9 @@ export function useAppData({ showToast }) {
         b.id === batchId ? { ...b, ...revert } : b
       ));
       showToast('Batch moved back to In Progress');
+
+      // Reverse the Shopify inventory adjustment (non-blocking)
+      adjustShopifyInventory(batchId, 'revert', showToast);
     } else {
       await supabase.from('production_batches').delete().eq('id', batchId);
       setProductionBatches(prev => prev.filter(b => b.id !== batchId));
