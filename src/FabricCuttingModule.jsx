@@ -7274,9 +7274,105 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               ok:       { emoji: '✅', label: 'OK',        bg: 'bg-stone-50',   text: 'text-stone-500',  border: 'border-stone-200' },
             };
 
+            // Shared per-row derived values — used by both mobile cards and desktop table
+            const rowData = filtered.map(row => {
+              const meta = alertMeta[row.alert_level] || alertMeta.ok;
+              const hasVelocity = parseFloat(row.daily_velocity) > 0;
+              const dos = row.days_of_stock != null ? `${parseFloat(row.days_of_stock).toFixed(1)}d of stock` : null;
+              const actionText = (() => {
+                if (row.alert_level === 'critical') {
+                  return dos
+                    ? `${dos} left — no cuttings available. Cut fabric immediately.`
+                    : 'No cuttings available. Cut fabric immediately.';
+                }
+                if (row.alert_level === 'warning') {
+                  return dos
+                    ? `${dos} left — ${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`
+                    : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`;
+                }
+                if (row.alert_level === 'watch') {
+                  return dos
+                    ? `${dos} left — stock running low. Plan a cut or issue soon.`
+                    : 'Stock running low. Monitor closely.';
+                }
+                return 'Stock and cuttings are healthy — no action needed.';
+              })();
+              return { ...row, meta, hasVelocity, dos, actionText };
+            });
+
+            const footerText = (
+              <div className="px-4 py-2 border-t border-stone-100 text-xs text-stone-400">
+                Showing {filtered.length} of {pipelineActiveRunsOnly ? pipelineHealthData.filter(r => r.has_active_run).length : pipelineHealthData.length} size combinations
+                {pipelineActiveRunsOnly && ` (active runs only)`}
+              </div>
+            );
+
             return (
-              <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-                <div className="overflow-x-auto">
+              <div className="rounded-lg border border-stone-200 overflow-hidden bg-white">
+
+                {/* ── MOBILE: card list (hidden on sm+) ── */}
+                <div className="sm:hidden divide-y divide-stone-100">
+                  {rowData.map((row, i) => (
+                    <div key={i} className="p-4 space-y-3">
+                      {/* Header: style · size + Run badge */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="font-mono font-semibold text-stone-900 text-sm leading-snug">
+                          {row.style_code}
+                          <span className="text-stone-400 mx-1">·</span>
+                          {row.size}
+                          {row.has_active_run && (
+                            <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium not-font-mono">Run</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Metrics grid: 3 cols */}
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div className="bg-stone-50 rounded-lg px-2 py-2">
+                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Stock</div>
+                          <div className={`text-sm font-semibold ${row.shopify_stock < 0 ? 'text-red-700' : row.shopify_stock === 0 ? 'text-red-500' : 'text-stone-800'}`}>
+                            {row.shopify_stock}
+                          </div>
+                        </div>
+                        <div className="bg-stone-50 rounded-lg px-2 py-2">
+                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Vel/day</div>
+                          <div className="text-sm font-semibold text-stone-800">
+                            {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
+                          </div>
+                        </div>
+                        <div className="bg-stone-50 rounded-lg px-2 py-2">
+                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Days left</div>
+                          <div className={`text-sm font-semibold ${row.days_of_stock != null ? (row.days_of_stock < critDays ? 'text-red-600' : row.days_of_stock <= watchDays ? 'text-yellow-600' : 'text-stone-800') : 'text-stone-300'}`}>
+                            {row.days_of_stock != null ? `${parseFloat(row.days_of_stock).toFixed(1)}d` : '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-center">
+                        <div className="bg-stone-50 rounded-lg px-2 py-2">
+                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Available</div>
+                          <div className="text-sm font-semibold text-stone-800">{row.cuttings_available}</div>
+                        </div>
+                        <div className="bg-stone-50 rounded-lg px-2 py-2">
+                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">In Production</div>
+                          <div className="text-sm font-semibold text-stone-500">{row.cuttings_in_production}</div>
+                        </div>
+                      </div>
+
+                      {/* Status + action text */}
+                      <div className={`rounded-lg px-3 py-2.5 border ${row.meta.bg} ${row.meta.border}`}>
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="text-sm">{row.meta.emoji}</span>
+                          <span className={`text-xs font-semibold ${row.meta.text}`}>{row.meta.label}</span>
+                        </div>
+                        <p className={`text-xs leading-snug ${row.meta.text} opacity-80`}>{row.actionText}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── DESKTOP: table (hidden below sm) ── */}
+                <div className="hidden sm:block overflow-x-auto">
                   <table className="w-full text-sm min-w-[680px]">
                     <thead>
                       <tr className="border-b border-stone-100 bg-stone-50 text-xs text-stone-500 uppercase tracking-wide">
@@ -7290,70 +7386,43 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-100">
-                      {filtered.map((row, i) => {
-                        const meta = alertMeta[row.alert_level] || alertMeta.ok;
-                        const hasVelocity = parseFloat(row.daily_velocity) > 0;
-                        const dos = row.days_of_stock != null ? `${parseFloat(row.days_of_stock).toFixed(1)}d of stock` : null;
-
-                        const statusTooltip = (() => {
-                          if (row.alert_level === 'critical') {
-                            return dos
-                              ? `${dos} left — no cuttings available. Cut fabric for this size immediately.`
-                              : 'No cuttings available. Cut fabric for this size immediately.';
-                          }
-                          if (row.alert_level === 'warning') {
-                            return dos
-                              ? `${dos} left — ${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`
-                              : `${row.cuttings_available} cutting${row.cuttings_available !== 1 ? 's' : ''} available. Issue to production now.`;
-                          }
-                          if (row.alert_level === 'watch') {
-                            return dos
-                              ? `${dos} left — stock running low. Plan a cut or issue soon.`
-                              : 'Stock running low. Monitor closely.';
-                          }
-                          return 'Stock and cuttings are healthy — no action needed.';
-                        })();
-
-                        return (
-                          <tr key={i} className="hover:bg-stone-50 transition-colors">
-                            <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
-                              {row.style_code} <span className="text-stone-400">·</span> {row.size}
-                              {row.has_active_run && (
-                                <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded-full font-medium not-font-mono">Run</span>
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
-                            <td className="px-4 py-3 text-right text-stone-500 text-xs">
-                              {hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              {row.days_of_stock != null
-                                ? <span className={row.days_of_stock < critDays ? 'text-red-600 font-semibold' : row.days_of_stock <= watchDays ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
-                                    {parseFloat(row.days_of_stock).toFixed(1)}d
-                                  </span>
-                                : <span className="text-stone-300 text-xs">No data</span>
-                              }
-                            </td>
-                            <td className="px-4 py-3 text-right text-stone-700">{row.cuttings_available}</td>
-                            <td className="px-4 py-3 text-right text-stone-500">{row.cuttings_in_production}</td>
-                            <td className="px-4 py-3 text-right">
-                              <span
-                                title={statusTooltip}
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${meta.bg} ${meta.text} ${meta.border}`}
-                              >
-                                {meta.emoji} {meta.label}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      {rowData.map((row, i) => (
+                        <tr key={i} className="hover:bg-stone-50 transition-colors">
+                          <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
+                            {row.style_code} <span className="text-stone-400">·</span> {row.size}
+                            {row.has_active_run && (
+                              <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded-full font-medium not-font-mono">Run</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
+                          <td className="px-4 py-3 text-right text-stone-500 text-xs">
+                            {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {row.days_of_stock != null
+                              ? <span className={row.days_of_stock < critDays ? 'text-red-600 font-semibold' : row.days_of_stock <= watchDays ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
+                                  {parseFloat(row.days_of_stock).toFixed(1)}d
+                                </span>
+                              : <span className="text-stone-300 text-xs">No data</span>
+                            }
+                          </td>
+                          <td className="px-4 py-3 text-right text-stone-700">{row.cuttings_available}</td>
+                          <td className="px-4 py-3 text-right text-stone-500">{row.cuttings_in_production}</td>
+                          <td className="px-4 py-3 text-right">
+                            <span
+                              title={row.actionText}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${row.meta.bg} ${row.meta.text} ${row.meta.border}`}
+                            >
+                              {row.meta.emoji} {row.meta.label}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
-                <div className="px-4 py-2 border-t border-stone-100 text-xs text-stone-400">
-                  Showing {filtered.length} of {pipelineActiveRunsOnly ? pipelineHealthData.filter(r => r.has_active_run).length : pipelineHealthData.length} size combinations
-                  {pipelineActiveRunsOnly && ` (active runs only)`}
-                </div>
+
+                {footerText}
               </div>
             );
           })()}
