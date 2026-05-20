@@ -4908,7 +4908,11 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                             <AlertCircle className="w-3 h-3" /> Shopify not found
                           </span>
                         );
-                        return null; // synced — no badge needed, completion badge is enough
+                        return (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <CheckCircle2 className="w-3 h-3" /> Shopify synced
+                          </span>
+                        );
                       })()}
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
