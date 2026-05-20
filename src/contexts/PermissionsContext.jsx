@@ -74,15 +74,33 @@ export function PermissionsProvider({ children }) {
       return;
     }
 
+    const userId = user.id;
+
+    const fetchPerms = () =>
+      Promise.all([
+        supabase.from('user_profiles').select('*').eq('id', userId).single(),
+        supabase.from('user_permissions').select('*').eq('user_id', userId).single(),
+      ]).then(([{ data: prof }, { data: perms }]) => {
+        setProfile(prof);
+        setPermissions(perms);
+        setLoading(false);
+      }).catch(() => setLoading(false));
+
     setLoading(true);
-    Promise.all([
-      supabase.from('user_profiles').select('*').eq('id', user.id).single(),
-      supabase.from('user_permissions').select('*').eq('user_id', user.id).single(),
-    ]).then(([{ data: prof }, { data: perms }]) => {
-      setProfile(prof);
-      setPermissions(perms);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    fetchPerms();
+
+    // Re-fetch when an admin changes this user's profile or permissions so
+    // that access changes propagate live without requiring a page reload.
+    const ch = supabase.channel(`permissions-${userId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'user_profiles', filter: `id=eq.${userId}` },
+        fetchPerms)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'user_permissions', filter: `user_id=eq.${userId}` },
+        fetchPerms)
+      .subscribe();
+
+    return () => { supabase.removeChannel(ch); };
   // Use user?.id (stable) not user (new object on every Supabase token refresh).
   // If we depended on `user`, a token refresh on visibilitychange would re-run this
   // effect, set loading=true, and cause App.jsx to unmount FabricCuttingModule.

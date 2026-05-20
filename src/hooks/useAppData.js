@@ -377,6 +377,24 @@ export function useAppData({ showToast }) {
           if (id) delay(600).then(() => refetchCosting(id));
         })
 
+      // ── app_settings — re-read all settings when any key changes ──
+      // Ensures alert thresholds and other settings sync live across users.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' },
+        async () => {
+          const { data } = await supabase.from('app_settings').select('*');
+          if (!data?.length) return;
+          const s = Object.fromEntries(data.map(r => [r.key, r.value]));
+          setAlertSettings({
+            rolls_threshold:      s['alert_rolls_threshold']          ?? 2,
+            thans_threshold_m:    s['alert_thans_threshold_m']        ?? 50,
+            production_lead_days: Number(s['pipeline_production_lead_days'] ?? 3),
+            cutting_lead_days:    Number(s['pipeline_cutting_lead_days']    ?? 3),
+            fabric_lead_days:     Number(s['pipeline_fabric_lead_days']     ?? 7),
+            safety_buffer_days:   Number(s['pipeline_safety_buffer_days']   ?? 1),
+            overdue_batch_days:   Number(s['overdue_batch_days']            ?? 14),
+          });
+        })
+
       .subscribe();
 
     return () => { supabase.removeChannel(ch); };
