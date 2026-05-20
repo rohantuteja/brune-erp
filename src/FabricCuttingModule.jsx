@@ -3319,7 +3319,9 @@ function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
     const dos = a.days_of_stock != null ? `~${parseFloat(a.days_of_stock).toFixed(0)}d stock` : 'no velocity data';
     if (a.alert_level === 'critical') return `${a.style_code} · ${a.size}: ${dos}, 0 cuttings — cut fabric now`;
     if (a.alert_level === 'warning')  return `${a.style_code} · ${a.size}: ${dos}, ${a.cuttings_available} cuttings — issue to production now`;
-    return `${a.style_code} · ${a.size}: ${dos} — plan next cutting run`;
+    // watch — branch on cuttings availability
+    if (a.cuttings_available > 0)     return `${a.style_code} · ${a.size}: ${dos}, ${a.cuttings_available} cuttings — issue to production soon`;
+    return `${a.style_code} · ${a.size}: ${dos}, 0 cuttings — plan a cut soon`;
   };
 
   const sorted = [...alerts].sort((a, b) => {
