@@ -277,7 +277,7 @@ export default function FabricCuttingModule() {
       if (r._derivedStatus === 'completed' && runStatusFilter !== 'all') return false;
       const matchesStatus =
         runStatusFilter === 'all' ||
-        (runStatusFilter === 'active' && (r._derivedStatus === 'active' || r._derivedStatus === 'issued')) ||
+        (runStatusFilter === 'active' && r._derivedStatus === 'active') ||
         (runStatusFilter === 'issued' && r._derivedStatus === 'issued');
       const matchesSearch = !q || r.style_code.toLowerCase().includes(q);
       const matchesDate = !cutoffDate || r.last_append_date >= cutoffDate;
@@ -317,8 +317,17 @@ export default function FabricCuttingModule() {
     runs.forEach(r => r.pieces.forEach(p => { cut += p.quantity; }));
     const totalIssued = productionBatches.reduce((s, b) => s + (b.total_issued || 0), 0);
     const totalCompleted = productionBatches.filter(b => b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-    // activeCount = all runs with open work (cuttings available OR batches in progress)
-    const activeCount = runs.filter(r => isRunActive(r, productionBatches)).length;
+    // activeCount = runs where cuttings are still available to issue
+    const activeCount = runs.filter(r => {
+      const batches = productionBatches.filter(b => b.run_id === r.id);
+      const issuedBySize = {};
+      batches.forEach(b => {
+        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
+        });
+      });
+      return r.pieces.some(p => p.quantity > (issuedBySize[p.size] || 0));
+    }).length;
     // issuedCount = subset: all cuttings issued but ≥1 batch still in progress
     const issuedCount = runs.filter(r => {
       if (!isRunActive(r, productionBatches)) return false;
