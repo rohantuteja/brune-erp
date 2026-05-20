@@ -211,48 +211,83 @@ serve(async (req) => {
     await admin.from('shopify_inventory').delete().lt('synced_at', syncedAt)
 
     // ── 2. SYNC ORDER VELOCITY via ShopifyQL ────────────────────────
-    const shopifyqlRes = await shopifyGql(`{
-      shopifyqlQuery(query: "FROM sales SHOW net_items_sold SINCE -30d UNTIL today GROUP BY product_variant_sku LIMIT 5000") {
+    // Run all three lookback windows in parallel. Each is a lightweight
+    // analytics query — not paginated, so rate-limit impact is minimal.
+    // We store all three so the pipeline_health function can pick the right
+    // one based on the user's configured velocity_lookback_days setting.
+    const qlQuery = (window: string) => `{
+      shopifyqlQuery(query: "FROM sales SHOW net_items_sold SINCE -${window} UNTIL today GROUP BY product_variant_sku LIMIT 5000") {
         ... on ShopifyqlQueryResponse {
-          tableData {
-            columns { name }
-            rows
-          }
+          tableData { columns { name } rows }
           parseErrors
         }
       }
-    }`)
+    }`
 
-    const qlResult = shopifyqlRes.data.shopifyqlQuery
-    if (qlResult.parseErrors && qlResult.parseErrors.length > 0) {
-      throw new Error(`ShopifyQL parse error: ${qlResult.parseErrors[0]}`)
+    const [qlRes7, qlRes14, qlRes30] = await Promise.all([
+      shopifyGql(qlQuery('7d')),
+      shopifyGql(qlQuery('14d')),
+      shopifyGql(qlQuery('30d')),
+    ])
+
+    // Validate parse errors for all three
+    for (const [label, res] of [['7d', qlRes7], ['14d', qlRes14], ['30d', qlRes30]] as const) {
+      const errs = res.data.shopifyqlQuery.parseErrors
+      if (errs && errs.length > 0) throw new Error(`ShopifyQL parse error (${label}): ${errs[0]}`)
     }
 
-    const qlRows: Array<Record<string, string>> = qlResult.tableData?.rows || []
+    // Parse each window into a Map<sku, units_sold>
+    const parseQlRows = (res: any): Map<string, number> => {
+      const map = new Map<string, number>()
+      for (const row of (res.data.shopifyqlQuery.tableData?.rows || []) as Array<Record<string, string>>) {
+        const sku = row['product_variant_sku']
+        const sold = parseInt(row['net_items_sold'] || '0', 10)
+        if (sku && sold > 0) map.set(sku, sold)
+      }
+      return map
+    }
+
+    const map7  = parseQlRows(qlRes7)
+    const map14 = parseQlRows(qlRes14)
+    const map30 = parseQlRows(qlRes30)
+
+    // Union of all SKUs that sold in any window — each gets all 3 velocities.
+    // A SKU that only sold in the last 7 days will have 0 for 14d/30d and vice
+    // versa. This is intentional: the pipeline_health SQL treats 0 as "no
+    // velocity data" and will not generate false alerts.
+    const allSkus = new Set([...map7.keys(), ...map14.keys(), ...map30.keys()])
+
+    const round4 = (n: number) => Math.round(n * 10000) / 10000
+
     const velocityRows: Array<{
       style_code: string
       size: string
-      units_sold_30d: number
-      daily_velocity: number
+      units_sold_7d:  number; daily_velocity_7d:  number
+      units_sold_14d: number; daily_velocity_14d: number
+      units_sold_30d: number; daily_velocity:     number
       synced_at: string
     }> = []
 
-    for (const row of qlRows) {
-      const sku = row['product_variant_sku']
-      const netSold = parseInt(row['net_items_sold'] || '0', 10)
-      if (!sku || netSold <= 0) continue
-
+    for (const sku of allSkus) {
       const parts = sku.split('-')
       if (parts.length < 2) continue
       const size      = parts[parts.length - 1]
       const styleCode = parts.slice(0, -1).join('-')
 
+      const sold7  = map7.get(sku)  ?? 0
+      const sold14 = map14.get(sku) ?? 0
+      const sold30 = map30.get(sku) ?? 0
+
       velocityRows.push({
-        style_code:     styleCode,
+        style_code:         styleCode,
         size,
-        units_sold_30d: netSold,
-        daily_velocity: Math.round((netSold / 30) * 10000) / 10000,
-        synced_at:      syncedAt,
+        units_sold_7d:      sold7,
+        daily_velocity_7d:  round4(sold7  / 7),
+        units_sold_14d:     sold14,
+        daily_velocity_14d: round4(sold14 / 14),
+        units_sold_30d:     sold30,
+        daily_velocity:     round4(sold30 / 30),
+        synced_at:          syncedAt,
       })
     }
 

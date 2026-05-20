@@ -2811,13 +2811,14 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const [settingsSaving, setSettingsSaving] = useState(false);
   // Initialise form when panel opens or alertSettings changes
   const effectiveForm = settingsForm ?? {
-    rolls_threshold:      String(alertSettings.rolls_threshold),
-    thans_threshold_m:    String(alertSettings.thans_threshold_m),
-    production_lead_days: String(alertSettings.production_lead_days ?? 3),
-    cutting_lead_days:    String(alertSettings.cutting_lead_days    ?? 3),
-    fabric_lead_days:     String(alertSettings.fabric_lead_days     ?? 7),
-    safety_buffer_days:   String(alertSettings.safety_buffer_days   ?? 1),
-    overdue_batch_days:   String(alertSettings.overdue_batch_days   ?? 14),
+    rolls_threshold:        String(alertSettings.rolls_threshold),
+    thans_threshold_m:      String(alertSettings.thans_threshold_m),
+    production_lead_days:   String(alertSettings.production_lead_days   ?? 3),
+    cutting_lead_days:      String(alertSettings.cutting_lead_days      ?? 3),
+    fabric_lead_days:       String(alertSettings.fabric_lead_days       ?? 7),
+    safety_buffer_days:     String(alertSettings.safety_buffer_days     ?? 1),
+    overdue_batch_days:     String(alertSettings.overdue_batch_days     ?? 14),
+    velocity_lookback_days: String(alertSettings.velocity_lookback_days ?? 30),
   };
 
   // ── ALERTS ────────────────────────────────────────────────────────
@@ -3261,6 +3262,30 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               </div>
             </div>
 
+            {/* Velocity lookback window */}
+            <div>
+              <div className="text-xs font-medium text-stone-700 mb-1">Velocity lookback window</div>
+              <div className="text-xs text-stone-400 mb-2">
+                Days of Shopify sales used to compute daily velocity. Shorter = more reactive to recent trends.
+                Takes effect after the next Shopify sync.
+              </div>
+              <div className="flex gap-2">
+                {[7, 14, 30].map(d => (
+                  <button
+                    key={d}
+                    onClick={() => setSettingsForm(f => ({ ...(f ?? effectiveForm), velocity_lookback_days: String(d) }))}
+                    className={`px-4 py-2 text-xs font-medium rounded-md border transition-colors ${
+                      String(effectiveForm.velocity_lookback_days) === String(d)
+                        ? 'bg-stone-900 text-white border-stone-900'
+                        : 'bg-white text-stone-600 border-stone-300 hover:border-stone-500'
+                    }`}
+                  >
+                    {d}d
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <button
               disabled={settingsSaving}
               onClick={async () => {
@@ -3271,13 +3296,15 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 const fld = parseInt(effectiveForm.fabric_lead_days);
                 const sbd = parseInt(effectiveForm.safety_buffer_days);
                 const obd = parseInt(effectiveForm.overdue_batch_days);
+                const vlb = parseInt(effectiveForm.velocity_lookback_days);
                 if (isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
                 if (isNaN(pld) || pld < 1 || isNaN(cld) || cld < 1 || isNaN(fld) || fld < 1) return;
                 if (isNaN(sbd) || sbd < 0 || isNaN(obd) || obd < 1) return;
+                if (![7, 14, 30].includes(vlb)) return;
                 setSettingsSaving(true);
                 // Invalidate pipeline health cache so new thresholds take effect immediately
                 try { localStorage.removeItem('brune_pipeline_health_v3'); } catch {}
-                await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, production_lead_days: pld, cutting_lead_days: cld, fabric_lead_days: fld, safety_buffer_days: sbd, overdue_batch_days: obd });
+                await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, production_lead_days: pld, cutting_lead_days: cld, fabric_lead_days: fld, safety_buffer_days: sbd, overdue_batch_days: obd, velocity_lookback_days: vlb });
                 setSettingsForm(null);
                 setSettingsSaving(false);
               }}

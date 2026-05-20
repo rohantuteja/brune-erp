@@ -147,6 +147,7 @@ export function useAppData({ showToast }) {
     fabric_lead_days:         7,
     safety_buffer_days:       1,
     overdue_batch_days:       14,
+    velocity_lookback_days:   30,
   });
 
   // ── Fetch ───────────────────────────────────────────────────────────────────
@@ -199,13 +200,14 @@ export function useAppData({ showToast }) {
       if (settingsData?.length) {
         const s = Object.fromEntries(settingsData.map(r => [r.key, r.value]));
         setAlertSettings({
-          rolls_threshold:      s['alert_rolls_threshold']          ?? 2,
-          thans_threshold_m:    s['alert_thans_threshold_m']        ?? 50,
-          production_lead_days: Number(s['pipeline_production_lead_days'] ?? 3),
-          cutting_lead_days:    Number(s['pipeline_cutting_lead_days']    ?? 3),
-          fabric_lead_days:     Number(s['pipeline_fabric_lead_days']     ?? 7),
-          safety_buffer_days:   Number(s['pipeline_safety_buffer_days']   ?? 1),
-          overdue_batch_days:   Number(s['overdue_batch_days']            ?? 14),
+          rolls_threshold:        s['alert_rolls_threshold']          ?? 2,
+          thans_threshold_m:      s['alert_thans_threshold_m']        ?? 50,
+          production_lead_days:   Number(s['pipeline_production_lead_days'] ?? 3),
+          cutting_lead_days:      Number(s['pipeline_cutting_lead_days']    ?? 3),
+          fabric_lead_days:       Number(s['pipeline_fabric_lead_days']     ?? 7),
+          safety_buffer_days:     Number(s['pipeline_safety_buffer_days']   ?? 1),
+          overdue_batch_days:     Number(s['overdue_batch_days']            ?? 14),
+          velocity_lookback_days: Number(s['velocity_lookback_days']        ?? 30),
         });
       }
     } catch (err) {
@@ -385,13 +387,14 @@ export function useAppData({ showToast }) {
           if (!data?.length) return;
           const s = Object.fromEntries(data.map(r => [r.key, r.value]));
           setAlertSettings({
-            rolls_threshold:      s['alert_rolls_threshold']          ?? 2,
-            thans_threshold_m:    s['alert_thans_threshold_m']        ?? 50,
-            production_lead_days: Number(s['pipeline_production_lead_days'] ?? 3),
-            cutting_lead_days:    Number(s['pipeline_cutting_lead_days']    ?? 3),
-            fabric_lead_days:     Number(s['pipeline_fabric_lead_days']     ?? 7),
-            safety_buffer_days:   Number(s['pipeline_safety_buffer_days']   ?? 1),
-            overdue_batch_days:   Number(s['overdue_batch_days']            ?? 14),
+            rolls_threshold:        s['alert_rolls_threshold']          ?? 2,
+            thans_threshold_m:      s['alert_thans_threshold_m']        ?? 50,
+            production_lead_days:   Number(s['pipeline_production_lead_days'] ?? 3),
+            cutting_lead_days:      Number(s['pipeline_cutting_lead_days']    ?? 3),
+            fabric_lead_days:       Number(s['pipeline_fabric_lead_days']     ?? 7),
+            safety_buffer_days:     Number(s['pipeline_safety_buffer_days']   ?? 1),
+            overdue_batch_days:     Number(s['overdue_batch_days']            ?? 14),
+            velocity_lookback_days: Number(s['velocity_lookback_days']        ?? 30),
           });
         })
 
@@ -1367,6 +1370,7 @@ async function saveAlertSettingsImpl(supabase, values, setAlertSettings, showToa
     { key: 'pipeline_fabric_lead_days',        value: values.fabric_lead_days },
     { key: 'pipeline_safety_buffer_days',      value: values.safety_buffer_days },
     { key: 'overdue_batch_days',               value: values.overdue_batch_days },
+    { key: 'velocity_lookback_days',           value: values.velocity_lookback_days },
   ];
   const { error } = await supabase.from('app_settings').upsert(rows, { onConflict: 'key' });
   if (error) { showToast('Failed to save settings'); return false; }
