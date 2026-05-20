@@ -233,7 +233,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
           {filtered.map(product => {
             const variants = Array.isArray(product.variants) ? product.variants : [];
             const hasActiveRun = activeStyleCodes.has((product.style_code || '').toUpperCase());
-            const isZeroStock = product.total_inventory === 0;
+            const isZeroStock = product.total_inventory <= 0;
 
             return (
               <div
@@ -270,7 +270,9 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
                       <div
                         key={i}
                         className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs border font-medium ${
-                          v.qty === 0
+                          v.qty < 0
+                            ? 'bg-red-100 border-red-400 text-red-700'
+                            : v.qty === 0
                             ? 'bg-red-50 border-red-200 text-red-600'
                             : v.qty <= 3
                             ? 'bg-amber-50 border-amber-200 text-amber-700'
