@@ -4885,33 +4885,16 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                       }
                       {isComplete && (() => {
                         const adj = batch.shopify_adjustment;
-                        if (!adj) return (
-                          <span title="Shopify inventory was not updated" className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">
+                        const syncedSizes = (adj?.adjusted || []).join(', ');
+                        const notSyncedSizes = [...(adj?.failed || []).map(f => f.size), ...(adj?.skipped || [])].join(', ');
+                        if (!adj || (adj.adjusted?.length === 0 && (adj.failed?.length > 0 || adj.skipped?.length > 0))) return (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">
                             <AlertCircle className="w-3 h-3" /> Shopify not synced
                           </span>
                         );
-                        if (adj.status === 'partial') {
-                          const syncedSizes = (adj.adjusted || []).join(', ');
-                          const failedSizes = (adj.failed || []).map(f => f.size).join(', ');
-                          const skippedSizes = (adj.skipped || []).join(', ');
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                              <AlertCircle className="w-3 h-3" />
-                              Shopify partial
-                              {syncedSizes ? ` · ${syncedSizes} synced` : ''}
-                              {failedSizes ? ` · ${failedSizes} failed` : ''}
-                              {skippedSizes ? ` · ${skippedSizes} not found` : ''}
-                            </span>
-                          );
-                        }
-                        if (adj.status === 'failed') return (
-                          <span title="All Shopify inventory updates failed" className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">
-                            <AlertCircle className="w-3 h-3" /> Shopify failed
-                          </span>
-                        );
-                        if (adj.skipped?.length > 0 && adj.adjusted?.length === 0) return (
-                          <span title={`Sizes not found in Shopify: ${adj.skipped.join(', ')}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                            <AlertCircle className="w-3 h-3" /> Shopify not found
+                        if (adj.status === 'partial') return (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                            <AlertCircle className="w-3 h-3" /> Shopify partial · {syncedSizes} synced · {notSyncedSizes} not synced
                           </span>
                         );
                         return (
