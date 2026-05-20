@@ -9,6 +9,50 @@ import { supabase } from './lib/supabase';
 import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 
+// ── Pipeline health cache ─────────────────────────────────────────────────────
+// Caches the heavy pipeline_health RPC result in sessionStorage for 2 minutes.
+// On re-mount (e.g. returning to app on iPhone), stale data is shown instantly
+// while a background refresh runs only when the TTL has expired.
+// A module-level in-flight promise deduplicates concurrent callers so the
+// network request is made at most once even when two effects fire together.
+const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v1';
+const _PIPELINE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+let _pipelineInflight = null;
+
+function _readPipelineCache() {
+  try {
+    const raw = sessionStorage.getItem(_PIPELINE_CACHE_KEY);
+    if (!raw) return null;
+    const { data, ts } = JSON.parse(raw);
+    return Date.now() - ts < _PIPELINE_CACHE_TTL ? data : null;
+  } catch { return null; }
+}
+
+function _writePipelineCache(data) {
+  try {
+    sessionStorage.setItem(_PIPELINE_CACHE_KEY, JSON.stringify({ data, ts: Date.now() }));
+  } catch {}
+}
+
+/**
+ * Returns pipeline_health data, using a 2-minute sessionStorage cache.
+ * Multiple simultaneous callers share a single in-flight fetch.
+ */
+async function fetchPipelineHealth() {
+  const cached = _readPipelineCache();
+  if (cached) return cached;
+  if (_pipelineInflight) return _pipelineInflight;
+  _pipelineInflight = supabase.rpc('pipeline_health')
+    .then(({ data }) => {
+      const result = data || [];
+      _writePipelineCache(result);
+      _pipelineInflight = null;
+      return result;
+    })
+    .catch(() => { _pipelineInflight = null; return []; });
+  return _pipelineInflight;
+}
+
 const PAGE_TO_PATH = {
   home: '/',
   inventory: '/inventory',
@@ -91,10 +135,14 @@ export default function FabricCuttingModule() {
   const [prodView, setProdView] = useState('batches');
   const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
-  const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState([]);
+  const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState(() => {
+    // Seed from cache synchronously so the nav badge is visible on first paint
+    const cached = _readPipelineCache();
+    return cached ? cached.filter(r => r.alert_level !== 'ok') : [];
+  });
   useEffect(() => {
-    supabase.rpc('pipeline_health').then(({ data }) => {
-      setPipelineHealthAlerts((data || []).filter(r => r.alert_level !== 'ok'));
+    fetchPipelineHealth().then(data => {
+      setPipelineHealthAlerts(data.filter(r => r.alert_level !== 'ok'));
     });
   }, []);
   // Dashboard alert thresholds — loaded from DB via useAppData
@@ -2716,11 +2764,9 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
-  const [pipelineRawData, setPipelineRawData] = useState([]);
+  const [pipelineRawData, setPipelineRawData] = useState(() => _readPipelineCache() || []);
   useEffect(() => {
-    supabase.rpc('pipeline_health').then(({ data }) => {
-      setPipelineRawData(data || []);
-    });
+    fetchPipelineHealth().then(data => setPipelineRawData(data));
   }, []);
 
   const pipelineAlerts = useMemo(() => {
