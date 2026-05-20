@@ -140,7 +140,6 @@ export function useAppData({ showToast }) {
 
   // ── Alert settings ──────────────────────────────────────────────────────────
   const [alertSettings, setAlertSettings] = useState({
-    cuttings_left: 20,
     rolls_threshold: 2,
     thans_threshold_m: 50,
     pipeline_critical_days: 6,
@@ -198,7 +197,6 @@ export function useAppData({ showToast }) {
       if (settingsData?.length) {
         const s = Object.fromEntries(settingsData.map(r => [r.key, r.value]));
         setAlertSettings({
-          cuttings_left:          s['alert_cuttings_left_threshold'] ?? 20,
           rolls_threshold:        s['alert_rolls_threshold'] ?? 2,
           thans_threshold_m:      s['alert_thans_threshold_m'] ?? 50,
           pipeline_critical_days: Number(s['pipeline_critical_days'] ?? 6),
@@ -1340,7 +1338,6 @@ export function useAppData({ showToast }) {
 
 async function saveAlertSettingsImpl(supabase, values, setAlertSettings, showToast) {
   const rows = [
-    { key: 'alert_cuttings_left_threshold', value: values.cuttings_left },
     { key: 'alert_rolls_threshold',         value: values.rolls_threshold },
     { key: 'alert_thans_threshold_m',       value: values.thans_threshold_m },
     { key: 'pipeline_critical_days',        value: values.pipeline_critical_days },

@@ -2811,7 +2811,6 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
   const [settingsSaving, setSettingsSaving] = useState(false);
   // Initialise form when panel opens or alertSettings changes
   const effectiveForm = settingsForm ?? {
-    cuttings_left:          String(alertSettings.cuttings_left),
     rolls_threshold:        String(alertSettings.rolls_threshold),
     thans_threshold_m:      String(alertSettings.thans_threshold_m),
     pipeline_critical_days: String(alertSettings.pipeline_critical_days ?? 6),
@@ -2906,51 +2905,6 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       }
     });
 
-    // Alert 2 — Low cuttings left per style per size
-    runs.forEach(r => {
-      // Use the shared isRunActive definition (cuttings available OR open batch)
-      if (!isRunActive(r, productionBatches)) return;
-
-      // Build per-size cut totals from run_pieces
-      const cutBySize = {};
-      r.pieces.forEach(p => { cutBySize[p.size] = (cutBySize[p.size] || 0) + (p.quantity || 0); });
-
-      // Build per-size issued totals from issued_sizes JSONB on each batch
-      const issuedBySize = {};
-      productionBatches.filter(b => b.run_id === r.id).forEach(b => {
-        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
-          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
-        });
-      });
-
-      // Evaluate ALL standard sizes (catches sizes never cut, not just those in run_pieces)
-      // Then also evaluate any custom sizes that have been cut
-      const sizesToCheck = [
-        ...STANDARD_SIZES,
-        ...Object.keys(cutBySize).filter(s => !STANDARD_SIZES.includes(s)),
-      ];
-
-      sizesToCheck.forEach(size => {
-        const cut = cutBySize[size] || 0;
-        const issued = issuedBySize[size] || 0;
-        const leftToIssue = Math.max(0, cut - issued);
-
-        if (leftToIssue === 0) {
-          const reason = cut > 0 ? 'all issued, awaiting production' : 'no fabric cut yet';
-          list.push({
-            level: 'red',
-            text: `${r.style_code} · ${size}: 0 cuttings left — ${reason}`,
-            page: 'cuttings',
-          });
-        } else if (leftToIssue <= alertSettings.cuttings_left) {
-          list.push({
-            level: 'amber',
-            text: `${r.style_code} · ${size}: only ${leftToIssue} piece${leftToIssue !== 1 ? 's' : ''} left to issue — cut more soon`,
-            page: 'cuttings',
-          });
-        }
-      });
-    });
 
     // Alert 3 — Overdue batches
     productionBatches.filter(b => b.status === 'issued').forEach(b => {
@@ -3021,8 +2975,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       {/* ── ALERTS ── */}
       {can('can_view_alerts') && (() => {
         const inventoryAlerts = alerts.filter(a => a.page === 'inventory');
-        const cuttingAlerts = alerts.filter(a => a.page === 'cuttings');
-        const otherAlerts = alerts.filter(a => a.page !== 'inventory' && a.page !== 'cuttings');
+        const otherAlerts = alerts.filter(a => a.page !== 'inventory');
         const hasAny = alerts.length > 0 || pipelineAlerts.length > 0;
 
         const pagePermMap = {
@@ -3050,9 +3003,6 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             )}
             {inventoryAlerts.length > 0 && (
               <AlertGroup label="Stock Alerts" alerts={inventoryAlerts} onAlertTap={handleAlertTap} />
-            )}
-            {cuttingAlerts.length > 0 && (
-              <AlertGroup label="Low Cuttings" alerts={cuttingAlerts} onAlertTap={handleAlertTap} />
             )}
             {pipelineAlerts.length > 0 && (
               <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setAnalyticsSection={setAnalyticsSection} />
@@ -3207,21 +3157,6 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
         {showSettings && (
           <div className="px-3 sm:px-4 pb-4 border-t border-stone-100 pt-3 space-y-5">
 
-            {/* Cuttings left */}
-            <div>
-              <div className="text-xs font-medium text-stone-700 mb-1">Low cuttings left threshold</div>
-              <div className="text-xs text-stone-400 mb-2">Alert when a size within an active run has this many or fewer pieces left to issue</div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number" inputMode="numeric" min="1" max="500"
-                  value={effectiveForm.cuttings_left}
-                  onChange={e => setSettingsForm(f => ({ ...(f ?? effectiveForm), cuttings_left: e.target.value }))}
-                  className="w-24 px-3 py-2 text-sm border border-stone-300 rounded-md text-center font-medium min-h-[40px]"
-                />
-                <span className="text-sm text-stone-500">pieces</span>
-              </div>
-            </div>
-
             {/* Rolls */}
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Fabric type — rolls threshold</div>
@@ -3300,16 +3235,15 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             <button
               disabled={settingsSaving}
               onClick={async () => {
-                const cl  = parseInt(effectiveForm.cuttings_left);
                 const rt  = parseInt(effectiveForm.rolls_threshold);
                 const ttm = parseInt(effectiveForm.thans_threshold_m);
                 const pcd = parseInt(effectiveForm.pipeline_critical_days);
                 const pwd = parseInt(effectiveForm.pipeline_watch_days);
                 const obd = parseInt(effectiveForm.overdue_batch_days);
-                if (isNaN(cl) || cl < 1 || isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
+                if (isNaN(rt) || rt < 1 || isNaN(ttm) || ttm < 1) return;
                 if (isNaN(pcd) || pcd < 1 || isNaN(pwd) || pwd < 1 || isNaN(obd) || obd < 1) return;
                 setSettingsSaving(true);
-                await saveAlertSettings({ cuttings_left: cl, rolls_threshold: rt, thans_threshold_m: ttm, pipeline_critical_days: pcd, pipeline_watch_days: pwd, overdue_batch_days: obd });
+                await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, pipeline_critical_days: pcd, pipeline_watch_days: pwd, overdue_batch_days: obd });
                 setSettingsForm(null);
                 setSettingsSaving(false);
               }}
