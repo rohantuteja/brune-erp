@@ -4891,10 +4891,11 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
                           </span>
                         );
                         if (adj.status === 'partial') {
+                          const syncedSizes = (adj.adjusted || []).join(', ');
                           const failedSizes = (adj.failed || []).map(f => f.size).join(', ');
                           return (
-                            <span title={`Failed sizes: ${failedSizes}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                              <AlertCircle className="w-3 h-3" /> Shopify partial
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                              <AlertCircle className="w-3 h-3" /> Shopify partial · {syncedSizes} synced · {failedSizes} failed
                             </span>
                           );
                         }
