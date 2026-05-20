@@ -922,7 +922,7 @@ function InventoryTable({
           <FilterChip active={statusFilter === 'available'} onClick={() => setStatusFilter('available')}>Available</FilterChip>
           <FilterChip active={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>All</FilterChip>
           <FilterChip active={statusFilter === 'finished'} onClick={() => setStatusFilter('finished')}>Used up</FilterChip>
-          <span className="border-l border-stone-200 mx-1"></span>
+          <span className="text-stone-300 select-none">|</span>
           <FilterChip active={formatFilter === 'all'} onClick={() => setFormatFilter('all')}>All formats</FilterChip>
           <FilterChip active={formatFilter === 'roll'} onClick={() => setFormatFilter('roll')}>Rolls</FilterChip>
           <FilterChip active={formatFilter === 'than'} onClick={() => setFormatFilter('than')}>Thans</FilterChip>
@@ -1167,7 +1167,7 @@ function RunsListView({
           <FilterChip active={runStatusFilter === 'active'} onClick={() => setRunStatusFilter('active')} count={stats.activeCount}>Active</FilterChip>
           <FilterChip active={runStatusFilter === 'issued'} onClick={() => setRunStatusFilter('issued')} count={stats.issuedCount}>Issued</FilterChip>
           <FilterChip active={runStatusFilter === 'all'} onClick={() => setRunStatusFilter('all')} count={stats.runCount}>All</FilterChip>
-          <span className="border-l border-stone-200 mx-1"></span>
+          <span className="text-stone-300 select-none">|</span>
           <FilterChip active={dateRange === 'all'} onClick={() => setDateRange('all')}>All time</FilterChip>
           <FilterChip active={dateRange === 'this_month'} onClick={() => setDateRange('this_month')}>This month</FilterChip>
           <FilterChip active={dateRange === '30d'} onClick={() => setDateRange('30d')}>Last 30d</FilterChip>

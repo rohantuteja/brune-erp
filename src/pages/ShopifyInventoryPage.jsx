@@ -183,6 +183,8 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
           )}
         </div>
 
+        <span className="text-stone-300 select-none">|</span>
+
         <button
           onClick={() => setActiveRunsOnly(v => !v)}
           className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
@@ -194,6 +196,8 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
           <CheckCircle2 className="w-3.5 h-3.5" />
           Active runs only
         </button>
+
+        <span className="text-stone-300 select-none">|</span>
 
         <button
           onClick={() => setShowZeroStock(v => !v)}
