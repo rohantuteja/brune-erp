@@ -1195,6 +1195,12 @@ export function useAppData({ showToast }) {
         .update({ quantity: p.quantity })
         .eq('run_id', runId).eq('size', p.size);
     }
+    // Delete orphan rows for sizes no longer in the recalculated set (e.g. custom sizes removed)
+    const updatedSizeSet = new Set(newPieces.map(p => p.size));
+    const orphanSizes = run.pieces.map(p => p.size).filter(s => !updatedSizeSet.has(s));
+    if (orphanSizes.length > 0) {
+      await supabase.from('run_pieces').delete().eq('run_id', runId).in('size', orphanSizes);
+    }
     await supabase.from('runs').update({ last_append_date: lastDate }).eq('id', runId);
 
     setRuns(prev => prev.map(r => r.id === runId
