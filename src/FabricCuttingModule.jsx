@@ -121,6 +121,7 @@ export default function FabricCuttingModule() {
   const [editingStockId, setEditingStockId] = useState(null);
   const [duplicatingFromId, setDuplicatingFromId] = useState(null);
   const [editingCostingId, setEditingCostingId] = useState(null);
+  const [duplicatingCostingId, setDuplicatingCostingId] = useState(null);
   const [recordCuttingFor, setRecordCuttingFor] = useState(null);
   const [showStylePicker, setShowStylePicker] = useState(false);
   const [issuingForRun, setIssuingForRun] = useState(null);
@@ -646,8 +647,9 @@ export default function FabricCuttingModule() {
             searchTerm={costingSearchTerm} setSearchTerm={setCostingSearchTerm}
             fabricFilter={costingFabricFilter} setFabricFilter={setCostingFabricFilter}
             sortBy={costingSort} setSortBy={setCostingSort}
-            onAdd={() => setEditingCostingId('new')}
-            onEdit={(id) => setEditingCostingId(id)}
+            onAdd={() => { setDuplicatingCostingId(null); setEditingCostingId('new'); }}
+            onEdit={(id) => { setDuplicatingCostingId(null); setEditingCostingId(id); }}
+            onDuplicate={(id) => { setDuplicatingCostingId(id); setEditingCostingId('new'); }}
             onDelete={deleteCosting}
           />
         )}
@@ -761,12 +763,13 @@ export default function FabricCuttingModule() {
       {editingCostingId !== null && (
         <CostingFormModal
           existing={editingCostingId === 'new' ? null : costings.find(c => c.id === editingCostingId)}
+          duplicateFrom={duplicatingCostingId ? costings.find(c => c.id === duplicatingCostingId) : null}
           styleCodes={styleCodes}
           existingCostings={costings}
           fabricTypes={fabricTypes}
           getMaxCostPerMeter={getMaxCostPerMeter}
-          onClose={() => setEditingCostingId(null)}
-          onSave={(data) => { upsertCosting(data); setEditingCostingId(null); }}
+          onClose={() => { setEditingCostingId(null); setDuplicatingCostingId(null); }}
+          onSave={(data) => { upsertCosting(data); setEditingCostingId(null); setDuplicatingCostingId(null); }}
         />
       )}
       {showStylePicker && <StylePickerModal
@@ -4209,7 +4212,7 @@ function SupplierFormModal({ existing, onClose, onSave }) {
   );
 }
 
-function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, getCostingTotal, searchTerm, setSearchTerm, fabricFilter, setFabricFilter, sortBy, setSortBy, onAdd, onEdit, onDelete }) {
+function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, getCostingTotal, searchTerm, setSearchTerm, fabricFilter, setFabricFilter, sortBy, setSortBy, onAdd, onEdit, onDuplicate, onDelete }) {
   const { can } = usePermissions();
   const canEdit = can('can_edit_costing');
   const canDelete = can('can_delete_costing');
@@ -4318,6 +4321,7 @@ function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, ge
                       <div className="text-lg font-semibold text-stone-900">₹{total.toFixed(2)}</div>
                     </div>
                     <div className="flex gap-1">
+                      {canEdit && <button onClick={() => onDuplicate(c.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Duplicate"><Copy className="w-4 h-4" /></button>}
                       {canEdit && <button onClick={() => onEdit(c.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
                       {canDelete && <button onClick={() => setConfirmDeleteId(c.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                     </div>
@@ -4359,8 +4363,11 @@ function CostMini({ label, value }) {
   );
 }
 
-function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes, getMaxCostPerMeter, onClose, onSave }) {
+function CostingFormModal({ existing, duplicateFrom, styleCodes, existingCostings, fabricTypes, getMaxCostPerMeter, onClose, onSave }) {
   const isEdit = !!existing;
+  // When duplicating, pre-fill everything from the source except style code
+  const prefill = !isEdit ? duplicateFrom : null;
+
   const [pickedStyleId, setPickedStyleId] = useState(
     isEdit ? (styleCodes.find(s => s.code === existing.style_code)?.id || '') : ''
   );
@@ -4376,28 +4383,28 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
     : null;
 
   const [fabricLines, setFabricLines] = useState(
-    existing?.fabric_lines?.length
-      ? existing.fabric_lines.map(l => ({ fabric_type_id: l.fabric_type_id || '', avg_meters: l.avg_meters || '' }))
+    (existing ?? prefill)?.fabric_lines?.length
+      ? (existing ?? prefill).fabric_lines.map(l => ({ fabric_type_id: l.fabric_type_id || '', avg_meters: l.avg_meters || '' }))
       : [{ fabric_type_id: '', avg_meters: '' }]
   );
 
   const [fabricOverride, setFabricOverride] = useState(
-    existing?.fabric_cost_override != null
+    (existing ?? prefill)?.fabric_cost_override != null
   );
   const [fabricOverrideValue, setFabricOverrideValue] = useState(
-    existing?.fabric_cost_override != null ? String(existing.fabric_cost_override) : ''
+    (existing ?? prefill)?.fabric_cost_override != null ? String((existing ?? prefill).fabric_cost_override) : ''
   );
 
   const [costs, setCosts] = useState({
-    cutting_cost: existing?.cutting_cost ?? '18',
-    stitching_cost: existing?.stitching_cost ?? '',
-    trims_cost: existing?.trims_cost ?? '',
-    finishing_cost: existing?.finishing_cost ?? '5',
+    cutting_cost:   (existing ?? prefill)?.cutting_cost   ?? '18',
+    stitching_cost: (existing ?? prefill)?.stitching_cost ?? '',
+    trims_cost:     (existing ?? prefill)?.trims_cost     ?? '',
+    finishing_cost: (existing ?? prefill)?.finishing_cost ?? '5',
   });
 
   const [customLines, setCustomLines] = useState(
-    existing?.custom_lines?.length
-      ? existing.custom_lines.map(l => ({ label: l.label || '', amount: l.amount ?? '' }))
+    (existing ?? prefill)?.custom_lines?.length
+      ? (existing ?? prefill).custom_lines.map(l => ({ label: l.label || '', amount: l.amount ?? '' }))
       : []
   );
 
@@ -4485,7 +4492,7 @@ function CostingFormModal({ existing, styleCodes, existingCostings, fabricTypes,
 
   return (
     <Modal
-      title={isEdit ? `Edit Costing — ${existing.style_code}` : 'Add Costing'}
+      title={isEdit ? `Edit Costing — ${existing.style_code}` : prefill ? `Duplicate Costing — ${prefill.style_code}` : 'Add Costing'}
       onClose={onClose}
       wide
       footer={
