@@ -7394,7 +7394,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 { value: 'critical', label: '🔴 Critical' },
                 { value: 'warning',  label: '🟠 Warning' },
                 { value: 'watch',    label: '🟡 Watch' },
-                { value: 'ok',       label: 'OK' },
+                { value: 'ok',       label: '🟢 OK' },
               ].map(f => (
                 <button
                   key={f.value}
