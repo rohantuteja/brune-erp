@@ -29,15 +29,11 @@ serve(async (req) => {
       const token = authHeader.replace(/^Bearer /i, '').trim()
       if (!token) throw new Error('Unauthorized')
 
-      const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'apikey': serviceRoleKey },
-      })
-      if (!userRes.ok) throw new Error('Unauthorized')
-      const userData = await userRes.json()
-      if (!userData?.id) throw new Error('Unauthorized')
+      const { data: { user }, error: authError } = await admin.auth.getUser(token)
+      if (authError || !user?.id) throw new Error('Unauthorized')
 
       const { data: profile } = await admin
-        .from('user_profiles').select('role').eq('id', userData.id).single()
+        .from('user_profiles').select('role').eq('id', user.id).single()
       if (profile?.role !== 'admin') throw new Error('Forbidden: admin only')
     }
 

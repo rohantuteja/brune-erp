@@ -3307,6 +3307,10 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, production_lead_days: pld, cutting_lead_days: cld, fabric_lead_days: fld, safety_buffer_days: sbd, overdue_batch_days: obd, velocity_lookback_days: vlb });
                 setSettingsForm(null);
                 setSettingsSaving(false);
+                // Re-fetch pipeline health immediately so the new lookback / thresholds
+                // are reflected without requiring a page refresh.
+                fetchPipelineHealth(fresh => setPipelineRawData(fresh))
+                  .then(data => setPipelineRawData(data));
               }}
               className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 min-h-[40px]"
             >
