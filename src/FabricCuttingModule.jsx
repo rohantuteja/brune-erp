@@ -8071,9 +8071,20 @@ function colorMap(c) {
     // Special
     'Printed': '#9ca3af', 'Multi Colour': '#9ca3af',
   };
-  const key = Object.keys(custom).find(k => k.toLowerCase() === c.toLowerCase());
-  if (key) return custom[key];
-  return c.toLowerCase();
+  // 1. Exact match (case-insensitive)
+  const exact = Object.keys(custom).find(k => k.toLowerCase() === c.toLowerCase());
+  if (exact) return custom[exact];
+
+  // 2. Substring match — find longest color name contained in the string
+  // Sort by length descending so "Dark Blue" wins over "Blue"
+  const lower = c.toLowerCase();
+  const subKey = Object.keys(custom)
+    .sort((a, b) => b.length - a.length)
+    .find(k => lower.includes(k.toLowerCase()));
+  if (subKey) return custom[subKey];
+
+  // 3. Unknown — return neutral grey
+  return '#9ca3af';
 }
 
 function Modal({ title, onClose, wide, children, footer }) {
