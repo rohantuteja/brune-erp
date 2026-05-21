@@ -3389,26 +3389,25 @@ function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
     const cuts = a.cuttings_available;
     const fab  = a.fabric_available; // true | false | null
     const loc  = `${a.style_code} · ${a.size}`;
-    const bottleneck = cuts > 0 ? `${cuts} cuttings ready` : `${a.shopify_stock} units left`;
-    const prefix = eStr
-      ? (a.alert_level !== 'watch' || cuts > 0 ? `${loc}: ${eStr} · ${bottleneck}` : `${loc}: ${eStr}`)
-      : `${loc}: ${bottleneck}`;
+    const cutsStr  = cuts > 0 ? `${cuts} cuttings ready` : `${cuts} cuttings available`;
+    const stockStr = `${a.shopify_stock} units left`;
+    const p = (num) => eStr ? `${loc}: ${eStr} · ${num}` : `${loc}: ${num}`;
     if (a.alert_level === 'critical') {
-      if (cuts > 0)       return `${prefix} — issue to production NOW`;
-      if (fab === true)   return `${prefix} — cut fabric NOW`;
-      if (fab === false)  return `${prefix} — order fabric URGENTLY`;
-      return `${prefix} — check fabric and act NOW`;
+      if (cuts > 0)       return `${p(cutsStr)} — issue to production NOW`;
+      if (fab === true)   return `${p(cutsStr)} — cut fabric NOW`;
+      if (fab === false)  return `${p(stockStr)} — order fabric URGENTLY`;
+      return `${p(stockStr)} — check fabric and act NOW`;
     }
     if (a.alert_level === 'warning') {
-      if (cuts > 0)       return `${prefix} — issue to production soon`;
-      if (fab === true)   return `${prefix} — cut fabric now`;
-      if (fab === false)  return `${prefix} — order fabric now`;
-      return `${prefix} — cut or order fabric`;
+      if (cuts > 0)       return `${p(cutsStr)} — issue to production soon`;
+      if (fab === true)   return `${p(cutsStr)} — cut fabric now`;
+      if (fab === false)  return `${p(stockStr)} — order fabric now`;
+      return `${p(stockStr)} — cut or order fabric`;
     }
     // watch
-    if (cuts > 0)         return `${prefix} — plan to issue soon`;
-    if (fab === true)     return eStr ? `${loc}: ${eStr} — plan a cut` : `${loc} — plan a cut`;
-    if (fab === false)    return eStr ? `${loc}: ${eStr} — order fabric` : `${loc} — order fabric`;
+    if (cuts > 0)         return `${p(cutsStr)} — plan to issue soon`;
+    if (fab === true)     return `${p(cutsStr)} — plan a cut`;
+    if (fab === false)    return `${p(stockStr)} — order fabric`;
     return eStr ? `${loc}: ${eStr} — check fabric availability` : `${loc} — check fabric availability`;
   };
 
@@ -7482,29 +7481,27 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 return 'OK';
               })();
               // Detailed tooltip / mobile description
-              const bottleneckStr = cuts > 0
-                ? `${cuts} cuttings ready`
-                : `${row.shopify_stock} units left`;
-              const prefix = effStr
-                ? (cuts > 0 || row.alert_level !== 'watch' ? `${effStr} · ${bottleneckStr}` : effStr)
-                : (cuts > 0 || row.alert_level !== 'watch' ? bottleneckStr : null);
+              // Cuttings-action scenarios show cuttings count (even 0); order scenarios show stock
+              const cutsStr  = cuts > 0 ? `${cuts} cuttings ready` : `${cuts} cuttings available`;
+              const stockStr = `${row.shopify_stock} units left`;
+              const p = (num) => effStr ? `${effStr} · ${num}` : num;
               const actionText = (() => {
                 if (row.alert_level === 'critical') {
-                  if (cuts > 0)      return prefix ? `${prefix} — issue to production NOW` : 'Issue to production NOW';
-                  if (fab === true)  return prefix ? `${prefix} — cut fabric NOW` : 'Cut fabric NOW';
-                  if (fab === false) return prefix ? `${prefix} — order fabric URGENTLY` : 'Order fabric URGENTLY';
-                  return prefix ? `${prefix} — check fabric and act NOW` : 'Check fabric availability and act NOW';
+                  if (cuts > 0)      return `${p(cutsStr)} — issue to production NOW`;
+                  if (fab === true)  return `${p(cutsStr)} — cut fabric NOW`;
+                  if (fab === false) return `${p(stockStr)} — order fabric URGENTLY`;
+                  return `${p(stockStr)} — check fabric and act NOW`;
                 }
                 if (row.alert_level === 'warning') {
-                  if (cuts > 0)      return prefix ? `${prefix} — issue to production soon` : 'Issue to production soon';
-                  if (fab === true)  return prefix ? `${prefix} — cut fabric now` : 'Cut fabric now';
-                  if (fab === false) return prefix ? `${prefix} — order fabric now` : 'Order fabric now';
-                  return prefix ? `${prefix} — cut or order fabric` : 'Cut or order fabric';
+                  if (cuts > 0)      return `${p(cutsStr)} — issue to production soon`;
+                  if (fab === true)  return `${p(cutsStr)} — cut fabric now`;
+                  if (fab === false) return `${p(stockStr)} — order fabric now`;
+                  return `${p(stockStr)} — cut or order fabric`;
                 }
                 if (row.alert_level === 'watch') {
-                  if (cuts > 0)      return prefix ? `${prefix} — plan to issue soon` : 'Plan to issue soon';
-                  if (fab === true)  return effStr ? `${effStr} — plan a cut` : 'Plan a cut';
-                  if (fab === false) return effStr ? `${effStr} — order fabric` : 'Order fabric';
+                  if (cuts > 0)      return `${p(cutsStr)} — plan to issue soon`;
+                  if (fab === true)  return `${p(cutsStr)} — plan a cut`;
+                  if (fab === false) return `${p(stockStr)} — order fabric`;
                   return effStr ? `${effStr} — check fabric availability` : 'Check fabric availability';
                 }
                 return 'Stock levels are healthy — no action needed.';
