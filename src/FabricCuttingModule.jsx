@@ -6236,11 +6236,11 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       const costing = costings.find(c =>
         (c.style_code || '').toUpperCase() === (run.style_code || '').toUpperCase()
       );
-      if (!costing) { uncostyledCuttingsQty += cuttingsAvailable; continue; }
+      if (!costing) uncostyledCuttingsQty += cuttingsAvailable;
 
       const value = cuttingsAvailable * getFabricCostPerPiece(costing);
       cuttingsWip += value;
-      if (!cuttingsByStyle[run.style_code]) cuttingsByStyle[run.style_code] = { qty: 0, value: 0 };
+      if (!cuttingsByStyle[run.style_code]) cuttingsByStyle[run.style_code] = { qty: 0, value: 0, hasCost: !!costing };
       cuttingsByStyle[run.style_code].qty += cuttingsAvailable;
       cuttingsByStyle[run.style_code].value += value;
     }
@@ -7097,16 +7097,27 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   return (
                     <div key={code} className="p-3 sm:p-4">
                       <div className="flex items-center justify-between mb-1.5">
-                        <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
-                        <span className="text-sm font-semibold text-stone-900">₹{d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
+                          {!d.hasCost && (
+                            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
+                          )}
+                        </div>
+                        <span className="text-sm font-semibold text-stone-900">
+                          {d.hasCost ? `₹${d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : `${d.qty} pcs`}
+                        </span>
                       </div>
-                      <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
-                        <div className="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
-                      </div>
-                      <div className="flex justify-between text-[11px] text-stone-400">
-                        <span>{d.qty} pcs ready to issue</span>
-                        <span>{pct}% of cuttings WIP</span>
-                      </div>
+                      {d.hasCost && (
+                        <>
+                          <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
+                            <div className="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="flex justify-between text-[11px] text-stone-400">
+                            <span>{d.qty} pcs ready to issue</span>
+                            <span>{pct}% of cuttings WIP</span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   );
                 })}
