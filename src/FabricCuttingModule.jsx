@@ -7089,7 +7089,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
               <div className="p-3 sm:p-4 border-b border-stone-200">
                 <div className="text-sm font-medium text-stone-900">Cuttings WIP by Style</div>
-                <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces cut but not yet issued to karigars</div>
+                <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces cut but not yet issued · waiting to go to karigars</div>
               </div>
               <div className="divide-y divide-stone-100">
                 {Object.entries(wipStats.cuttingsByStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
@@ -7113,7 +7113,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             <div className="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
                           </div>
                           <div className="flex justify-between text-[11px] text-stone-400">
-                            <span>{d.qty} pcs ready to issue</span>
+                            <span>{d.qty} pcs waiting to issue</span>
                             <span>{pct}% of cuttings WIP</span>
                           </div>
                         </>
@@ -7130,7 +7130,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
               <div className="p-3 sm:p-4 border-b border-stone-200">
                 <div className="text-sm font-medium text-stone-900">Production WIP by Style</div>
-                <div className="text-xs text-stone-500 mt-0.5">Value of pieces currently with karigars (issued but not completed)</div>
+                <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces issued to karigars but not yet completed · currently in stitching</div>
               </div>
               <div className="divide-y divide-stone-100">
                 {Object.entries(wipStats.byStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
@@ -7154,7 +7154,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             <div className="h-full bg-amber-400 rounded-full" style={{ width: `${pct}%` }} />
                           </div>
                           <div className="flex justify-between text-[11px] text-stone-400">
-                            <span>{d.qty} pcs in progress</span>
+                            <span>{d.qty} pcs with karigars</span>
                             <span>{pct}% of production WIP</span>
                           </div>
                         </>
