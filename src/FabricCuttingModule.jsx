@@ -6409,13 +6409,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const sections = [
     { id: 'inventory', label: 'Inventory Value' },
     { id: 'shopify_stock', label: 'Shopify Stock Value' },
+    { id: 'wip', label: 'WIP Value' },
     { id: 'pipeline_health', label: 'Pipeline Health' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
     { id: 'costing', label: 'Costing' },
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'fabric_usage', label: 'Fabric Usage' },
-    { id: 'wip', label: 'WIP Value' },
   ];
 
   return (
