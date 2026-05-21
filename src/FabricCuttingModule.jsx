@@ -5676,6 +5676,14 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [shopifyUncostedExpanded, setShopifyUncostedExpanded] = useState(false);
   const [shopifyNegativeExpanded, setShopifyNegativeExpanded] = useState(false);
 
+  // ── WIP Snapshot state ───────────────────────────────────────────────
+  const [wipSnapshots, setWipSnapshots] = useState([]);
+  const [wipSnapshotsLoading, setWipSnapshotsLoading] = useState(false);
+  const [takingWipSnapshot, setTakingWipSnapshot] = useState(false);
+  const [expandedWipSnapshotId, setExpandedWipSnapshotId] = useState(null);
+  const [deletingWipSnapshotId, setDeletingWipSnapshotId] = useState(null);
+  const [confirmDeleteWipSnapshotId, setConfirmDeleteWipSnapshotId] = useState(null);
+
   // ── Pipeline Health state ────────────────────────────────────────────
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
@@ -5752,6 +5760,90 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [activeSection]);
+
+  const fetchWipSnapshots = async () => {
+    setWipSnapshotsLoading(true);
+    const { data } = await supabase
+      .from('wip_snapshots')
+      .select('*')
+      .order('month', { ascending: false })
+      .limit(24);
+    setWipSnapshots(data || []);
+    setWipSnapshotsLoading(false);
+  };
+
+  useEffect(() => {
+    if (activeSection !== 'wip') return;
+    fetchWipSnapshots();
+  }, [activeSection]);
+
+  const takeWipSnapshot = async () => {
+    if (takingWipSnapshot) return;
+    setTakingWipSnapshot(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/take-wip-snapshot`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+          body: JSON.stringify({ force: true }),
+        }
+      );
+      const json = await res.json();
+      if (!res.ok || json?.error) {
+        showToast(json?.error || 'Failed to take WIP snapshot', 'error');
+      } else {
+        showToast('WIP snapshot taken!', 'success');
+        await fetchWipSnapshots();
+      }
+    } catch { showToast('Error taking WIP snapshot', 'error'); }
+    finally { setTakingWipSnapshot(false); }
+  };
+
+  const downloadWipSnapshotCSV = (snap) => {
+    const breakdown = snap.style_breakdown && typeof snap.style_breakdown === 'object'
+      ? Object.entries(snap.style_breakdown) : [];
+    if (breakdown.length === 0) { showToast('No data in this snapshot', 'info'); return; }
+    const header = ['Style Code', 'Cuttings Qty', 'Cuttings Value (₹)', 'Production Qty', 'Production Value (₹)', 'Has Costing'];
+    const rows = breakdown
+      .sort((a, b) => (b[1].cuttings_value + b[1].production_value) - (a[1].cuttings_value + a[1].production_value))
+      .map(([code, d]) => [
+        code,
+        d.cuttings_qty,
+        d.cuttings_value.toFixed(2),
+        d.production_qty,
+        d.production_value.toFixed(2),
+        d.has_cost ? 'Yes' : 'No',
+      ]);
+    const summary = [
+      ['', '', '', '', '', ''],
+      ['Summary', '', '', '', '', ''],
+      ['Fabric Stock Value', parseFloat(snap.fabric_stock_value).toFixed(2), '', '', '', ''],
+      ['Cuttings WIP', parseFloat(snap.cuttings_wip).toFixed(2), '', '', '', ''],
+      ['Production WIP', parseFloat(snap.production_wip).toFixed(2), '', '', '', ''],
+      ['Total WIP', parseFloat(snap.total_wip).toFixed(2), '', '', '', ''],
+    ];
+    const csv = [[header, ...rows, ...summary].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')].join('');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `wip-snapshot-${snap.month}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const deleteWipSnapshot = async (snapId) => {
+    try {
+      const { error } = await supabase.from('wip_snapshots').delete().eq('id', snapId);
+      if (error) throw error;
+      setWipSnapshots(prev => prev.filter(s => s.id !== snapId));
+      if (expandedWipSnapshotId === snapId) setExpandedWipSnapshotId(null);
+      showToast('Snapshot deleted', 'success');
+    } catch { showToast('Failed to delete snapshot', 'error'); }
+    finally { setDeletingWipSnapshotId(null); setConfirmDeleteWipSnapshotId(null); }
+  };
 
   const fetchPipelineHealth = async () => {
     setPipelineHealthLoading(true);
@@ -7179,6 +7271,201 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               No production or cuttings WIP right now. Your capital is currently in fabric stock only.
             </div>
           )}
+
+          {/* ── Monthly Snapshots ── */}
+          <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+            <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-medium text-stone-900">Monthly Snapshots</div>
+                <div className="text-xs text-stone-500 mt-0.5">
+                  Auto-captured at 11:55 PM IST on the last day of each month. Records WIP value for accounting.
+                </div>
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={takeWipSnapshot}
+                  disabled={takingWipSnapshot}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  {takingWipSnapshot ? 'Taking…' : 'Take Now'}
+                </button>
+              )}
+            </div>
+
+            {wipSnapshotsLoading ? (
+              <div className="p-6 text-center text-sm text-stone-400">Loading snapshots…</div>
+            ) : wipSnapshots.length === 0 ? (
+              <div className="p-6 text-center">
+                <Camera className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+                <div className="text-sm text-stone-500">No snapshots yet</div>
+                <div className="text-xs text-stone-400 mt-0.5">Auto-captured on the last day of each month, or take one manually.</div>
+              </div>
+            ) : (
+              <div className="divide-y divide-stone-100">
+                {wipSnapshots.map((snap, idx) => {
+                  const prevSnap = wipSnapshots[idx + 1];
+                  const totalVal = parseFloat(snap.total_wip) || 0;
+                  const prevVal = prevSnap ? (parseFloat(prevSnap.total_wip) || 0) : null;
+                  const momDiff = prevVal !== null ? totalVal - prevVal : null;
+                  const momPct = prevVal && prevVal > 0 ? (momDiff / prevVal) * 100 : null;
+                  const isExpanded = expandedWipSnapshotId === snap.id;
+                  const isCurrentMonth = snap.month === currentMonthStr();
+                  const isConfirmDelete = confirmDeleteWipSnapshotId === snap.id;
+                  const breakdown = snap.style_breakdown && typeof snap.style_breakdown === 'object'
+                    ? Object.entries(snap.style_breakdown) : [];
+                  const stockVal = parseFloat(snap.fabric_stock_value) || 0;
+                  const cutWip = parseFloat(snap.cuttings_wip) || 0;
+                  const prodWip = parseFloat(snap.production_wip) || 0;
+
+                  return (
+                    <div key={snap.id}>
+                      <button
+                        onClick={() => setExpandedWipSnapshotId(prev => prev === snap.id ? null : snap.id)}
+                        className="w-full flex items-center gap-3 p-3 sm:p-4 hover:bg-stone-50 transition-colors text-left"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-medium text-stone-900">{fmtMonth(snap.month)}</span>
+                            {isCurrentMonth && (
+                              <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                            <span className="text-base font-bold text-stone-900">
+                              ₹{totalVal.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            </span>
+                            {momDiff !== null && (
+                              <span className={`text-xs font-medium flex items-center gap-0.5 ${momDiff >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                {momDiff >= 0 ? '▲' : '▼'}
+                                ₹{Math.abs(momDiff).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                {momPct !== null && ` (${Math.abs(momPct).toFixed(1)}%)`}
+                                <span className="text-stone-400 font-normal ml-1">vs prev month</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-stone-400 mt-0.5">
+                            Stock ₹{stockVal.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            {' · '}Cuttings ₹{cutWip.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            {' · '}Production ₹{prodWip.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span
+                            role="button"
+                            onClick={e => { e.stopPropagation(); downloadWipSnapshotCSV(snap); }}
+                            className="p-1.5 rounded hover:bg-stone-100 text-stone-400 hover:text-stone-600 transition-colors"
+                            title="Download CSV"
+                          >
+                            <Download className="w-4 h-4" />
+                          </span>
+                          {isAdmin && (
+                            <span
+                              role="button"
+                              onClick={e => { e.stopPropagation(); setConfirmDeleteWipSnapshotId(snap.id); }}
+                              className="p-1.5 rounded hover:bg-red-100 text-stone-400 hover:text-red-600 transition-colors"
+                              title="Delete snapshot"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </span>
+                          )}
+                          {isExpanded ? <ChevronUp className="w-4 h-4 text-stone-400" /> : <ChevronDown className="w-4 h-4 text-stone-400" />}
+                        </div>
+                      </button>
+
+                      {isConfirmDelete && (
+                        <div className="flex items-center gap-3 px-4 py-3 bg-red-50 border-t border-red-200">
+                          <span className="text-sm text-red-800 flex-1">Delete the <strong>{fmtMonth(snap.month)}</strong> WIP snapshot? This cannot be undone.</span>
+                          <button
+                            onClick={() => { setDeletingWipSnapshotId(snap.id); deleteWipSnapshot(snap.id); }}
+                            disabled={deletingWipSnapshotId === snap.id}
+                            className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 disabled:opacity-50 transition-colors"
+                          >
+                            {deletingWipSnapshotId === snap.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteWipSnapshotId(null)}
+                            className="px-3 py-1.5 bg-white border border-stone-300 text-stone-700 text-xs font-medium rounded hover:bg-stone-50 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      {isExpanded && (
+                        <div className="border-t border-stone-100 bg-stone-50">
+                          {breakdown.length === 0 ? (
+                            <div className="p-4 text-sm text-stone-400 text-center">No style breakdown in this snapshot.</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-stone-200 text-stone-500">
+                                    <th className="text-left px-4 py-2 font-medium">Style</th>
+                                    <th className="text-right px-4 py-2 font-medium">Cuttings</th>
+                                    <th className="text-right px-4 py-2 font-medium">Production</th>
+                                    <th className="text-right px-4 py-2 font-medium">Total Value</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-stone-100">
+                                  {breakdown
+                                    .sort((a, b) => (b[1].cuttings_value + b[1].production_value) - (a[1].cuttings_value + a[1].production_value))
+                                    .map(([code, d]) => {
+                                      const rowTotal = d.cuttings_value + d.production_value;
+                                      return (
+                                        <tr key={code} className="hover:bg-white transition-colors">
+                                          <td className="px-4 py-2 font-mono font-medium text-stone-800">
+                                            {code}
+                                            {!d.has_cost && <span className="ml-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1 py-0.5 rounded">no costing</span>}
+                                          </td>
+                                          <td className="px-4 py-2 text-right text-stone-600">
+                                            {d.cuttings_qty > 0 ? (
+                                              <>
+                                                {d.cuttings_qty} pcs
+                                                {d.has_cost && <div className="text-stone-400">₹{d.cuttings_value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>}
+                                              </>
+                                            ) : '—'}
+                                          </td>
+                                          <td className="px-4 py-2 text-right text-stone-600">
+                                            {d.production_qty > 0 ? (
+                                              <>
+                                                {d.production_qty} pcs
+                                                {d.has_cost && <div className="text-stone-400">₹{d.production_value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>}
+                                              </>
+                                            ) : '—'}
+                                          </td>
+                                          <td className="px-4 py-2 text-right font-semibold text-stone-900">
+                                            {d.has_cost ? `₹${rowTotal.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : `${(d.cuttings_qty + d.production_qty)} pcs`}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  <tr className="border-t-2 border-stone-200 bg-stone-100">
+                                    <td colSpan={3} className="px-4 py-2 font-semibold text-stone-700">WIP Total (excl. stock)</td>
+                                    <td className="px-4 py-2 text-right font-bold text-stone-900">₹{(cutWip + prodWip).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                                  </tr>
+                                  <tr className="bg-stone-900 text-white">
+                                    <td colSpan={3} className="px-4 py-2 font-semibold">Total (stock + WIP)</td>
+                                    <td className="px-4 py-2 text-right font-bold">₹{totalVal.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                              {(snap.uncosted_cuttings_qty > 0 || snap.uncosted_production_qty > 0) && (
+                                <div className="px-4 py-2 border-t border-stone-200 text-xs text-amber-700 bg-amber-50">
+                                  {snap.uncosted_cuttings_qty > 0 && <span>{snap.uncosted_cuttings_qty} cut pcs without costing excluded from cuttings WIP. </span>}
+                                  {snap.uncosted_production_qty > 0 && <span>{snap.uncosted_production_qty} production pcs without costing excluded from production WIP.</span>}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
