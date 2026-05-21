@@ -7575,8 +7575,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                       <div className={`rounded-lg px-3 py-2.5 border ${row.meta.bg} ${row.meta.border}`}>
                         <div className="flex items-center gap-1.5 mb-1">
                           {row.alert_level === 'ok'
-                            ? <span className="w-2.5 h-2.5 rounded-full bg-stone-400 flex-shrink-0 inline-block" />
-                            : row.meta.emoji && <span className="text-sm">{row.meta.emoji}</span>}
+                            ? <span className="w-2.5 h-2.5 rounded-full bg-stone-400 flex-shrink-0" />
+                            : <span className="text-sm leading-none">{row.meta.emoji}</span>}
                           <span className={`text-xs font-semibold ${row.meta.text}`}>{row.badgeLabel}</span>
                         </div>
                         <p className={`text-xs leading-snug ${row.meta.text} opacity-80`}>{row.actionText}</p>
@@ -7628,9 +7628,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${row.meta.bg} ${row.meta.text} ${row.meta.border}`}
                             >
                               {row.alert_level === 'ok'
-                                ? <span className="w-2 h-2 rounded-full bg-stone-400 flex-shrink-0 inline-block" />
-                                : row.meta.emoji}
-                              {row.badgeLabel}
+                                ? <span className="w-2 h-2 rounded-full bg-stone-400 flex-shrink-0" />
+                                : <span className="leading-none">{row.meta.emoji}</span>}
+                              <span>{row.badgeLabel}</span>
                             </span>
                           </td>
                         </tr>
