@@ -2616,7 +2616,7 @@ function SearchableSelect({ value, onChange, options, placeholder = 'Select...',
   const containerRef = useRef(null);
   const inputRef = useRef(null);
 
-  const selected = options.find(o => String(o.value) === String(value));
+  const selected = options.find(o => String(o.value) === String(value)) || (value ? { value, label: value } : null);
 
   const filtered = query.trim()
     ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase().trim()))
