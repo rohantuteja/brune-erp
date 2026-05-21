@@ -1,16 +1,32 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { isRunActive } from '../lib/constants';
 import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye } from 'lucide-react';
 
+const CACHE_KEY = 'brune_shopify_inventory_v1';
+
+function readCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function writeCache(data) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch {}
+}
+
 export default function ShopifyInventoryPage({ runs = [], productionBatches = [], showToast }) {
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cached = useMemo(() => readCache(), []);
+
+  const [products, setProducts] = useState(cached?.products || []);
+  const [lastSyncedAt, setLastSyncedAt] = useState(cached?.lastSyncedAt || null);
+  // Only show full-page loading spinner if there's nothing cached to show
+  const [loading, setLoading] = useState(!cached);
   const [syncing, setSyncing] = useState(false);
   const [search, setSearch] = useState('');
   const [activeRunsOnly, setActiveRunsOnly] = useState(false);
   const [showZeroStock, setShowZeroStock] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [notConnected, setNotConnected] = useState(false);
   const [, setTick] = useState(0);
 
@@ -20,38 +36,54 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
     return () => clearInterval(timer);
   }, []);
 
-  const fetchProducts = async () => {
-    setLoading(true);
+  // Debounce ref: avoid hammering DB on rapid realtime events
+  const realtimeTimer = useRef(null);
+
+  const fetchProducts = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     const { data, error } = await supabase
       .from('shopify_inventory')
-      .select('*')
+      .select('id, title, style_code, total_inventory, variants, synced_at')
       .order('style_code');
     if (error) {
-      showToast('Failed to load Shopify inventory', 'error');
+      if (!silent) showToast('Failed to load Shopify inventory', 'error');
     } else {
-      setProducts(data || []);
-      if (data?.length > 0) {
-        const latest = data.reduce((a, b) => (a.synced_at > b.synced_at ? a : b));
-        setLastSyncedAt(latest.synced_at);
-      }
+      const rows = data || [];
+      setProducts(rows);
+      const latest = rows.length > 0
+        ? rows.reduce((a, b) => (a.synced_at > b.synced_at ? a : b)).synced_at
+        : null;
+      if (latest) setLastSyncedAt(latest);
+      writeCache({ products: rows, lastSyncedAt: latest });
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
 
   useEffect(() => {
-    fetchProducts();
+    // If we had cached data, do a silent background refresh.
+    // If no cache, do a full fetch (shows spinner).
+    fetchProducts({ silent: !!cached });
 
-    // Realtime: update UI + timestamp instantly when cron sync writes changes
+    // Realtime: debounced silent refresh when cron/webhook writes changes
     const channel = supabase
       .channel('shopify_inventory_changes')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'shopify_inventory' },
-        () => { fetchProducts(); }
+        () => {
+          clearTimeout(realtimeTimer.current);
+          realtimeTimer.current = setTimeout(() => {
+            fetchProducts({ silent: true });
+          }, 1500);
+        }
       )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+      clearTimeout(realtimeTimer.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const syncNow = async () => {
@@ -79,7 +111,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
       } else {
         setNotConnected(false);
         showToast(`Synced ${json.synced} products from Shopify`, 'success');
-        await fetchProducts();
+        await fetchProducts({ silent: true });
       }
     } catch {
       showToast('Sync failed', 'error');
