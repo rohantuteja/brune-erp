@@ -2313,12 +2313,23 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
       });
   }, []);
 
-  // All colour options: presets first, then any saved custom colours
+  // All colour options: presets first, then custom colours (from app_settings + existing inventory)
   const allColorOptions = useMemo(() => {
     const presetSet = new Set(PRESET_COLORS.map(c => c.toLowerCase()));
-    const extras = customColors.filter(c => !presetSet.has(c.toLowerCase()));
+    // Custom colours from app_settings
+    const fromSettings = customColors.filter(c => !presetSet.has(c.toLowerCase()));
+    // Colours already used in inventory but not in presets (covers values added before this feature)
+    const fromInventory = (inventory || [])
+      .map(i => i.color).filter(Boolean)
+      .filter(c => !presetSet.has(c.toLowerCase()));
+    // Merge all, deduplicate (case-insensitive)
+    const seen = new Set(PRESET_COLORS.map(c => c.toLowerCase()));
+    const extras = [];
+    for (const c of [...fromSettings, ...fromInventory]) {
+      if (!seen.has(c.toLowerCase())) { seen.add(c.toLowerCase()); extras.push(c); }
+    }
     return [...PRESET_COLORS, ...extras].map(c => ({ value: c, label: c }));
-  }, [customColors]);
+  }, [customColors, inventory]);
 
   const submit = async () => {
     if (saving) return;
