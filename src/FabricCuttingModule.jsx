@@ -2224,6 +2224,20 @@ function IssueToProductionModal({ run, karigars, remainingBySize, alreadyIssuedB
   );
 }
 
+const PRESET_COLORS = [
+  'White', 'Off White', 'Ivory', 'Cream',
+  'Black', 'Charcoal', 'Dark Grey', 'Grey', 'Light Grey',
+  'Red', 'Dark Red', 'Maroon', 'Burgundy',
+  'Pink', 'Hot Pink', 'Baby Pink', 'Dusty Pink', 'Mauve',
+  'Orange', 'Peach', 'Coral',
+  'Yellow', 'Mustard', 'Golden',
+  'Green', 'Dark Green', 'Olive Green', 'Mint Green', 'Lime Green', 'Bottle Green',
+  'Blue', 'Dark Blue', 'Navy Blue', 'Royal Blue', 'Sky Blue', 'Baby Blue', 'Teal',
+  'Purple', 'Lavender', 'Violet', 'Indigo',
+  'Brown', 'Beige', 'Tan', 'Camel', 'Khaki',
+  'Printed', 'Multi Colour',
+];
+
 function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplicatingFrom, onClose, onSave, onGoToFabricTypes, onAddFabricType, onAddSupplier }) {
   const isEdit = !!existing;
   const isDuplicate = !!duplicatingFrom;
@@ -2286,8 +2300,25 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
   };
 
   const [errors, setErrors] = useState({});
-
   const [saving, setSaving] = useState(false);
+  const [customColors, setCustomColors] = useState([]);
+
+  // Load saved custom colours from app_settings on mount
+  useEffect(() => {
+    supabase.from('app_settings').select('value').eq('key', 'custom_colors').single()
+      .then(({ data }) => {
+        if (data?.value) {
+          try { setCustomColors(JSON.parse(data.value) || []); } catch {}
+        }
+      });
+  }, []);
+
+  // All colour options: presets first, then any saved custom colours
+  const allColorOptions = useMemo(() => {
+    const presetSet = new Set(PRESET_COLORS.map(c => c.toLowerCase()));
+    const extras = customColors.filter(c => !presetSet.has(c.toLowerCase()));
+    return [...PRESET_COLORS, ...extras].map(c => ({ value: c, label: c }));
+  }, [customColors]);
 
   const submit = async () => {
     if (saving) return;
@@ -2303,6 +2334,20 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     try {
       const inventoryNumber = isEdit ? existing.inventory_number : previewNumber;
       await onSave({ ...form, format, rate: derivedRate, inventory_number: inventoryNumber });
+
+      // If colour is custom (not a preset), persist it for future use
+      const isPreset = PRESET_COLORS.some(c => c.toLowerCase() === form.color.toLowerCase());
+      if (!isPreset && form.color.trim()) {
+        const alreadySaved = customColors.some(c => c.toLowerCase() === form.color.toLowerCase());
+        if (!alreadySaved) {
+          const updated = [...customColors, form.color.trim()];
+          await supabase.from('app_settings').upsert(
+            { key: 'custom_colors', value: JSON.stringify(updated) },
+            { onConflict: 'key' }
+          );
+        }
+      }
+
       onClose();
     } finally { setSaving(false); }
   };
@@ -2422,19 +2467,7 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
             <SearchableSelect
               value={form.color}
               onChange={(val) => { setForm({ ...form, color: val }); setErrors(er => ({ ...er, color: null })); }}
-              options={[
-                'White', 'Off White', 'Ivory', 'Cream',
-                'Black', 'Charcoal', 'Dark Grey', 'Grey', 'Light Grey',
-                'Red', 'Dark Red', 'Maroon', 'Burgundy',
-                'Pink', 'Hot Pink', 'Baby Pink', 'Dusty Pink', 'Mauve',
-                'Orange', 'Peach', 'Coral',
-                'Yellow', 'Mustard', 'Golden',
-                'Green', 'Dark Green', 'Olive Green', 'Mint Green', 'Lime Green', 'Bottle Green',
-                'Blue', 'Dark Blue', 'Navy Blue', 'Royal Blue', 'Sky Blue', 'Baby Blue', 'Teal',
-                'Purple', 'Lavender', 'Violet', 'Indigo',
-                'Brown', 'Beige', 'Tan', 'Camel', 'Khaki',
-                'Printed', 'Multi Colour',
-              ].map(c => ({ value: c, label: c }))}
+              options={allColorOptions}
               placeholder="— Select colour —"
               allowCustom
             />
