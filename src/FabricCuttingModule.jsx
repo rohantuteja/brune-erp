@@ -6176,23 +6176,37 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       return s + qty * rate;
     }, 0);
 
-    // Production WIP: value of pieces issued but not yet completed
-    // For each open batch: find style costing, multiply issued_qty × cost_per_piece
+    // Helper: fabric cost per piece from costing (fabric cost component only)
+    const getFabricCostPerPiece = (costing) => {
+      if (!costing) return 0;
+      if (costing.fabric_cost_override != null) return costing.fabric_cost_override;
+      return (costing.fabric_lines || []).reduce((s, l) => {
+        const ft = fabricTypes.find(f => f.id === l.fabric_type_id);
+        if (!ft?.supplier_rates?.length) return s;
+        const rates = ft.supplier_rates.map(r =>
+          ft.format === 'roll' && r.cost_per_kg && r.chadti > 0
+            ? r.cost_per_kg / r.chadti
+            : r.cost_per_m || 0
+        ).filter(v => v > 0);
+        const maxCpm = rates.length ? Math.max(...rates) : 0;
+        return s + maxCpm * (parseFloat(l.avg_meters) || 0);
+      }, 0);
+    };
+
+    // Production WIP: fabric cost of pieces issued but not yet completed
     const productionWip = productionBatches
       .filter(b => b.status === 'issued')
       .reduce((s, b) => {
         const costing = costings.find(c => c.style_code === b.style_code);
         if (!costing) return s;
-        const costPerPiece = getCostingTotal(costing);
-        return s + (b.total_issued || 0) * costPerPiece;
+        return s + (b.total_issued || 0) * getFabricCostPerPiece(costing);
       }, 0);
 
     // Per-style production WIP breakdown
     const byStyle = {};
     productionBatches.filter(b => b.status === 'issued').forEach(b => {
       const costing = costings.find(c => c.style_code === b.style_code);
-      const costPerPiece = costing ? getCostingTotal(costing) : 0;
-      const value = (b.total_issued || 0) * costPerPiece;
+      const value = (b.total_issued || 0) * getFabricCostPerPiece(costing);
       if (!byStyle[b.style_code]) byStyle[b.style_code] = { qty: 0, value: 0, hasCost: !!costing };
       byStyle[b.style_code].qty += b.total_issued || 0;
       byStyle[b.style_code].value += value;
@@ -6224,22 +6238,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       );
       if (!costing) { uncostyledCuttingsQty += cuttingsAvailable; continue; }
 
-      // Fabric cost per piece only
-      const fabricCostPerPiece = costing.fabric_cost_override != null
-        ? costing.fabric_cost_override
-        : (costing.fabric_lines || []).reduce((s, l) => {
-            const ft = fabricTypes.find(f => f.id === l.fabric_type_id);
-            if (!ft?.supplier_rates?.length) return s;
-            const rates = ft.supplier_rates.map(r =>
-              ft.format === 'roll' && r.cost_per_kg && r.chadti > 0
-                ? r.cost_per_kg / r.chadti
-                : r.cost_per_m || 0
-            ).filter(v => v > 0);
-            const maxCpm = rates.length ? Math.max(...rates) : 0;
-            return s + maxCpm * (parseFloat(l.avg_meters) || 0);
-          }, 0);
-
-      const value = cuttingsAvailable * fabricCostPerPiece;
+      const value = cuttingsAvailable * getFabricCostPerPiece(costing);
       cuttingsWip += value;
       if (!cuttingsByStyle[run.style_code]) cuttingsByStyle[run.style_code] = { qty: 0, value: 0 };
       cuttingsByStyle[run.style_code].qty += cuttingsAvailable;
@@ -7077,7 +7076,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
               <div className="text-xs text-stone-500 uppercase tracking-wide mb-1">Production WIP</div>
               <div className="text-xl font-bold text-amber-700">₹{wipStats.productionWip.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
-              <div className="text-[11px] text-stone-400 mt-0.5">Issued, not yet complete</div>
+              <div className="text-[11px] text-stone-400 mt-0.5">Issued, not yet complete · fabric cost only</div>
               <div className="mt-2 h-1.5 bg-stone-100 rounded-full overflow-hidden">
                 <div className="h-full bg-amber-500 rounded-full" style={{ width: `${wipStats.totalWip > 0 ? Math.round(wipStats.productionWip / wipStats.totalWip * 100) : 0}%` }} />
               </div>
