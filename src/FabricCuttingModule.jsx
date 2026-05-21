@@ -2436,6 +2436,7 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
                 'Printed', 'Multi Colour',
               ].map(c => ({ value: c, label: c }))}
               placeholder="— Select colour —"
+              allowCustom
             />
             {errors.color && <div className="text-xs text-red-600 mt-1">{errors.color}</div>}
           </Field>
@@ -2564,7 +2565,7 @@ function TabBtn({ active, onClick, children }) { return <button onClick={onClick
 function SubTabBtn({ active, onClick, children }) { return <button onClick={onClick} className={`px-3 py-2 text-xs font-medium rounded flex items-center gap-1.5 transition min-h-[36px] whitespace-nowrap ${active ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}>{children}</button>; }
 
 // Searchable dropdown for forms — replaces <select> when options list is long
-function SearchableSelect({ value, onChange, options, placeholder = 'Select...', disabled = false }) {
+function SearchableSelect({ value, onChange, options, placeholder = 'Select...', disabled = false, allowCustom = false }) {
   // options: [{ value, label }]
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -2649,7 +2650,18 @@ function SearchableSelect({ value, onChange, options, placeholder = 'Select...',
           {/* Options list */}
           <div className="max-h-52 overflow-y-auto">
             {filtered.length === 0 ? (
-              <div className="px-3 py-6 text-center text-xs text-stone-400">No matches for "{query}"</div>
+              <div className="px-3 py-3 text-center">
+                <p className="text-xs text-stone-400 mb-2">No matches for "{query}"</p>
+                {allowCustom && query.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => { onChange(query.trim(), query.trim()); setOpen(false); setQuery(''); }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-stone-900 text-white rounded-lg hover:bg-stone-700 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add "{query.trim()}"
+                  </button>
+                )}
+              </div>
             ) : (
               filtered.map(opt => (
                 <button
