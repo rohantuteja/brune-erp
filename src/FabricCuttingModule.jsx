@@ -3196,7 +3196,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             {/* Pipeline Health — lead times */}
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — production lead time</div>
-              <div className="text-xs text-stone-400 mb-2">Days from issuing cuttings to karigar → finished pieces back. 🔴 Issue Now fires when effective stock &lt; this + buffer.</div>
+              <div className="text-xs text-stone-400 mb-2">Days from issuing cuttings to karigar → finished pieces back. 🔴 Critical fires when effective stock &lt; this + buffer.</div>
               <div className="flex items-center gap-2">
                 <input
                   type="number" inputMode="numeric" min="1" max="365"
@@ -3210,7 +3210,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
 
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — cutting lead time</div>
-              <div className="text-xs text-stone-400 mb-2">Days from deciding to cut → cuttings ready to issue. 🟠 Cut Now fires when effective stock &lt; cutting + production + buffer.</div>
+              <div className="text-xs text-stone-400 mb-2">Days from deciding to cut → cuttings ready to issue. 🟠 Warning fires when effective stock &lt; cutting + production + buffer.</div>
               <div className="flex items-center gap-2">
                 <input
                   type="number" inputMode="numeric" min="1" max="365"
@@ -3224,7 +3224,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
 
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Pipeline health — fabric procurement lead time</div>
-              <div className="text-xs text-stone-400 mb-2">Days from ordering fabric → fabric received. 🟡 Plan Ahead fires when effective stock &lt; fabric + cutting + production + buffer.</div>
+              <div className="text-xs text-stone-400 mb-2">Days from ordering fabric → fabric received. 🟡 Watch fires when effective stock &lt; fabric + cutting + production + buffer.</div>
               <div className="flex items-center gap-2">
                 <input
                   type="number" inputMode="numeric" min="1" max="365"
@@ -7358,9 +7358,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             const watch    = filtered.filter(r => r.alert_level === 'watch').length;
             return (
               <div className="flex items-center gap-3 flex-wrap">
-                {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Issue Now</span>}
-                {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Cut Now</span>}
-                {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Plan Ahead</span>}
+                {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
+                {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Warning</span>}
+                {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Watch</span>}
                 {critical === 0 && warning === 0 && watch === 0 && (
                   <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full">✅ All healthy</span>
                 )}
@@ -7391,10 +7391,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               <span className="text-stone-300 select-none">|</span>
               {[
                 { value: 'all',      label: 'All' },
-                { value: 'critical', label: '🔴 Issue Now' },
-                { value: 'warning',  label: '🟠 Cut Now' },
-                { value: 'watch',    label: '🟡 Plan Ahead' },
-                { value: 'ok',       label: '✅ OK' },
+                { value: 'critical', label: '🔴 Critical' },
+                { value: 'warning',  label: '🟠 Warning' },
+                { value: 'watch',    label: '🟡 Watch' },
+                { value: 'ok',       label: 'OK' },
               ].map(f => (
                 <button
                   key={f.value}
@@ -7444,10 +7444,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             }
 
             const alertMeta = {
-              critical: { emoji: '🔴', label: 'Issue Now',  bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
-              warning:  { emoji: '🟠', label: 'Cut Now',    bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-              watch:    { emoji: '🟡', label: 'Plan Ahead', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-              ok:       { emoji: '✅', label: 'OK',          bg: 'bg-stone-50',  text: 'text-stone-500',  border: 'border-stone-200' },
+              critical: { emoji: '🔴', bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
+              warning:  { emoji: '🟠', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+              watch:    { emoji: '🟡', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
+              ok:       { emoji: '',   bg: 'bg-stone-100', text: 'text-stone-500',  border: 'border-stone-200' },
             };
 
             // Shared per-row derived values — used by both mobile cards and desktop table
@@ -7460,6 +7460,24 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               const effStr = row.effective_days != null
                 ? `${parseFloat(row.effective_days).toFixed(1)}d effective`
                 : null;
+              // Specific action badge label — varies by what's available at this urgency tier
+              const badgeLabel = (() => {
+                if (row.alert_level === 'critical') {
+                  if (cuts > 0)      return 'Issue Now';
+                  if (fab === true)  return 'Cut Urgently';
+                  if (fab === false) return 'Order Urgently';
+                  return 'Act Now';
+                }
+                if (row.alert_level === 'warning') {
+                  if (cuts > 0)      return 'Issue Soon';
+                  if (fab === true)  return 'Cut Now';
+                  if (fab === false) return 'Order Now';
+                  return 'Cut Now';
+                }
+                if (row.alert_level === 'watch') return 'Plan Ahead';
+                return 'OK';
+              })();
+              // Detailed tooltip / mobile description
               const actionText = (() => {
                 if (row.alert_level === 'critical') {
                   if (cuts > 0)      return effStr ? `${effStr} — issue to production NOW` : 'Issue to production NOW';
@@ -7470,7 +7488,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 if (row.alert_level === 'warning') {
                   if (cuts > 0)      return effStr ? `${effStr} — issue to production soon` : 'Issue to production soon';
                   if (fab === true)  return effStr ? `${effStr} — cut fabric now` : 'Cut fabric now';
-                  if (fab === false) return effStr ? `${effStr} — order fabric urgently` : 'Order fabric urgently';
+                  if (fab === false) return effStr ? `${effStr} — order fabric now` : 'Order fabric now';
                   return effStr ? `${effStr} — cut or order fabric` : 'Cut or order fabric';
                 }
                 if (row.alert_level === 'watch') {
@@ -7481,7 +7499,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 }
                 return 'Stock levels are healthy — no action needed.';
               })();
-              return { ...row, meta, hasVelocity, effStr, actionText };
+              return { ...row, meta, hasVelocity, effStr, badgeLabel, actionText };
             });
 
             const footerText = (
@@ -7546,8 +7564,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                       {/* Status + action text */}
                       <div className={`rounded-lg px-3 py-2.5 border ${row.meta.bg} ${row.meta.border}`}>
                         <div className="flex items-center gap-1.5 mb-1">
-                          <span className="text-sm">{row.meta.emoji}</span>
-                          <span className={`text-xs font-semibold ${row.meta.text}`}>{row.meta.label}</span>
+                          {row.meta.emoji && <span className="text-sm">{row.meta.emoji}</span>}
+                          <span className={`text-xs font-semibold ${row.meta.text}`}>{row.badgeLabel}</span>
                         </div>
                         <p className={`text-xs leading-snug ${row.meta.text} opacity-80`}>{row.actionText}</p>
                       </div>
@@ -7597,7 +7615,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                               title={row.actionText}
                               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${row.meta.bg} ${row.meta.text} ${row.meta.border}`}
                             >
-                              {row.meta.emoji} {row.meta.label}
+                              {row.meta.emoji}{row.meta.emoji ? ' ' : ''}{row.badgeLabel}
                             </span>
                           </td>
                         </tr>
