@@ -6187,7 +6187,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         return s + (b.total_issued || 0) * costPerPiece;
       }, 0);
 
-    // Per-style WIP breakdown
+    // Per-style production WIP breakdown
     const byStyle = {};
     productionBatches.filter(b => b.status === 'issued').forEach(b => {
       const costing = costings.find(c => c.style_code === b.style_code);
@@ -6198,13 +6198,57 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       byStyle[b.style_code].value += value;
     });
 
-    const totalWip = stockValue + productionWip;
     const uncostyledQty = productionBatches
       .filter(b => b.status === 'issued' && !costings.find(c => c.style_code === b.style_code))
       .reduce((s, b) => s + (b.total_issued || 0), 0);
 
-    return { stockValue, productionWip, totalWip, byStyle, uncostyledQty };
-  }, [inventory, productionBatches, costings, getCostingTotal]);
+    // Cuttings WIP: fabric cost of cut pieces not yet issued to production
+    // Uses fabric cost component only (cutting labour already happened, stitching hasn't)
+    const cuttingsByStyle = {};
+    let cuttingsWip = 0;
+    let uncostyledCuttingsQty = 0;
+
+    for (const run of runs) {
+      if (!isRunActive(run, productionBatches)) continue;
+
+      const totalCut = run.pieces.reduce((s, p) => s + p.quantity, 0);
+      const runBatches = productionBatches.filter(b => b.run_id === run.id);
+      const totalIssued = runBatches.reduce((s, b) => {
+        return s + Object.values(b.issued_sizes || {}).reduce((ss, qty) => ss + (parseInt(qty) || 0), 0);
+      }, 0);
+      const cuttingsAvailable = Math.max(0, totalCut - totalIssued);
+      if (cuttingsAvailable === 0) continue;
+
+      const costing = costings.find(c =>
+        (c.style_code || '').toUpperCase() === (run.style_code || '').toUpperCase()
+      );
+      if (!costing) { uncostyledCuttingsQty += cuttingsAvailable; continue; }
+
+      // Fabric cost per piece only
+      const fabricCostPerPiece = costing.fabric_cost_override != null
+        ? costing.fabric_cost_override
+        : (costing.fabric_lines || []).reduce((s, l) => {
+            const ft = fabricTypes.find(f => f.id === l.fabric_type_id);
+            if (!ft?.supplier_rates?.length) return s;
+            const rates = ft.supplier_rates.map(r =>
+              ft.format === 'roll' && r.cost_per_kg && r.chadti > 0
+                ? r.cost_per_kg / r.chadti
+                : r.cost_per_m || 0
+            ).filter(v => v > 0);
+            const maxCpm = rates.length ? Math.max(...rates) : 0;
+            return s + maxCpm * (parseFloat(l.avg_meters) || 0);
+          }, 0);
+
+      const value = cuttingsAvailable * fabricCostPerPiece;
+      cuttingsWip += value;
+      if (!cuttingsByStyle[run.style_code]) cuttingsByStyle[run.style_code] = { qty: 0, value: 0 };
+      cuttingsByStyle[run.style_code].qty += cuttingsAvailable;
+      cuttingsByStyle[run.style_code].value += value;
+    }
+
+    const totalWip = stockValue + productionWip + cuttingsWip;
+    return { stockValue, productionWip, cuttingsWip, totalWip, byStyle, cuttingsByStyle, uncostyledQty, uncostyledCuttingsQty };
+  }, [inventory, productionBatches, costings, getCostingTotal, runs, fabricTypes]);
 
   // ── Shopify Stock Value stats ────────────────────────────────────────
   const shopifyStockStats = useMemo(() => {
@@ -7007,11 +7051,11 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           <div className="bg-stone-900 text-white rounded-lg p-4 sm:p-5">
             <div className="text-xs uppercase tracking-wide text-stone-400 mb-1">Total Working Capital in ERP</div>
             <div className="text-3xl sm:text-4xl font-bold">₹{wipStats.totalWip.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
-            <div className="text-xs text-stone-400 mt-1">Fabric stock + production WIP</div>
+            <div className="text-xs text-stone-400 mt-1">Fabric stock + cuttings WIP + production WIP</div>
           </div>
 
-          {/* Split */}
-          <div className="grid grid-cols-2 gap-2">
+          {/* Split — 3 cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
               <div className="text-xs text-stone-500 uppercase tracking-wide mb-1">Fabric Stock</div>
               <div className="text-xl font-bold text-stone-900">₹{wipStats.stockValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
@@ -7020,6 +7064,15 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 <div className="h-full bg-stone-700 rounded-full" style={{ width: `${wipStats.totalWip > 0 ? Math.round(wipStats.stockValue / wipStats.totalWip * 100) : 0}%` }} />
               </div>
               <div className="text-[10px] text-stone-400 mt-1">{wipStats.totalWip > 0 ? Math.round(wipStats.stockValue / wipStats.totalWip * 100) : 0}% of total</div>
+            </div>
+            <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
+              <div className="text-xs text-stone-500 uppercase tracking-wide mb-1">Cuttings WIP</div>
+              <div className="text-xl font-bold text-blue-700">₹{wipStats.cuttingsWip.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+              <div className="text-[11px] text-stone-400 mt-0.5">Cut, not yet issued · fabric cost only</div>
+              <div className="mt-2 h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full" style={{ width: `${wipStats.totalWip > 0 ? Math.round(wipStats.cuttingsWip / wipStats.totalWip * 100) : 0}%` }} />
+              </div>
+              <div className="text-[10px] text-stone-400 mt-1">{wipStats.totalWip > 0 ? Math.round(wipStats.cuttingsWip / wipStats.totalWip * 100) : 0}% of total</div>
             </div>
             <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
               <div className="text-xs text-stone-500 uppercase tracking-wide mb-1">Production WIP</div>
@@ -7032,7 +7085,37 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             </div>
           </div>
 
-          {/* WIP by style */}
+          {/* Cuttings WIP by style */}
+          {Object.keys(wipStats.cuttingsByStyle).length > 0 && (
+            <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+              <div className="p-3 sm:p-4 border-b border-stone-200">
+                <div className="text-sm font-medium text-stone-900">Cuttings WIP by Style</div>
+                <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces cut but not yet issued to karigars</div>
+              </div>
+              <div className="divide-y divide-stone-100">
+                {Object.entries(wipStats.cuttingsByStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
+                  const pct = wipStats.cuttingsWip > 0 ? Math.round(d.value / wipStats.cuttingsWip * 100) : 0;
+                  return (
+                    <div key={code} className="p-3 sm:p-4">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
+                        <span className="text-sm font-semibold text-stone-900">₹{d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                      </div>
+                      <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
+                        <div className="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="flex justify-between text-[11px] text-stone-400">
+                        <span>{d.qty} pcs ready to issue</span>
+                        <span>{pct}% of cuttings WIP</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Production WIP by style */}
           {Object.keys(wipStats.byStyle).length > 0 && (
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
               <div className="p-3 sm:p-4 border-b border-stone-200">
@@ -7073,15 +7156,17 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             </div>
           )}
 
-          {wipStats.uncostyledQty > 0 && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
-              <span className="font-semibold">{wipStats.uncostyledQty} pieces</span> in production have no costing entry — their value is excluded from the WIP total. Add costings for those styles to get a complete picture.
+          {(wipStats.uncostyledQty > 0 || wipStats.uncostyledCuttingsQty > 0) && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+              {wipStats.uncostyledQty > 0 && <div><span className="font-semibold">{wipStats.uncostyledQty} pieces</span> in production have no costing entry — excluded from WIP total.</div>}
+              {wipStats.uncostyledCuttingsQty > 0 && <div><span className="font-semibold">{wipStats.uncostyledCuttingsQty} cut pieces</span> have no costing entry — excluded from cuttings WIP total.</div>}
+              <div>Add costings for those styles to get a complete picture.</div>
             </div>
           )}
 
-          {wipStats.productionWip === 0 && wipStats.stockValue > 0 && (
+          {wipStats.productionWip === 0 && wipStats.cuttingsWip === 0 && wipStats.stockValue > 0 && (
             <div className="bg-stone-50 border border-stone-200 rounded-lg p-3 text-xs text-stone-600 text-center">
-              No production WIP right now — all issued batches are completed. Your capital is currently in fabric stock only.
+              No production or cuttings WIP right now. Your capital is currently in fabric stock only.
             </div>
           )}
         </div>
