@@ -7451,7 +7451,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               critical: { emoji: '🔴', bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
               warning:  { emoji: '🟠', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
               watch:    { emoji: '🟡', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-              ok:       { emoji: '',   bg: 'bg-stone-100', text: 'text-stone-500',  border: 'border-stone-200' },
+              ok:       { emoji: '',   bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
             };
 
             // Shared per-row derived values — used by both mobile cards and desktop table
@@ -7575,7 +7575,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                       <div className={`rounded-lg px-3 py-2.5 border ${row.meta.bg} ${row.meta.border}`}>
                         <div className="flex items-center gap-1.5 mb-1">
                           {row.alert_level === 'ok'
-                            ? <span className="w-2.5 h-2.5 rounded-full bg-stone-400 flex-shrink-0" />
+                            ? <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" />
                             : <span className="text-sm leading-none">{row.meta.emoji}</span>}
                           <span className={`text-xs font-semibold ${row.meta.text}`}>{row.badgeLabel}</span>
                         </div>
@@ -7628,7 +7628,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${row.meta.bg} ${row.meta.text} ${row.meta.border}`}
                             >
                               {row.alert_level === 'ok'
-                                ? <span className="w-2 h-2 rounded-full bg-stone-400 flex-shrink-0" />
+                                ? <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
                                 : <span className="leading-none">{row.meta.emoji}</span>}
                               <span>{row.badgeLabel}</span>
                             </span>
