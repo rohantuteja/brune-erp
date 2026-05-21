@@ -5653,7 +5653,8 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
 function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
   const { isAdmin, can } = usePermissions();
-  const [snapshotDate, setSnapshotDate] = useState(localToday());
+  const [receivedFrom, setReceivedFrom] = useState('');
+  const [receivedTo, setReceivedTo] = useState('');
 
   // ── Monthly Snapshot state ───────────────────────────────────────────
   const [snapshots, setSnapshots] = useState([]);
@@ -6035,10 +6036,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
   // ── SECTION 1: Inventory Value ──────────────────────────────────────
   const invStats = useMemo(() => {
-    // Filter to items received on or before snapshot date that still have remaining stock
-    // (excludes finished/used-up items regardless of their status field)
+    // Filter by received date range (if set) + must have remaining stock
     const snap = inventory.filter(i => {
-      if (i.received_date && i.received_date > snapshotDate) return false;
+      if (receivedFrom && i.received_date && i.received_date < receivedFrom) return false;
+      if (receivedTo && i.received_date && i.received_date > receivedTo) return false;
       const remaining = parseFloat(i.format === 'roll' ? i.current_weight_kg : i.current_length_m) || 0;
       return remaining > 0;
     });
@@ -6095,7 +6096,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     });
 
     return { totalKg, totalM, totalValue, rollValue, thanValue, byFabric, bySupplier, totalItems: snap.length, unusedItems };
-  }, [inventory, snapshotDate, fabricTypes, suppliers]);
+  }, [inventory, receivedFrom, receivedTo, fabricTypes, suppliers]);
 
   // ── SECTION 2: Stock Health ────────────────────────────────────────
   const healthStats = useMemo(() => {
@@ -6431,17 +6432,71 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {/* ── INVENTORY VALUE ── */}
       {activeSection === 'inventory' && (
         <div className="space-y-3">
-          {/* Date picker */}
+          {/* Received date range filter */}
           <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
-            <div className="flex items-center gap-3 flex-wrap">
-              <Field label="Snapshot date">
-                <input type="date" value={snapshotDate} onChange={e => setSnapshotDate(e.target.value)} className="form-input" />
-              </Field>
-              <div className="text-xs text-stone-500 mt-4 sm:mt-0">
-                Showing stock received on or before this date, at current quantities. See Monthly Snapshots below for point-in-time records.
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Presets */}
+              {[
+                { label: 'All time', from: '', to: '' },
+                {
+                  label: 'This month',
+                  from: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; })(),
+                  to: localToday(),
+                },
+                {
+                  label: 'Last month',
+                  from: (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; })(),
+                  to: (() => { const d = new Date(); d.setDate(0); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })(),
+                },
+                {
+                  label: 'Last 3 months',
+                  from: (() => { const d = new Date(); d.setMonth(d.getMonth()-3); d.setDate(1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; })(),
+                  to: localToday(),
+                },
+              ].map(p => {
+                const isActive = receivedFrom === p.from && receivedTo === p.to;
+                return (
+                  <button
+                    key={p.label}
+                    onClick={() => { setReceivedFrom(p.from); setReceivedTo(p.to); }}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                      isActive
+                        ? 'bg-stone-900 text-white border-stone-900'
+                        : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+
+              <span className="text-stone-300 select-none">|</span>
+
+              {/* Custom range */}
+              <div className="flex items-center gap-1.5 text-xs text-stone-500">
+                <span>From</span>
+                <input
+                  type="date"
+                  value={receivedFrom}
+                  onChange={e => setReceivedFrom(e.target.value)}
+                  className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+                />
+                <span>to</span>
+                <input
+                  type="date"
+                  value={receivedTo}
+                  onChange={e => setReceivedTo(e.target.value)}
+                  className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+                />
               </div>
             </div>
-            <FormStyles />
+            {(receivedFrom || receivedTo) && (
+              <div className="mt-2 text-xs text-stone-400">
+                Showing fabric received
+                {receivedFrom && receivedTo ? ` between ${receivedFrom} and ${receivedTo}` : receivedFrom ? ` from ${receivedFrom}` : ` up to ${receivedTo}`}
+                {' · '}at current remaining quantities
+              </div>
+            )}
           </div>
 
           {/* Top-line totals */}
