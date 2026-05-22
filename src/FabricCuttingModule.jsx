@@ -5676,7 +5676,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     }, { replace: true });
   };
 
-  const setActiveSection         = (v) => setParam('tab',          v,    'inventory');
+  const setActiveSection = (v) => setSearchParams(
+    v === 'inventory' ? {} : { tab: v },  // clear all other params on tab switch
+    { replace: true }
+  );
   const setReceivedFrom          = (v) => setParam('invFrom',      v,    '');
   const setReceivedTo            = (v) => setParam('invTo',        v,    '');
   const setPipelineHealthFilter  = (v) => setParam('phFilter',     v,    'all');
