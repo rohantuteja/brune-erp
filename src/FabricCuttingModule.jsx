@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday, isRunActive } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
@@ -155,7 +155,7 @@ export default function FabricCuttingModule() {
 
   // Production
   const [prodView, setProdView] = useState('batches');
-  // analyticsSection tab state lives inside AnalyticsPage (URL-driven)
+  const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
   const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState(() => {
     // Seed from localStorage synchronously — visible on first paint even after
@@ -698,6 +698,8 @@ export default function FabricCuttingModule() {
             productionBatches={productionBatches}
             costings={costings}
             getCostingTotal={getCostingTotal}
+            activeSection={analyticsSection}
+            setActiveSection={setAnalyticsSection}
             showToast={showToast}
             alertSettings={alertSettings}
             saveAlertSettings={saveAlertSettings}
@@ -5649,39 +5651,10 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 }
 
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
-function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, showToast, alertSettings = {}, saveAlertSettings }) {
+function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
   const { isAdmin, can } = usePermissions();
-
-  // ── Single URL source of truth for all Analytics filter/tab state ────
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  // Read all URL-driven state here — one place, no race conditions
-  const activeSection        = searchParams.get('tab')          ?? 'inventory';
-  const receivedFrom         = searchParams.get('invFrom')       ?? '';
-  const receivedTo           = searchParams.get('invTo')         ?? '';
-  const pipelineHealthFilter = searchParams.get('phFilter')      ?? 'all';
-  const pipelineHealthStyle  = searchParams.get('phStyle')       ?? '';
-  const pipelineActiveRunsOnly = searchParams.get('phActiveOnly') !== 'false'; // default true
-
-  // Shared atomic setter — functional updater keeps all other params intact
-  const setParam = (key, value, defaultVal) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev);
-      if (value === defaultVal || value === '' || value === null || value === undefined) {
-        next.delete(key);
-      } else {
-        next.set(key, String(value));
-      }
-      return next;
-    }, { replace: true });
-  };
-
-  const setActiveSection         = (v) => setParam('tab',          v,    'inventory');
-  const setReceivedFrom          = (v) => setParam('invFrom',      v,    '');
-  const setReceivedTo            = (v) => setParam('invTo',        v,    '');
-  const setPipelineHealthFilter  = (v) => setParam('phFilter',     v,    'all');
-  const setPipelineHealthStyle   = (v) => setParam('phStyle',      v,    '');
-  const setPipelineActiveRunsOnly= (v) => setParam('phActiveOnly', v,    true);
+  const [receivedFrom, setReceivedFrom] = useState('');
+  const [receivedTo, setReceivedTo] = useState('');
 
   // ── Monthly Snapshot state ───────────────────────────────────────────
   const [snapshots, setSnapshots] = useState([]);
@@ -5712,9 +5685,12 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [deletingWipSnapshotId, setDeletingWipSnapshotId] = useState(null);
   const [confirmDeleteWipSnapshotId, setConfirmDeleteWipSnapshotId] = useState(null);
 
-  // ── Pipeline Health state (filter/style/activeOnly are URL-driven above)
+  // ── Pipeline Health state ────────────────────────────────────────────
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
+  const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
+  const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
+  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(true);
 
   const currentMonthStr = () => {
     const now = new Date();
@@ -6482,12 +6458,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 return (
                   <button
                     key={p.label}
-                    onClick={() => setSearchParams(prev => {
-                      const next = new URLSearchParams(prev);
-                      if (p.from) next.set('invFrom', p.from); else next.delete('invFrom');
-                      if (p.to) next.set('invTo', p.to); else next.delete('invTo');
-                      return next;
-                    }, { replace: true })}
+                    onClick={() => { setReceivedFrom(p.from); setReceivedTo(p.to); }}
                     className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
                       isActive
                         ? 'bg-stone-900 text-white border-stone-900'
@@ -7935,7 +7906,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               ))}
               <span className="text-stone-300 select-none">|</span>
               <button
-                onClick={() => setPipelineActiveRunsOnly(!pipelineActiveRunsOnly)}
+                onClick={() => setPipelineActiveRunsOnly(v => !v)}
                 className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
                   pipelineActiveRunsOnly
                     ? 'bg-stone-900 text-white border-stone-900'
