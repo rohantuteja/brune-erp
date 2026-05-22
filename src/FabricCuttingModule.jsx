@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { useURLState } from './hooks/useURLState';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday, isRunActive } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
@@ -155,7 +156,7 @@ export default function FabricCuttingModule() {
 
   // Production
   const [prodView, setProdView] = useState('batches');
-  const [analyticsSection, setAnalyticsSection] = useState('inventory');
+  // analyticsSection tab state lives inside AnalyticsPage (URL-driven)
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
   const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState(() => {
     // Seed from localStorage synchronously — visible on first paint even after
@@ -698,8 +699,6 @@ export default function FabricCuttingModule() {
             productionBatches={productionBatches}
             costings={costings}
             getCostingTotal={getCostingTotal}
-            activeSection={analyticsSection}
-            setActiveSection={setAnalyticsSection}
             showToast={showToast}
             alertSettings={alertSettings}
             saveAlertSettings={saveAlertSettings}
@@ -5651,10 +5650,14 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 }
 
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
-function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
+function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, showToast, alertSettings = {}, saveAlertSettings }) {
   const { isAdmin, can } = usePermissions();
-  const [receivedFrom, setReceivedFrom] = useState('');
-  const [receivedTo, setReceivedTo] = useState('');
+  const [, setSearchParams] = useSearchParams();
+
+  // ── URL-driven state ─────────────────────────────────────────────────
+  const [activeSection, setActiveSection] = useURLState('tab', 'inventory');
+  const [receivedFrom, setReceivedFrom] = useURLState('invFrom', '');
+  const [receivedTo, setReceivedTo] = useURLState('invTo', '');
 
   // ── Monthly Snapshot state ───────────────────────────────────────────
   const [snapshots, setSnapshots] = useState([]);
@@ -5688,9 +5691,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // ── Pipeline Health state ────────────────────────────────────────────
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
-  const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
-  const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
-  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(true);
+  const [pipelineHealthFilter, setPipelineHealthFilter] = useURLState('phFilter', 'all');
+  const [pipelineHealthStyle, setPipelineHealthStyle] = useURLState('phStyle', '');
+  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useURLState('phActiveOnly', true);
 
   const currentMonthStr = () => {
     const now = new Date();
@@ -6458,7 +6461,12 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 return (
                   <button
                     key={p.label}
-                    onClick={() => { setReceivedFrom(p.from); setReceivedTo(p.to); }}
+                    onClick={() => setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      if (p.from) next.set('invFrom', p.from); else next.delete('invFrom');
+                      if (p.to) next.set('invTo', p.to); else next.delete('invTo');
+                      return next;
+                    }, { replace: true })}
                     className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
                       isActive
                         ? 'bg-stone-900 text-white border-stone-900'
