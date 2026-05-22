@@ -28,7 +28,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
   const [activeRunsOnly, setActiveRunsOnly] = useState(false);
   const [showZeroStock, setShowZeroStock] = useState(false);
   const [notConnected, setNotConnected] = useState(false);
-  const [sort, setSort] = useState('style_asc');
+  const [sort, setSort] = useState('recently_updated');
   const [, setTick] = useState(0);
 
   // Tick every 30s so the relative timestamp ("5m ago") stays current between syncs
