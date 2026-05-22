@@ -125,6 +125,17 @@ serve(async (req) => {
     }
 
     // ── 1. SYNC PRODUCTS ─────────────────────────────────────────────
+
+    // Fetch existing records first so we can preserve synced_at for products
+    // whose inventory hasn't changed. This makes the "Recently Updated" sort
+    // meaningful — synced_at only moves when total_inventory actually changes.
+    const { data: existingRows } = await admin
+      .from('shopify_inventory')
+      .select('id, total_inventory, synced_at')
+    const existingMap = new Map<string, { total_inventory: number; synced_at: string }>(
+      (existingRows || []).map((r: any) => [r.id, { total_inventory: r.total_inventory, synced_at: r.synced_at }])
+    )
+
     const allProducts: any[] = []
     let cursor: string | null = null
 
@@ -177,6 +188,15 @@ serve(async (req) => {
       const firstSku = variants[0]?.sku || p.title
       const parts = firstSku.split('-')
       const styleCode = parts.length > 1 ? parts.slice(0, -1).join('-') : firstSku
+      const totalInventory = variants.reduce((s: number, v: any) => s + v.qty, 0)
+
+      // Only update synced_at if total_inventory changed or it's a new product.
+      // Unchanged products keep their old timestamp so the "Recently Updated"
+      // sort reflects genuine inventory movements, not just reconciliation runs.
+      const existing = existingMap.get(p.id)
+      const rowSyncedAt = (!existing || existing.total_inventory !== totalInventory)
+        ? syncedAt
+        : existing.synced_at
 
       return {
         id: p.id,
@@ -185,8 +205,8 @@ serve(async (req) => {
         status: 'active',
         style_code: styleCode,
         variants,
-        total_inventory: variants.reduce((s: number, v: any) => s + v.qty, 0),
-        synced_at: syncedAt,
+        total_inventory: totalInventory,
+        synced_at: rowSyncedAt,
       }
     })
 
@@ -203,8 +223,16 @@ serve(async (req) => {
       await admin.from('style_codes').upsert(newStyleCodes, { onConflict: 'code', ignoreDuplicates: true })
     }
 
-    // Delete stale products
-    await admin.from('shopify_inventory').delete().lt('synced_at', syncedAt)
+    // Delete stale products — those not returned by Shopify in this sync.
+    // (Can't use synced_at < syncedAt anymore since unchanged products keep
+    // their old timestamp. Use explicit ID comparison instead.)
+    const syncedIds = new Set(rows.map(r => r.id))
+    const staleIds = (existingRows || [])
+      .map((r: any) => r.id)
+      .filter((id: string) => !syncedIds.has(id))
+    if (staleIds.length > 0) {
+      await admin.from('shopify_inventory').delete().in('id', staleIds)
+    }
 
     // ── 2. SYNC ORDER VELOCITY via ShopifyQL ────────────────────────
     // Run all three lookback windows in parallel. Each is a lightweight
