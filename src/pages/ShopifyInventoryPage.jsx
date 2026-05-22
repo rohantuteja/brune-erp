@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { isRunActive } from '../lib/constants';
-import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye } from 'lucide-react';
+import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye, ArrowDownUp, ChevronDown } from 'lucide-react';
 
 const CACHE_KEY = 'brune_shopify_inventory_v1';
 
@@ -28,6 +28,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
   const [activeRunsOnly, setActiveRunsOnly] = useState(false);
   const [showZeroStock, setShowZeroStock] = useState(false);
   const [notConnected, setNotConnected] = useState(false);
+  const [sort, setSort] = useState('style_asc');
   const [, setTick] = useState(0);
 
   // Tick every 30s so the relative timestamp ("5m ago") stays current between syncs
@@ -143,6 +144,19 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
     });
   }, [products, showZeroStock, activeRunsOnly, activeStyleCodes, search]);
 
+  const sorted = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      switch (sort) {
+        case 'recently_updated': return new Date(b.synced_at) - new Date(a.synced_at);
+        case 'stock_high':       return b.total_inventory - a.total_inventory;
+        case 'stock_low':        return a.total_inventory - b.total_inventory;
+        case 'name_asc':         return a.title.localeCompare(b.title);
+        case 'style_asc':
+        default:                 return (a.style_code || '').localeCompare(b.style_code || '');
+      }
+    });
+  }, [filtered, sort]);
+
   const fmtRelative = (iso) => {
     if (!iso) return null;
     const diff = Date.now() - new Date(iso).getTime();
@@ -242,12 +256,30 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
           {showZeroStock ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           Zero stock
         </button>
+
+        <span className="text-stone-300 select-none">|</span>
+
+        <div className="relative flex items-center">
+          <ArrowDownUp className="absolute left-2.5 w-3.5 h-3.5 text-stone-400 pointer-events-none" />
+          <select
+            value={sort}
+            onChange={e => setSort(e.target.value)}
+            className="pl-8 pr-7 py-2 text-xs font-medium text-stone-700 bg-white border border-stone-200 rounded-lg appearance-none hover:border-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent transition-colors cursor-pointer"
+          >
+            <option value="recently_updated">Recently updated</option>
+            <option value="stock_high">Stock: High → Low</option>
+            <option value="stock_low">Stock: Low → High</option>
+            <option value="style_asc">Style A → Z</option>
+            <option value="name_asc">Name A → Z</option>
+          </select>
+          <ChevronDown className="absolute right-2 w-3.5 h-3.5 text-stone-400 pointer-events-none" />
+        </div>
       </div>
 
       {/* Summary count */}
       {!loading && products.length > 0 && (
         <p className="text-xs text-stone-500">
-          Showing {filtered.length} of {products.length} styles
+          Showing {sorted.length} of {products.length} styles
           {activeRunsOnly && ` · ${activeStyleCodes.size} have active runs`}
         </p>
       )}
@@ -266,7 +298,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map(product => {
+          {sorted.map(product => {
             const variants = Array.isArray(product.variants) ? product.variants : [];
             const hasActiveRun = activeStyleCodes.has((product.style_code || '').toUpperCase());
             const isZeroStock = product.total_inventory <= 0;
