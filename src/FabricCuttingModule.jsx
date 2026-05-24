@@ -189,7 +189,7 @@ export default function FabricCuttingModule() {
     loading: dbLoading,
     addFabricType, updateFabricType, deleteFabricType,
     addSupplier, updateSupplier, deleteSupplier,
-    addStyleCode, updateStyleCode, deleteStyleCode,
+    addStyleCode, updateStyleCode, deleteStyleCode, toggleStyleCodeDiscontinued,
     addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar,
     recordKarigarPayment, updateKarigarPayment, deleteKarigarPayment,
     saveProductionEntry, deleteProductionEntry, updateProductionEntry,
@@ -627,6 +627,7 @@ export default function FabricCuttingModule() {
             onAddStyleCode={addStyleCode}
             onUpdateStyleCode={updateStyleCode}
             onDeleteStyleCode={deleteStyleCode}
+            onToggleStyleCodeDiscontinued={toggleStyleCodeDiscontinued}
             onAddKarigar={addKarigar}
             onDeleteKarigar={deleteKarigar}
             onToggleKarigarActive={toggleKarigarActive}
@@ -3525,7 +3526,7 @@ function DashStat({ icon, label, value, sub, accent }) {
   );
 }
 
-function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onAddKarigar, onDeleteKarigar, onToggleKarigarActive, onUpdateKarigarPaymentType, showToast, initialTab, onTabChange }) {
+function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onToggleStyleCodeDiscontinued, onAddKarigar, onDeleteKarigar, onToggleKarigarActive, onUpdateKarigarPaymentType, showToast, initialTab, onTabChange }) {
   const { can } = usePermissions();
   const canEdit = can('can_edit_masters');
   const canDelete = can('can_delete_masters');
@@ -3752,15 +3753,38 @@ function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, 
             )}
             {filteredStyleCodes.map(s => {
               const usageCount = runs.filter(r => r.style_code === s.code).length;
+              const isDiscontinued = !!s.discontinued;
               return (
-                <div key={s.id} className="p-3 sm:p-4 flex items-start gap-3 hover:bg-stone-50">
+                <div key={s.id} className={`p-3 sm:p-4 flex items-start gap-3 hover:bg-stone-50 ${isDiscontinued ? 'opacity-60' : ''}`}>
                   <div className="flex-1 min-w-0">
-                    <div className="font-mono font-medium text-stone-900 text-sm">{s.code}</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className={`font-mono font-medium text-sm ${isDiscontinued ? 'text-stone-400 line-through' : 'text-stone-900'}`}>{s.code}</div>
+                      {isDiscontinued && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-stone-100 text-stone-500 border border-stone-200">
+                          Discontinued
+                        </span>
+                      )}
+                    </div>
                     <div className="text-[11px] text-stone-400 mt-1">
                       {usageCount === 0 ? 'Not in use' : `Used in ${usageCount} run${usageCount !== 1 ? 's' : ''}`}
+                      {isDiscontinued && ' · hidden from Pipeline Health'}
                     </div>
                   </div>
                   <div className="flex gap-1">
+                    {canEdit && (
+                      <button
+                        onClick={() => onToggleStyleCodeDiscontinued(s.id)}
+                        title={isDiscontinued ? 'Mark as active' : 'Mark as discontinued'}
+                        className={`p-2 rounded min-w-[36px] min-h-[36px] flex items-center justify-center text-xs font-medium transition-colors ${
+                          isDiscontinued
+                            ? 'text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700'
+                            : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600'
+                        }`}
+                        aria-label={isDiscontinued ? 'Restore' : 'Discontinue'}
+                      >
+                        {isDiscontinued ? '↩' : '✕'}
+                      </button>
+                    )}
                     {canEdit && <button onClick={() => setEditingStyleCode(s.id)} className="p-2 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Edit"><Edit2 className="w-4 h-4" /></button>}
                     {canDelete && <button onClick={() => onDeleteStyleCode(s.id)} className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>}
                   </div>

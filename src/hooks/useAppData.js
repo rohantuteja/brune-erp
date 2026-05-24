@@ -616,6 +616,15 @@ export function useAppData({ showToast }) {
     setStyleCodes(prev => prev.map(s => s.id === id ? { ...s, code: trimmed } : s));
   };
 
+  const toggleStyleCodeDiscontinued = async (id) => {
+    const sc = styleCodes.find(s => s.id === id);
+    if (!sc) return;
+    const newVal = !sc.discontinued;
+    await supabase.from('style_codes').update({ discontinued: newVal }).eq('id', id);
+    setStyleCodes(prev => prev.map(s => s.id === id ? { ...s, discontinued: newVal } : s));
+    showToast(newVal ? `${sc.code} marked as discontinued` : `${sc.code} marked as active`);
+  };
+
   const deleteStyleCode = async (id) => {
     const sc = styleCodes.find(s => s.id === id);
     if (!sc) return;
@@ -1341,7 +1350,7 @@ export function useAppData({ showToast }) {
     // Suppliers
     addSupplier, updateSupplier, deleteSupplier,
     // Style codes
-    addStyleCode, updateStyleCode, deleteStyleCode,
+    addStyleCode, updateStyleCode, deleteStyleCode, toggleStyleCodeDiscontinued,
     // Karigars
     addKarigar, updateKarigarPaymentType, toggleKarigarActive, deleteKarigar,
     recordKarigarPayment, updateKarigarPayment, deleteKarigarPayment,
