@@ -109,7 +109,6 @@ serve(async (req) => {
               fulfillmentStatus: displayFulfillmentStatus
               totalPriceSet { shopMoney { amount currencyCode } }
               netPaymentSet  { shopMoney { amount } }
-              customer { firstName lastName email }
             }
           }
         }
@@ -145,15 +144,10 @@ serve(async (req) => {
       if (status === 'PENDING') pendingCount++
       else partiallyPaidCount++
 
-      const customerName = o.customer
-        ? [o.customer.firstName, o.customer.lastName].filter(Boolean).join(' ').trim() || o.customer.email || null
-        : null
-
       return {
         order_id:           o.id,
         order_number:       o.name,
         created_at:         o.createdAt,
-        customer_name:      customerName,
         financial_status:   status,
         fulfillment_status: o.fulfillmentStatus,
         total_price:        totalPrice,

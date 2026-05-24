@@ -5965,11 +5965,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const downloadCodSnapshotCSV = (snap) => {
     const orders = Array.isArray(snap.orders_data) ? snap.orders_data : [];
     if (orders.length === 0) { showToast('No orders in this snapshot', 'info'); return; }
-    const header = ['Order #', 'Order Date', 'Customer', 'Financial Status', 'Fulfillment Status', 'Order Total (₹)', 'Amount Paid (₹)', 'Outstanding (₹)'];
+    const header = ['Order #', 'Order Date', 'Financial Status', 'Fulfillment Status', 'Order Total (₹)', 'Amount Paid (₹)', 'Outstanding (₹)'];
     const rows = orders.map(o => [
       o.order_number || '',
       o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN') : '',
-      o.customer_name || '',
       o.financial_status || '',
       o.fulfillment_status || '',
       parseFloat(o.total_price || 0).toFixed(2),
@@ -8126,23 +8125,21 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                           ) : (
                             <>
                               {/* Header */}
-                              <div className="hidden sm:grid grid-cols-[1fr_1fr_2fr_1fr_1fr_1fr] gap-3 px-3 sm:px-4 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
+                              <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-3 px-3 sm:px-4 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
                                 <span>Order #</span>
                                 <span>Date</span>
-                                <span>Customer</span>
                                 <span>Status</span>
                                 <span className="text-right">Order Total</span>
                                 <span className="text-right">Outstanding</span>
                               </div>
                               <div className="divide-y divide-stone-100 max-h-80 overflow-y-auto">
                                 {orders.map((o, i) => (
-                                  <div key={i} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_2fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5 px-3 sm:px-4 py-2.5 text-xs">
+                                  <div key={i} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5 px-3 sm:px-4 py-2.5 text-xs">
                                     <span className="font-mono font-medium text-stone-800">#{o.order_number}</span>
-                                    <span className="text-stone-500 sm:col-auto col-start-2 text-right sm:text-left">
+                                    <span className="text-stone-500 text-right sm:text-left">
                                       {o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—'}
                                     </span>
-                                    <span className="text-stone-700 col-span-2 sm:col-span-1 truncate">{o.customer_name || '—'}</span>
-                                    <span className={`${o.financial_status === 'PARTIALLY_PAID' ? 'text-amber-600' : 'text-stone-500'}`}>
+                                    <span className={`col-span-2 sm:col-span-1 ${o.financial_status === 'PARTIALLY_PAID' ? 'text-amber-600' : 'text-stone-500'}`}>
                                       {o.financial_status === 'PARTIALLY_PAID' ? 'Partial' : 'Pending'}
                                     </span>
                                     <span className="text-right text-stone-600">₹{parseFloat(o.total_price || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
