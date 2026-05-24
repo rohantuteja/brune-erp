@@ -5752,6 +5752,14 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [deletingWipSnapshotId, setDeletingWipSnapshotId] = useState(null);
   const [confirmDeleteWipSnapshotId, setConfirmDeleteWipSnapshotId] = useState(null);
 
+  // ── Pending COD state ────────────────────────────────────────────────
+  const [codSnapshots, setCodSnapshots] = useState([]);
+  const [codSnapshotsLoading, setCodSnapshotsLoading] = useState(false);
+  const [takingCodSnapshot, setTakingCodSnapshot] = useState(false);
+  const [expandedCodSnapshotId, setExpandedCodSnapshotId] = useState(null);
+  const [confirmDeleteCodSnapshotId, setConfirmDeleteCodSnapshotId] = useState(null);
+  const [deletingCodSnapshotId, setDeletingCodSnapshotId] = useState(null);
+
   // ── Pipeline Health state ────────────────────────────────────────────
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
@@ -5911,6 +5919,92 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       showToast('Snapshot deleted', 'success');
     } catch { showToast('Failed to delete snapshot', 'error'); }
     finally { setDeletingWipSnapshotId(null); setConfirmDeleteWipSnapshotId(null); }
+  };
+
+  // ── Pending COD functions ────────────────────────────────────────────
+  const fetchCodSnapshots = async () => {
+    setCodSnapshotsLoading(true);
+    const { data } = await supabase
+      .from('cod_pending_snapshots')
+      .select('id, month, snapshot_date, order_count, pending_count, partially_paid_count, total_outstanding, total_gmv, orders_data')
+      .order('month', { ascending: false })
+      .limit(24);
+    setCodSnapshots(data || []);
+    setCodSnapshotsLoading(false);
+  };
+
+  useEffect(() => {
+    if (activeSection !== 'cod_pending') return;
+    fetchCodSnapshots();
+  }, [activeSection]);
+
+  const takeCodSnapshot = async () => {
+    if (takingCodSnapshot) return;
+    setTakingCodSnapshot(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/take-cod-snapshot`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+          body: JSON.stringify({ force: true }),
+        }
+      );
+      const json = await res.json();
+      if (!res.ok || json?.error) {
+        showToast(json?.error || 'Failed to take COD snapshot', 'error');
+      } else {
+        showToast(`COD snapshot taken — ${json.order_count} orders, ₹${parseFloat(json.total_outstanding).toLocaleString('en-IN', { maximumFractionDigits: 0 })} outstanding`, 'success');
+        await fetchCodSnapshots();
+      }
+    } catch { showToast('Error taking COD snapshot', 'error'); }
+    finally { setTakingCodSnapshot(false); }
+  };
+
+  const downloadCodSnapshotCSV = (snap) => {
+    const orders = Array.isArray(snap.orders_data) ? snap.orders_data : [];
+    if (orders.length === 0) { showToast('No orders in this snapshot', 'info'); return; }
+    const header = ['Order #', 'Order Date', 'Customer', 'Financial Status', 'Fulfillment Status', 'Order Total (₹)', 'Amount Paid (₹)', 'Outstanding (₹)'];
+    const rows = orders.map(o => [
+      o.order_number || '',
+      o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN') : '',
+      o.customer_name || '',
+      o.financial_status || '',
+      o.fulfillment_status || '',
+      parseFloat(o.total_price || 0).toFixed(2),
+      parseFloat(o.amount_paid || 0).toFixed(2),
+      parseFloat(o.outstanding_amount || 0).toFixed(2),
+    ]);
+    const summary = [
+      [],
+      ['Summary'],
+      ['Total Orders', snap.order_count],
+      ['Fully Pending', snap.pending_count],
+      ['Partially Paid', snap.partially_paid_count],
+      ['Total Outstanding (₹)', parseFloat(snap.total_outstanding).toFixed(2)],
+      ['Total GMV (₹)', parseFloat(snap.total_gmv).toFixed(2)],
+      ['Snapshot Date', new Date(snap.snapshot_date).toLocaleDateString('en-IN')],
+    ];
+    const csvRows = [header, ...rows, ...summary];
+    const csv = csvRows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `cod-pending-${snap.month}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const deleteCodSnapshot = async (snapId) => {
+    setDeletingCodSnapshotId(snapId);
+    try {
+      const { error } = await supabase.from('cod_pending_snapshots').delete().eq('id', snapId);
+      if (error) throw error;
+      setCodSnapshots(prev => prev.filter(s => s.id !== snapId));
+      if (expandedCodSnapshotId === snapId) setExpandedCodSnapshotId(null);
+      showToast('Snapshot deleted', 'success');
+    } catch { showToast('Failed to delete snapshot', 'error'); }
+    finally { setDeletingCodSnapshotId(null); setConfirmDeleteCodSnapshotId(null); }
   };
 
   const fetchPipelineHealth = async () => {
@@ -6477,6 +6571,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'inventory', label: 'Inventory Value' },
     { id: 'shopify_stock', label: 'Shopify Stock Value' },
     { id: 'wip', label: 'WIP Value' },
+    { id: 'cod_pending', label: 'Pending COD' },
     { id: 'pipeline_health', label: 'Pipeline Health' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
@@ -7898,6 +7993,173 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ── PENDING COD ORDERS ── */}
+      {activeSection === 'cod_pending' && (
+        <div className="space-y-3">
+          <div className="text-xs text-stone-500 px-0.5">
+            Open COD orders with uncollected payment as of snapshot date · outstanding = order total minus any deposit already paid
+          </div>
+
+          {/* Monthly Snapshots */}
+          <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+            <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-medium text-stone-900">Monthly Snapshots</div>
+                <div className="text-xs text-stone-500 mt-0.5">
+                  Auto-captured at 11:59 PM IST on the last day of each month · all open pending/partially-paid COD orders at that moment
+                </div>
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={takeCodSnapshot}
+                  disabled={takingCodSnapshot}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  {takingCodSnapshot ? 'Taking…' : 'Take Now'}
+                </button>
+              )}
+            </div>
+
+            {codSnapshotsLoading ? (
+              <div className="p-6 text-center text-sm text-stone-400">Loading snapshots…</div>
+            ) : codSnapshots.length === 0 ? (
+              <div className="p-6 text-center">
+                <Camera className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+                <div className="text-sm text-stone-500">No snapshots yet</div>
+                <div className="text-xs text-stone-400 mt-0.5">Auto-captured on the last day of each month, or take one manually.</div>
+              </div>
+            ) : (
+              <div className="divide-y divide-stone-100">
+                {codSnapshots.map((snap, idx) => {
+                  const prevSnap = codSnapshots[idx + 1];
+                  const outstanding = parseFloat(snap.total_outstanding) || 0;
+                  const prevOutstanding = prevSnap ? (parseFloat(prevSnap.total_outstanding) || 0) : null;
+                  const momDiff = prevOutstanding !== null ? outstanding - prevOutstanding : null;
+                  const momPct = prevOutstanding && prevOutstanding > 0 ? (momDiff / prevOutstanding) * 100 : null;
+                  const isExpanded = expandedCodSnapshotId === snap.id;
+                  const isCurrentMonth = snap.month === currentMonthStr();
+                  const isConfirmDelete = confirmDeleteCodSnapshotId === snap.id;
+                  const orders = Array.isArray(snap.orders_data) ? snap.orders_data : [];
+
+                  return (
+                    <div key={snap.id}>
+                      <button
+                        onClick={() => setExpandedCodSnapshotId(prev => prev === snap.id ? null : snap.id)}
+                        className="w-full flex items-center gap-3 p-3 sm:p-4 hover:bg-stone-50 transition-colors text-left"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-medium text-stone-900">{fmtMonth(snap.month)}</span>
+                            {isCurrentMonth && (
+                              <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                            <span className="text-base font-bold text-stone-900">
+                              ₹{outstanding.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            </span>
+                            {momDiff !== null && (
+                              <span className={`text-xs font-medium flex items-center gap-0.5 ${momDiff >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                                {momDiff >= 0 ? '▲' : '▼'}
+                                ₹{Math.abs(momDiff).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                {momPct !== null && ` (${Math.abs(momPct).toFixed(1)}%)`}
+                                <span className="text-stone-400 font-normal ml-1">vs prev month</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-stone-400 mt-0.5">
+                            {snap.order_count} orders
+                            {snap.pending_count > 0 && ` · ${snap.pending_count} fully pending`}
+                            {snap.partially_paid_count > 0 && ` · ${snap.partially_paid_count} partially paid`}
+                            {' · GMV ₹'}{parseFloat(snap.total_gmv).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span
+                            role="button"
+                            onClick={e => { e.stopPropagation(); downloadCodSnapshotCSV(snap); }}
+                            className="p-1.5 rounded hover:bg-stone-100 text-stone-400 hover:text-stone-600 transition-colors"
+                            title="Download CSV"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </span>
+                          {isAdmin && !isConfirmDelete && (
+                            <span
+                              role="button"
+                              onClick={e => { e.stopPropagation(); setConfirmDeleteCodSnapshotId(snap.id); }}
+                              className="p-1.5 rounded hover:bg-red-50 text-stone-300 hover:text-red-500 transition-colors"
+                              title="Delete snapshot"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                          {isAdmin && isConfirmDelete && (
+                            <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                              <button
+                                onClick={() => deleteCodSnapshot(snap.id)}
+                                disabled={deletingCodSnapshotId === snap.id}
+                                className="px-2 py-1 text-xs font-medium bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+                              >
+                                {deletingCodSnapshotId === snap.id ? '…' : 'Delete'}
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteCodSnapshotId(null)}
+                                className="px-2 py-1 text-xs font-medium text-stone-600 hover:bg-stone-100 rounded"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+                          <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                        </div>
+                      </button>
+
+                      {/* Expanded order list */}
+                      {isExpanded && (
+                        <div className="border-t border-stone-100">
+                          {orders.length === 0 ? (
+                            <div className="p-4 text-center text-sm text-stone-400">No orders in this snapshot</div>
+                          ) : (
+                            <>
+                              {/* Header */}
+                              <div className="hidden sm:grid grid-cols-[1fr_1fr_2fr_1fr_1fr_1fr] gap-3 px-3 sm:px-4 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
+                                <span>Order #</span>
+                                <span>Date</span>
+                                <span>Customer</span>
+                                <span>Status</span>
+                                <span className="text-right">Order Total</span>
+                                <span className="text-right">Outstanding</span>
+                              </div>
+                              <div className="divide-y divide-stone-100 max-h-80 overflow-y-auto">
+                                {orders.map((o, i) => (
+                                  <div key={i} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_2fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5 px-3 sm:px-4 py-2.5 text-xs">
+                                    <span className="font-mono font-medium text-stone-800">#{o.order_number}</span>
+                                    <span className="text-stone-500 sm:col-auto col-start-2 text-right sm:text-left">
+                                      {o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—'}
+                                    </span>
+                                    <span className="text-stone-700 col-span-2 sm:col-span-1 truncate">{o.customer_name || '—'}</span>
+                                    <span className={`${o.financial_status === 'PARTIALLY_PAID' ? 'text-amber-600' : 'text-stone-500'}`}>
+                                      {o.financial_status === 'PARTIALLY_PAID' ? 'Partial' : 'Pending'}
+                                    </span>
+                                    <span className="text-right text-stone-600">₹{parseFloat(o.total_price || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                    <span className="text-right font-medium text-stone-900">₹{parseFloat(o.outstanding_amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
