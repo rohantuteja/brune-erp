@@ -5755,6 +5755,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // ── Pending COD state ────────────────────────────────────────────────
   const [codSnapshots, setCodSnapshots] = useState([]);
   const [codSnapshotsLoading, setCodSnapshotsLoading] = useState(false);
+  const [codLiveData, setCodLiveData] = useState(null);
+  const [codLiveLoading, setCodLiveLoading] = useState(false);
+  const [codLiveExpanded, setCodLiveExpanded] = useState(false);
   const [takingCodSnapshot, setTakingCodSnapshot] = useState(false);
   const [codSnapshotMonth, setCodSnapshotMonth] = useState('');
   const [expandedCodSnapshotId, setExpandedCodSnapshotId] = useState(null);
@@ -5923,6 +5926,30 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   };
 
   // ── Pending COD functions ────────────────────────────────────────────
+  const fetchCodLive = async () => {
+    if (codLiveLoading) return;
+    setCodLiveLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/take-cod-snapshot`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+          body: JSON.stringify({ dry_run: true }),
+        }
+      );
+      const json = await res.json();
+      if (!res.ok || json?.error) {
+        showToast(json?.error || 'Failed to fetch live COD data', 'error');
+      } else {
+        setCodLiveData(json);
+        setCodLiveExpanded(false);
+      }
+    } catch { showToast('Error fetching live COD data', 'error'); }
+    finally { setCodLiveLoading(false); }
+  };
+
   const fetchCodSnapshots = async () => {
     setCodSnapshotsLoading(true);
     const { data } = await supabase
@@ -8002,7 +8029,134 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {activeSection === 'cod_pending' && (
         <div className="space-y-3">
           <div className="text-xs text-stone-500 px-0.5">
-            Open COD orders with uncollected payment as of snapshot date · outstanding = order total minus any deposit already paid
+            Open COD orders with uncollected payment · outstanding = order total minus any deposit already paid
+          </div>
+
+          {/* Live Query */}
+          <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+            <div className="p-3 sm:p-4 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-medium text-stone-900">Live Query</div>
+                <div className="text-xs text-stone-500 mt-0.5">
+                  {codLiveData
+                    ? <>Fetched {new Date(codLiveData.fetched_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · nothing is saved</>
+                    : 'Fetch current open COD orders directly from Shopify · nothing is saved'}
+                </div>
+              </div>
+              <button
+                onClick={fetchCodLive}
+                disabled={codLiveLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-100 text-stone-700 text-xs font-medium rounded-lg hover:bg-stone-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${codLiveLoading ? 'animate-spin' : ''}`} />
+                {codLiveLoading ? 'Fetching…' : codLiveData ? 'Refresh' : 'Fetch Live'}
+              </button>
+            </div>
+
+            {codLiveData && (() => {
+              const liveOrders = Array.isArray(codLiveData.orders_data) ? codLiveData.orders_data : [];
+              return (
+                <>
+                  {/* Summary stats */}
+                  <div className="grid grid-cols-3 border-t border-stone-100">
+                    <div className="p-3 sm:p-4 text-center border-r border-stone-100">
+                      <div className="text-lg font-bold text-stone-900">
+                        ₹{parseFloat(codLiveData.total_outstanding).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </div>
+                      <div className="text-xs text-stone-500 mt-0.5">Outstanding</div>
+                    </div>
+                    <div className="p-3 sm:p-4 text-center border-r border-stone-100">
+                      <div className="text-lg font-bold text-stone-900">{codLiveData.order_count}</div>
+                      <div className="text-xs text-stone-500 mt-0.5">Orders</div>
+                    </div>
+                    <div className="p-3 sm:p-4 text-center">
+                      <div className="text-lg font-bold text-stone-900">
+                        ₹{parseFloat(codLiveData.total_gmv).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </div>
+                      <div className="text-xs text-stone-500 mt-0.5">GMV</div>
+                    </div>
+                  </div>
+
+                  {/* Sub-counts + expand toggle */}
+                  <div className="px-3 sm:px-4 py-2 border-t border-stone-100 flex items-center justify-between">
+                    <div className="text-xs text-stone-500">
+                      {codLiveData.pending_count > 0 && <span>{codLiveData.pending_count} fully pending</span>}
+                      {codLiveData.pending_count > 0 && codLiveData.partially_paid_count > 0 && <span className="mx-1.5">·</span>}
+                      {codLiveData.partially_paid_count > 0 && <span className="text-amber-600">{codLiveData.partially_paid_count} partially paid</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        role="button"
+                        onClick={() => {
+                          if (liveOrders.length === 0) { showToast('No orders to download', 'info'); return; }
+                          const header = ['Order #', 'Order Date', 'Financial Status', 'Fulfillment Status', 'Order Total (₹)', 'Amount Paid (₹)', 'Outstanding (₹)'];
+                          const rows = liveOrders.map(o => [
+                            o.order_number || '',
+                            o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN') : '',
+                            o.financial_status || '',
+                            o.fulfillment_status || '',
+                            (o.total_price || 0).toFixed(2),
+                            (o.amount_paid || 0).toFixed(2),
+                            (o.outstanding_amount || 0).toFixed(2),
+                          ]);
+                          const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+                          const blob = new Blob([csv], { type: 'text/csv' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url; a.download = `cod-live-${new Date().toISOString().slice(0,10)}.csv`;
+                          a.click(); URL.revokeObjectURL(url);
+                        }}
+                        className="p-1.5 rounded hover:bg-stone-100 text-stone-400 hover:text-stone-600 transition-colors"
+                        title="Download CSV"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </span>
+                      <button
+                        onClick={() => setCodLiveExpanded(p => !p)}
+                        className="flex items-center gap-1 text-xs text-stone-500 hover:text-stone-700 transition-colors"
+                      >
+                        {codLiveExpanded ? 'Hide orders' : `Show ${liveOrders.length} orders`}
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${codLiveExpanded ? 'rotate-180' : ''}`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Order list */}
+                  {codLiveExpanded && (
+                    <div className="border-t border-stone-100">
+                      {liveOrders.length === 0 ? (
+                        <div className="p-4 text-center text-sm text-stone-400">No orders</div>
+                      ) : (
+                        <>
+                          <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-3 px-3 sm:px-4 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
+                            <span>Order #</span>
+                            <span>Date</span>
+                            <span>Status</span>
+                            <span className="text-right">Order Total</span>
+                            <span className="text-right">Outstanding</span>
+                          </div>
+                          <div className="divide-y divide-stone-100 max-h-80 overflow-y-auto">
+                            {liveOrders.map((o, i) => (
+                              <div key={i} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5 px-3 sm:px-4 py-2.5 text-xs">
+                                <span className="font-mono font-medium text-stone-800">#{o.order_number}</span>
+                                <span className="text-stone-500 text-right sm:text-left">
+                                  {o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) : '—'}
+                                </span>
+                                <span className={`col-span-2 sm:col-span-1 ${o.financial_status === 'PARTIALLY_PAID' ? 'text-amber-600' : 'text-stone-500'}`}>
+                                  {o.financial_status === 'PARTIALLY_PAID' ? 'Partial' : 'Pending'}
+                                </span>
+                                <span className="text-right text-stone-600">₹{parseFloat(o.total_price || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                <span className="text-right font-medium text-stone-900">₹{parseFloat(o.outstanding_amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           {/* Monthly Snapshots */}

@@ -37,7 +37,8 @@ serve(async (req) => {
     }
 
     const bodyJson = await req.json().catch(() => ({})) as Record<string, unknown>
-    const force = bodyJson.force === true
+    const force    = bodyJson.force    === true
+    const dryRun   = bodyJson.dry_run  === true
 
     // ── Determine month ─────────────────────────────────────────────────
     // Default: current month in IST
@@ -45,8 +46,8 @@ serve(async (req) => {
     const monthStr = bodyJson.month as string
       || `${nowIST.getFullYear()}-${String(nowIST.getMonth() + 1).padStart(2, '0')}`
 
-    // Skip if already exists (unless force)
-    if (!force) {
+    // Skip if already exists (unless force or dry_run)
+    if (!force && !dryRun) {
       const { data: existing } = await admin
         .from('cod_pending_snapshots')
         .select('id')
@@ -160,36 +161,48 @@ serve(async (req) => {
     // Sort by created_at descending (newest first) for readability
     ordersData.sort((a: any, b: any) => b.created_at.localeCompare(a.created_at))
 
-    // ── Upsert snapshot ──────────────────────────────────────────────────
-    const snapshotRow = {
+    const responsePayload = {
+      success:              true,
+      dry_run:              dryRun,
       month:                monthStr,
-      snapshot_date:        new Date().toISOString(),
+      fetched_at:           new Date().toISOString(),
       order_count:          allOrders.length,
       pending_count:        pendingCount,
       partially_paid_count: partiallyPaidCount,
       total_outstanding:    Math.round(totalOutstanding * 100) / 100,
       total_gmv:            Math.round(totalGmv * 100) / 100,
       orders_data:          ordersData,
-      created_by:           userId,
     }
 
+    // ── Dry run: return data without saving ──────────────────────────────
+    if (dryRun) {
+      return new Response(JSON.stringify(responsePayload), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // ── Upsert snapshot ──────────────────────────────────────────────────
     const { error: upsertErr } = await admin
       .from('cod_pending_snapshots')
-      .upsert(snapshotRow, { onConflict: 'month' })
+      .upsert(
+        {
+          month:                monthStr,
+          snapshot_date:        responsePayload.fetched_at,
+          order_count:          allOrders.length,
+          pending_count:        pendingCount,
+          partially_paid_count: partiallyPaidCount,
+          total_outstanding:    responsePayload.total_outstanding,
+          total_gmv:            responsePayload.total_gmv,
+          orders_data:          ordersData,
+          created_by:           userId,
+        },
+        { onConflict: 'month' },
+      )
     if (upsertErr) throw upsertErr
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        month: monthStr,
-        order_count: allOrders.length,
-        pending_count: pendingCount,
-        partially_paid_count: partiallyPaidCount,
-        total_outstanding: snapshotRow.total_outstanding,
-        total_gmv: snapshotRow.total_gmv,
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    )
+    return new Response(JSON.stringify(responsePayload), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
