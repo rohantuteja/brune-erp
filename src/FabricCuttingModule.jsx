@@ -4979,6 +4979,7 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
   const [dashRange, setDashRange] = useState('30d');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState(localToday());
+  const [expandedKarigar, setExpandedKarigar] = useState(null);
 
   // Karigar performance stats — equal split of completed per karigar
   const perfStats = useMemo(() => {
@@ -5001,24 +5002,43 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
 
     const stats = {};
     karigars.forEach(k => {
-      stats[k.id] = { name: k.name, issued: 0, completed: 0, issueDates: [], completionDates: [] };
+      stats[k.id] = { name: k.name, issued: 0, completed: 0, issueDates: [], completionDates: [], batchList: [], turnarounds: [] };
     });
 
     relevantBatches.forEach(b => {
       const count = (b.karigar_ids || []).length || 1;
       const issuedPerKarigar = (b.total_issued || 0) / count;
-      const completedPerKarigar = b.status === 'completed' ? (b.completed_qty || 0) / count : 0;
+      const completedPerKarigar = (b.completed_qty || 0) / count;
+      const turnaround = (b.issued_date && b.completed_date)
+        ? Math.max(1, Math.round((new Date(b.completed_date + 'T00:00:00') - new Date(b.issued_date + 'T00:00:00')) / (1000 * 60 * 60 * 24)) + 1)
+        : null;
 
       (b.karigar_ids || []).forEach((id, i) => {
         const name = b.karigar_names?.[i] || `Karigar ${id}`;
-        if (!stats[id]) stats[id] = { name, issued: 0, completed: 0, issueDates: [], completionDates: [] };
+        if (!stats[id]) stats[id] = { name, issued: 0, completed: 0, issueDates: [], completionDates: [], batchList: [], turnarounds: [] };
         stats[id].issued += issuedPerKarigar;
         stats[id].completed += completedPerKarigar;
-        // Only collect dates from completed batches for working day calculation
-        if (b.status === 'completed' && b.completed_date) {
-          stats[id].issueDates.push(b.issued_date);
-          stats[id].completionDates.push(b.completed_date);
-        }
+        stats[id].issueDates.push(b.issued_date);
+        stats[id].completionDates.push(b.completed_date);
+        stats[id].batchList.push({
+          id: b.id,
+          styleCode: b.style_code,
+          issuedDate: b.issued_date,
+          completedDate: b.completed_date,
+          pcs: Math.round(completedPerKarigar),
+          turnaround,
+        });
+        if (turnaround) stats[id].turnarounds.push(turnaround);
+      });
+    });
+
+    // Outstanding: all-time non-completed batches for each karigar (live, outside date window)
+    const outstandingByKarigar = {};
+    batches.filter(b => b.status !== 'completed').forEach(b => {
+      const count = (b.karigar_ids || []).length || 1;
+      const pcsEach = (b.total_issued || 0) / count;
+      (b.karigar_ids || []).forEach(id => {
+        outstandingByKarigar[id] = (outstandingByKarigar[id] || 0) + pcsEach;
       });
     });
 
@@ -5029,18 +5049,17 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
         let workingDays = 0;
 
         if (s.completionDates.length > 0 && s.completed > 0) {
-          // Step 1: earliest issue date & latest completion date
-          const earliestIssue = s.issueDates.sort()[0];
-          const latestCompletion = s.completionDates.sort().reverse()[0];
-
-          // Step 2: count unique calendar days between them (inclusive)
+          const earliestIssue = [...s.issueDates].sort()[0];
+          const latestCompletion = [...s.completionDates].sort().reverse()[0];
           const start = new Date(earliestIssue + 'T00:00:00');
           const end = new Date(latestCompletion + 'T00:00:00');
           workingDays = Math.max(1, Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1);
-
-          // Step 3 + 4: total completed ÷ unique working days
           avgPerDay = Math.round((s.completed / workingDays) * 10) / 10;
         }
+
+        const avgTurnaround = s.turnarounds.length > 0
+          ? Math.round(s.turnarounds.reduce((a, b) => a + b, 0) / s.turnarounds.length * 10) / 10
+          : null;
 
         return {
           ...s,
@@ -5048,7 +5067,10 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
           completed: Math.round(s.completed),
           workingDays,
           avgPerDay,
-          completionRate: s.issued > 0 ? Math.round(s.completed / s.issued * 100) : 0,
+          avgTurnaround,
+          batchCount: s.batchList.length,
+          outstanding: Math.round(outstandingByKarigar[karigars.find(k => k.name === s.name)?.id] || 0),
+          batchList: [...s.batchList].sort((a, b) => (b.completedDate || '').localeCompare(a.completedDate || '')),
         };
       })
       .sort((a, b) => b.completed - a.completed);
@@ -5299,66 +5321,87 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
           ) : (
             <div className="space-y-2">
               <div className="text-xs text-stone-500 px-0.5">
-              <div className="text-xs text-stone-500 mt-0.5">Total completed ÷ calendar days (earliest issue → latest completion)</div>
+                pcs/day = total completed ÷ calendar days (earliest issue → latest completion) · outstanding = currently with karigar
               </div>
               {perfStats.map((k, idx) => {
-                const rateColor = k.completionRate >= 95
-                  ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                  : k.completionRate >= 80
-                  ? 'text-amber-700 bg-amber-50 border-amber-200'
-                  : 'text-red-700 bg-red-50 border-red-200';
-                const completionPct = Math.min(100, k.completionRate);
+                const isExpanded = expandedKarigar === k.name;
                 return (
-                  <div key={k.name} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
-                    {/* Header row: avatar + name + rank + avg/day pill */}
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="relative flex-shrink-0">
-                        <div className="w-10 h-10 rounded-full bg-stone-100 text-stone-700 flex items-center justify-center text-sm font-semibold">
-                          {k.name.split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase()}
+                  <div key={k.name} className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                    <div className="p-3 sm:p-4">
+                      {/* Header row: avatar + name + rank + avg/day pill */}
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="relative flex-shrink-0">
+                          <div className="w-10 h-10 rounded-full bg-stone-100 text-stone-700 flex items-center justify-center text-sm font-semibold">
+                            {k.name.split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-stone-800 text-white text-[9px] font-bold flex items-center justify-center">
+                            {idx + 1}
+                          </div>
                         </div>
-                        <div className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-stone-800 text-white text-[9px] font-bold flex items-center justify-center">
-                          {idx + 1}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-semibold text-stone-900 truncate">{k.name}</div>
+                          <div className="text-xs text-stone-500">
+                            {k.completed > 0 ? `${Math.round(k.completed)} pcs · ${k.workingDays} day${k.workingDays !== 1 ? 's' : ''} span` : 'No completed batches'}
+                          </div>
+                        </div>
+                        <div className="flex-shrink-0 text-center">
+                          <div className="bg-stone-900 text-white text-sm font-bold px-3 py-1.5 rounded-full">
+                            {k.avgPerDay}
+                          </div>
+                          <div className="text-[10px] text-stone-400 mt-0.5">pcs/day</div>
                         </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-semibold text-stone-900 truncate">{k.name}</div>
-                        <div className="text-xs text-stone-500">
-                          {k.completed > 0 ? `${Math.round(k.completed)} pcs · ${k.workingDays} working day${k.workingDays !== 1 ? 's' : ''}` : 'No completed batches'}
+
+                      {/* Stats grid: avg turnaround · batches · outstanding */}
+                      <div className="grid grid-cols-3 gap-2 mb-3">
+                        <div className="bg-stone-50 rounded-md p-2.5 text-center">
+                          <div className="text-base font-semibold text-stone-900">
+                            {k.avgTurnaround !== null ? `${k.avgTurnaround}d` : '—'}
+                          </div>
+                          <div className="text-[11px] text-stone-500">Avg turnaround</div>
+                        </div>
+                        <div className="bg-stone-50 rounded-md p-2.5 text-center">
+                          <div className="text-base font-semibold text-stone-900">{k.batchCount}</div>
+                          <div className="text-[11px] text-stone-500">Batches</div>
+                        </div>
+                        <div className={`rounded-md p-2.5 text-center ${k.outstanding > 0 ? 'bg-amber-50' : 'bg-stone-50'}`}>
+                          <div className={`text-base font-semibold ${k.outstanding > 0 ? 'text-amber-700' : 'text-stone-400'}`}>
+                            {k.outstanding > 0 ? k.outstanding : '—'}
+                          </div>
+                          <div className="text-[11px] text-stone-500">Outstanding</div>
                         </div>
                       </div>
-                      <div className="flex-shrink-0 text-center">
-                        <div className="bg-stone-900 text-white text-sm font-bold px-3 py-1.5 rounded-full">
-                          {k.avgPerDay}
-                        </div>
-                        <div className="text-[10px] text-stone-400 mt-0.5">pcs/day</div>
-                      </div>
+
+                      {/* Collapse toggle */}
+                      <button
+                        onClick={() => setExpandedKarigar(isExpanded ? null : k.name)}
+                        className="w-full flex items-center justify-between text-xs text-stone-500 hover:text-stone-700 py-1 transition-colors"
+                      >
+                        <span>{k.batchCount} batch{k.batchCount !== 1 ? 'es' : ''} completed in this period</span>
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                      </button>
                     </div>
 
-                    {/* Completion progress bar */}
-                    <div className="mb-3">
-                      <div className="flex items-center justify-between text-xs mb-1">
-                        <span className="text-stone-500">Completion rate</span>
-                        <span className={`font-semibold px-1.5 py-0.5 rounded border text-xs ${rateColor}`}>{k.completionRate}%</span>
+                    {/* Collapsible batch list */}
+                    {isExpanded && (
+                      <div className="border-t border-stone-100 divide-y divide-stone-100">
+                        {k.batchList.map(b => (
+                          <div key={b.id} className="px-3 sm:px-4 py-2.5 flex items-center justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="font-mono text-xs font-medium text-stone-800">{b.styleCode || '—'}</div>
+                              <div className="text-[11px] text-stone-400 mt-0.5">
+                                {b.issuedDate} → {b.completedDate}
+                                {b.turnaround && <span className="ml-1.5 text-stone-300">·</span>}
+                                {b.turnaround && <span className="ml-1.5">{b.turnaround}d</span>}
+                              </div>
+                            </div>
+                            <div className="text-sm font-semibold text-emerald-700 flex-shrink-0">
+                              {b.pcs} pcs
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div className="h-2 bg-stone-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all ${k.completionRate >= 95 ? 'bg-emerald-500' : k.completionRate >= 80 ? 'bg-amber-500' : 'bg-red-500'}`}
-                          style={{ width: `${completionPct}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Stats row */}
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="bg-stone-50 rounded-md p-2.5 text-center">
-                        <div className="text-base font-semibold text-stone-900">{k.issued}</div>
-                        <div className="text-[11px] text-stone-500">Issued</div>
-                      </div>
-                      <div className="bg-emerald-50 rounded-md p-2.5 text-center">
-                        <div className="text-base font-semibold text-emerald-700">{k.completed}</div>
-                        <div className="text-[11px] text-stone-500">Completed</div>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}
