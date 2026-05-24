@@ -7268,8 +7268,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   return (
                     <div key={code} className="p-3 sm:p-4">
                       <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
+                          {d.hasCost && d.qty > 0 && (
+                            <span className="text-xs text-stone-400">
+                              {d.qty} pcs × ₹{(d.value / d.qty).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          )}
                           {!d.hasCost && (
                             <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
                           )}
@@ -7309,8 +7314,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   return (
                     <div key={code} className="p-3 sm:p-4">
                       <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
+                          {d.hasCost && d.qty > 0 && (
+                            <span className="text-xs text-stone-400">
+                              {d.qty} pcs × ₹{(d.value / d.qty).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          )}
                           {!d.hasCost && (
                             <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
                           )}
