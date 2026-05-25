@@ -43,20 +43,20 @@ serve(async (req) => {
     const { data: secrets } = await admin
       .from('private_secrets')
       .select('key, value')
-      .in('key', ['shopify_access_token', 'shopify_shop_domain', 'shopify_client_secret'])
+      .in('key', ['shopify_access_token', 'shopify_shop_domain', 'shopify_webhook_signing_secret'])
 
     const secretMap: Record<string, string> = Object.fromEntries(
       (secrets || []).map((s: any) => [s.key, s.value])
     )
 
-    // ── HMAC verification ─────────────────────────────────────────────────────
-    const clientSecret = secretMap['shopify_client_secret']
-    if (!clientSecret) {
-      console.error('shopify_client_secret not found in private_secrets')
-      return new Response(JSON.stringify({ error: 'client secret not configured' }), { status: 200 })
+    // ── HMAC verification using store webhook signing secret ──────────────────
+    const signingSecret = secretMap['shopify_webhook_signing_secret']
+    if (!signingSecret) {
+      console.error('shopify_webhook_signing_secret not found in private_secrets')
+      return new Response(JSON.stringify({ error: 'signing secret not configured' }), { status: 200 })
     }
 
-    const valid = await verifyShopifyHmac(clientSecret, rawBody, hmacHeader)
+    const valid = await verifyShopifyHmac(signingSecret, rawBody, hmacHeader)
     if (!valid) {
       console.warn('HMAC mismatch — rejecting webhook')
       return new Response(JSON.stringify({ error: 'Invalid HMAC' }), { status: 401 })
