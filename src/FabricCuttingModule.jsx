@@ -5755,8 +5755,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // ── Returns state ────────────────────────────────────────────────────
   const [returnRestocks, setReturnRestocks] = useState([]);
   const [returnRestocksLoading, setReturnRestocksLoading] = useState(false);
-  const [registeringReturnWebhook, setRegisteringReturnWebhook] = useState(false);
-  const [returnWebhookStatus, setReturnWebhookStatus] = useState(null); // null | 'registered' | 'already'
 
   // ── Pending COD state ────────────────────────────────────────────────
   const [codSnapshots, setCodSnapshots] = useState([]);
@@ -5931,31 +5929,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   };
 
   // ── Returns functions ────────────────────────────────────────────────
-  const registerReturnWebhook = async () => {
-    if (registeringReturnWebhook) return;
-    setRegisteringReturnWebhook(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/shopify-sync`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-          body: JSON.stringify({ action: 'register_return_webhook' }),
-        }
-      );
-      const json = await res.json();
-      if (!res.ok || json?.error) {
-        showToast(json?.error || 'Failed to register webhook', 'error');
-      } else {
-        const alreadyExisted = json.message === 'Already registered';
-        setReturnWebhookStatus(alreadyExisted ? 'already' : 'registered');
-        showToast(alreadyExisted ? 'Webhook already registered via API' : 'Webhook registered — HMAC will now work correctly', 'success');
-      }
-    } catch { showToast('Error registering webhook', 'error'); }
-    finally { setRegisteringReturnWebhook(false); }
-  };
-
   const fetchReturnRestocks = async () => {
     setReturnRestocksLoading(true);
     const { data } = await supabase
@@ -8692,33 +8665,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="text-xs text-stone-500 px-0.5">
               Auto-restocked when Return Prime processes a refund · inventory adjusted in Shopify instantly
             </div>
-
-            {/* Webhook status */}
-            {isAdmin && (
-              <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 flex items-center justify-between gap-3 flex-wrap">
-                <div>
-                  <div className="text-sm font-medium text-stone-900">Shopify Webhook</div>
-                  <div className="text-xs text-stone-500 mt-0.5">
-                    {returnWebhookStatus === 'registered' || returnWebhookStatus === 'already'
-                      ? '✓ Registered via API — HMAC verification active'
-                      : 'Register via API so Shopify signs payloads with your app\'s client secret'}
-                  </div>
-                </div>
-                {returnWebhookStatus === 'registered' || returnWebhookStatus === 'already' ? (
-                  <span className="text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-lg">
-                    ✓ Active
-                  </span>
-                ) : (
-                  <button
-                    onClick={registerReturnWebhook}
-                    disabled={registeringReturnWebhook}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {registeringReturnWebhook ? 'Registering…' : 'Register Webhook'}
-                  </button>
-                )}
-              </div>
-            )}
 
             {/* This month summary */}
             <div className="grid grid-cols-3 gap-3">
