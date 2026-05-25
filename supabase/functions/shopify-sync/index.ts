@@ -8,8 +8,9 @@ const corsHeaders = {
 
 const CRON_SECRET = 'brune-cron-secret-2026'
 
-// Webhook address for the inventory-webhook edge function
-const WEBHOOK_URL = 'https://nexhqmdplnxqypjydslg.supabase.co/functions/v1/shopify-inventory-webhook'
+// Webhook addresses
+const INVENTORY_WEBHOOK_URL = 'https://nexhqmdplnxqypjydslg.supabase.co/functions/v1/shopify-inventory-webhook'
+const RETURN_WEBHOOK_URL    = 'https://nexhqmdplnxqypjydslg.supabase.co/functions/v1/shopify-return-webhook'
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -61,44 +62,34 @@ serve(async (req) => {
     }
     const apiBase = `https://${shopDomain}/admin/api/2024-10`
 
-    // ── Special action: register Shopify webhooks ────────────────────────────
-    if (action === 'register_webhooks') {
-      // Check if already registered
-      const listRes = await fetch(
-        `${apiBase}/webhooks.json?topic=inventory_levels%2Fupdate`,
-        { headers: shopifyRestHeaders },
-      )
+    // ── Helper: register a webhook if not already registered ────────────────
+    const registerWebhook = async (topic: string, address: string) => {
+      const encoded = encodeURIComponent(topic)
+      const listRes = await fetch(`${apiBase}/webhooks.json?topic=${encoded}`, { headers: shopifyRestHeaders })
       const listData = await listRes.json()
-      const existing = (listData.webhooks ?? []).find((w: any) => w.address === WEBHOOK_URL)
+      const existing = (listData.webhooks ?? []).find((w: any) => w.address === address)
+      if (existing) return { success: true, webhook_id: existing.id, message: 'Already registered' }
 
-      if (existing) {
-        return new Response(
-          JSON.stringify({ success: true, webhook_id: existing.id, message: 'Already registered' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        )
-      }
-
-      // Register the webhook
       const createRes = await fetch(`${apiBase}/webhooks.json`, {
         method: 'POST',
         headers: shopifyRestHeaders,
-        body: JSON.stringify({
-          webhook: {
-            topic:   'inventory_levels/update',
-            address: WEBHOOK_URL,
-            format:  'json',
-          },
-        }),
+        body: JSON.stringify({ webhook: { topic, address, format: 'json' } }),
       })
       const createData = await createRes.json()
-      if (!createRes.ok) {
-        throw new Error(`Webhook registration failed: ${JSON.stringify(createData.errors ?? createData)}`)
-      }
+      if (!createRes.ok) throw new Error(`Webhook registration failed: ${JSON.stringify(createData.errors ?? createData)}`)
+      return { success: true, webhook_id: createData.webhook?.id, message: 'Webhook registered' }
+    }
 
-      return new Response(
-        JSON.stringify({ success: true, webhook_id: createData.webhook?.id, message: 'Webhook registered' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
+    // ── Special action: register inventory webhook ───────────────────────────
+    if (action === 'register_webhooks') {
+      const result = await registerWebhook('inventory_levels/update', INVENTORY_WEBHOOK_URL)
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
+    // ── Special action: register return webhook ──────────────────────────────
+    if (action === 'register_return_webhook') {
+      const result = await registerWebhook('refunds/create', RETURN_WEBHOOK_URL)
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
     // ── Normal sync ──────────────────────────────────────────────────────────
