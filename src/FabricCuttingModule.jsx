@@ -5752,6 +5752,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [deletingWipSnapshotId, setDeletingWipSnapshotId] = useState(null);
   const [confirmDeleteWipSnapshotId, setConfirmDeleteWipSnapshotId] = useState(null);
 
+  // ── Returns state ────────────────────────────────────────────────────
+  const [returnRestocks, setReturnRestocks] = useState([]);
+  const [returnRestocksLoading, setReturnRestocksLoading] = useState(false);
+
   // ── Pending COD state ────────────────────────────────────────────────
   const [codSnapshots, setCodSnapshots] = useState([]);
   const [codSnapshotsLoading, setCodSnapshotsLoading] = useState(false);
@@ -5923,6 +5927,23 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     } catch { showToast('Failed to delete snapshot', 'error'); }
     finally { setDeletingWipSnapshotId(null); setConfirmDeleteWipSnapshotId(null); }
   };
+
+  // ── Returns functions ────────────────────────────────────────────────
+  const fetchReturnRestocks = async () => {
+    setReturnRestocksLoading(true);
+    const { data } = await supabase
+      .from('return_restocks')
+      .select('id, shopify_order_id, shopify_order_number, shopify_refund_id, processed_at, line_items, total_units, total_refund_amount, currency, created_at')
+      .order('processed_at', { ascending: false })
+      .limit(200);
+    setReturnRestocks(data || []);
+    setReturnRestocksLoading(false);
+  };
+
+  useEffect(() => {
+    if (activeSection !== 'returns') return;
+    fetchReturnRestocks();
+  }, [activeSection]);
 
   // ── Pending COD functions ────────────────────────────────────────────
   const fetchCodLive = async () => {
@@ -6600,6 +6621,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'wip', label: 'WIP Value' },
     { id: 'cod_pending', label: 'Pending COD' },
     { id: 'pipeline_health', label: 'Pipeline Health' },
+    { id: 'returns', label: 'Returns' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
     { id: 'costing', label: 'Costing' },
@@ -8627,6 +8649,102 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         </div>
         );
       })()}
+
+      {/* ── RETURNS ── */}
+      {activeSection === 'returns' && (() => {
+        const now = new Date();
+        const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const thisMonthRestocks = returnRestocks.filter(r =>
+          (r.processed_at || r.created_at || '').slice(0, 7) === thisMonth
+        );
+        const thisMonthUnits = thisMonthRestocks.reduce((s, r) => s + (r.total_units || 0), 0);
+        const thisMonthValue = thisMonthRestocks.reduce((s, r) => s + parseFloat(r.total_refund_amount || 0), 0);
+
+        return (
+          <div className="space-y-3">
+            <div className="text-xs text-stone-500 px-0.5">
+              Auto-restocked when Return Prime processes a refund · inventory adjusted in Shopify instantly
+            </div>
+
+            {/* This month summary */}
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: 'Returns this month', value: thisMonthRestocks.length },
+                { label: 'Units restocked', value: thisMonthUnits },
+                { label: 'Store credit issued', value: `₹${thisMonthValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` },
+              ].map(({ label, value }) => (
+                <div key={label} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 text-center">
+                  <div className="text-lg sm:text-xl font-bold text-stone-900">{value}</div>
+                  <div className="text-xs text-stone-500 mt-0.5">{label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Full log */}
+            <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+              <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-stone-900">Restock Log</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Every return processed by Return Prime · newest first</div>
+                </div>
+                <button
+                  onClick={fetchReturnRestocks}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" /> Refresh
+                </button>
+              </div>
+
+              {returnRestocksLoading ? (
+                <div className="p-8 text-center text-sm text-stone-400">Loading…</div>
+              ) : returnRestocks.length === 0 ? (
+                <div className="p-8 text-center">
+                  <div className="text-sm text-stone-500">No restocks logged yet</div>
+                  <div className="text-xs text-stone-400 mt-1">Entries appear automatically when Return Prime processes a refund.</div>
+                </div>
+              ) : (
+                <>
+                  <div className="hidden sm:grid grid-cols-[1fr_1fr_2fr_1fr_1fr] gap-3 px-4 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
+                    <span>Order</span>
+                    <span>Date</span>
+                    <span>Items</span>
+                    <span className="text-right">Units</span>
+                    <span className="text-right">Store Credit</span>
+                  </div>
+                  <div className="divide-y divide-stone-100">
+                    {returnRestocks.map(r => {
+                      const items = Array.isArray(r.line_items) ? r.line_items : [];
+                      const isThisMonth = (r.processed_at || '').slice(0, 7) === thisMonth;
+                      return (
+                        <div key={r.id} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_2fr_1fr_1fr] gap-x-3 gap-y-0.5 px-4 py-3 text-xs hover:bg-stone-50 transition-colors">
+                          <span className="font-mono font-medium text-stone-800">
+                            {r.shopify_order_number || `#${r.shopify_order_id}`}
+                            {isThisMonth && <span className="ml-1.5 text-[10px] bg-stone-100 text-stone-500 px-1 py-0.5 rounded font-medium not-font-mono">This month</span>}
+                          </span>
+                          <span className="text-stone-500 text-right sm:text-left">
+                            {r.processed_at ? new Date(r.processed_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) : '—'}
+                          </span>
+                          <span className="col-span-2 sm:col-span-1 text-stone-600 truncate">
+                            {items.length === 0
+                              ? '—'
+                              : items.map(i => `${i.sku || i.title}${i.variant_title ? ` · ${i.variant_title}` : ''}${i.quantity > 1 ? ` ×${i.quantity}` : ''}`).join(', ')
+                            }
+                          </span>
+                          <span className="text-right text-stone-700 font-medium">{r.total_units}</span>
+                          <span className="text-right text-stone-900 font-semibold">
+                            ₹{parseFloat(r.total_refund_amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }
