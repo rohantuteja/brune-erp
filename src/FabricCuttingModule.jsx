@@ -5759,7 +5759,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [codLiveLoading, setCodLiveLoading] = useState(false);
   const [codLiveExpanded, setCodLiveExpanded] = useState(false);
   const [takingCodSnapshot, setTakingCodSnapshot] = useState(false);
-  const [codSnapshotMonth, setCodSnapshotMonth] = useState('');
   const [expandedCodSnapshotId, setExpandedCodSnapshotId] = useState(null);
   const [confirmDeleteCodSnapshotId, setConfirmDeleteCodSnapshotId] = useState(null);
   const [deletingCodSnapshotId, setDeletingCodSnapshotId] = useState(null);
@@ -5972,7 +5971,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const body = { force: true };
-      if (codSnapshotMonth) body.month = codSnapshotMonth;
       const res = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/take-cod-snapshot`,
         {
@@ -8169,23 +8167,14 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 </div>
               </div>
               {isAdmin && (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="month"
-                    value={codSnapshotMonth || currentMonthStr()}
-                    max={currentMonthStr()}
-                    onChange={e => setCodSnapshotMonth(e.target.value === currentMonthStr() ? '' : e.target.value)}
-                    className="px-2 py-1.5 text-xs border border-stone-200 rounded-lg text-stone-700 bg-white focus:outline-none focus:ring-1 focus:ring-stone-400"
-                  />
-                  <button
-                    onClick={takeCodSnapshot}
-                    disabled={takingCodSnapshot}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <Camera className="w-3.5 h-3.5" />
-                    {takingCodSnapshot ? 'Taking…' : 'Take Snapshot'}
-                  </button>
-                </div>
+                <button
+                  onClick={takeCodSnapshot}
+                  disabled={takingCodSnapshot}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded-lg hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  {takingCodSnapshot ? 'Taking…' : 'Take Snapshot'}
+                </button>
               )}
             </div>
 
