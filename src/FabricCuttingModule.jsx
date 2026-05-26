@@ -5755,6 +5755,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // ── Returns state ────────────────────────────────────────────────────
   const [returnRestocks, setReturnRestocks] = useState([]);
   const [returnRestocksLoading, setReturnRestocksLoading] = useState(false);
+  const [restockFilterMonth, setRestockFilterMonth] = useState('all');
 
   // ── Pending COD state ────────────────────────────────────────────────
   const [codSnapshots, setCodSnapshots] = useState([]);
@@ -8654,6 +8655,23 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {activeSection === 'returns' && (() => {
         const now = new Date();
         const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+        // Build unique months from data for the filter dropdown
+        const availableMonths = [...new Set(
+          returnRestocks.map(r => (r.processed_at || r.created_at || '').slice(0, 7)).filter(Boolean)
+        )].sort((a, b) => b.localeCompare(a));
+
+        const fmtMonthLabel = (ym) => {
+          const [y, m] = ym.split('-');
+          return new Date(+y, +m - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+        };
+
+        // Filter log by selected month
+        const filteredRestocks = restockFilterMonth === 'all'
+          ? returnRestocks
+          : returnRestocks.filter(r => (r.processed_at || r.created_at || '').slice(0, 7) === restockFilterMonth);
+
+        // Summary stats always based on this month
         const thisMonthRestocks = returnRestocks.filter(r =>
           (r.processed_at || r.created_at || '').slice(0, 7) === thisMonth
         );
@@ -8682,17 +8700,33 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
             {/* Full log */}
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-              <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3">
+              <div className="p-3 sm:p-4 border-b border-stone-200 flex items-center justify-between gap-3 flex-wrap">
                 <div>
                   <div className="text-sm font-medium text-stone-900">Restock Log</div>
                   <div className="text-xs text-stone-500 mt-0.5">Every return processed by Return Prime · newest first</div>
                 </div>
-                <button
-                  onClick={fetchReturnRestocks}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors"
-                >
-                  <RefreshCw className="w-3 h-3" /> Refresh
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Date filter */}
+                  <div className="relative flex items-center">
+                    <select
+                      value={restockFilterMonth}
+                      onChange={e => setRestockFilterMonth(e.target.value)}
+                      className="pl-2.5 pr-6 py-1.5 text-xs text-stone-700 bg-stone-100 border border-stone-200 rounded-lg appearance-none hover:bg-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-900 transition-colors cursor-pointer"
+                    >
+                      <option value="all">All time</option>
+                      {availableMonths.map(ym => (
+                        <option key={ym} value={ym}>{fmtMonthLabel(ym)}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-1.5 w-3 h-3 text-stone-400 pointer-events-none" />
+                  </div>
+                  <button
+                    onClick={fetchReturnRestocks}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Refresh
+                  </button>
+                </div>
               </div>
 
               {returnRestocksLoading ? (
@@ -8702,6 +8736,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   <div className="text-sm text-stone-500">No restocks logged yet</div>
                   <div className="text-xs text-stone-400 mt-1">Entries appear automatically when Return Prime processes a refund.</div>
                 </div>
+              ) : filteredRestocks.length === 0 ? (
+                <div className="p-8 text-center text-sm text-stone-400">No restocks in {fmtMonthLabel(restockFilterMonth)}.</div>
               ) : (
                 <>
                   <div className="hidden sm:grid grid-cols-[1fr_1fr_2fr_1fr_1fr] gap-3 px-4 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
@@ -8712,13 +8748,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     <span className="text-right">Store Credit</span>
                   </div>
                   <div className="divide-y divide-stone-100">
-                    {returnRestocks.map(r => {
+                    {filteredRestocks.map(r => {
                       const items = Array.isArray(r.line_items) ? r.line_items : [];
                       const isThisMonth = (r.processed_at || '').slice(0, 7) === thisMonth;
                       return (
                         <div key={r.id} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_2fr_1fr_1fr] gap-x-3 gap-y-0.5 px-4 py-3 text-xs hover:bg-stone-50 transition-colors">
                           <span className="font-mono font-medium text-stone-800">
-                            {r.shopify_order_number || `#${r.shopify_order_id}`}
+                            {r.shopify_order_number || r.shopify_order_id}
                             {isThisMonth && <span className="ml-1.5 text-[10px] bg-stone-100 text-stone-500 px-1 py-0.5 rounded font-medium not-font-mono">This month</span>}
                           </span>
                           <span className="text-stone-500 text-right sm:text-left">

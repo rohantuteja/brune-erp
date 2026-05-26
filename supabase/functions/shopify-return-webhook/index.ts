@@ -43,16 +43,18 @@ serve(async (req) => {
     const { data: secrets } = await admin
       .from('private_secrets')
       .select('key, value')
-      .in('key', ['shopify_access_token', 'shopify_shop_domain', 'shopify_webhook_signing_secret'])
+      .in('key', ['shopify_access_token', 'shopify_shop_domain', 'shopify_client_secret'])
 
     const secretMap: Record<string, string> = Object.fromEntries(
       (secrets || []).map((s: any) => [s.key, s.value])
     )
 
-    // ── HMAC verification using store webhook signing secret ──────────────────
-    const signingSecret = secretMap['shopify_webhook_signing_secret']
+    // ── HMAC verification using app client secret (API-registered webhooks) ───
+    // API-registered webhooks are always signed with the app's client secret,
+    // which is stable and stored as shopify_client_secret in private_secrets.
+    const signingSecret = secretMap['shopify_client_secret']
     if (!signingSecret) {
-      console.error('shopify_webhook_signing_secret not found in private_secrets')
+      console.error('shopify_client_secret not found in private_secrets')
       return new Response(JSON.stringify({ error: 'signing secret not configured' }), { status: 200 })
     }
 
@@ -80,12 +82,34 @@ serve(async (req) => {
       return new Response(JSON.stringify({ skipped: true, reason: 'already processed' }), { status: 200 })
     }
 
-    // ── Filter: only items Return Prime left as no_restock ───────────────────
+    // ── Gate 1: Verify this refund was created by Return Prime ────────────────
+    // Return Prime refunds to Shopify Store Credit have gateway === 'gift_card'
+    // OR 'shopify_store_credit' depending on Shopify's REST/GraphQL representation.
+    // KwikEngage COD cancellations have no payment transactions (customer never paid).
+    // Log actual gateways so we can verify on real webhooks.
+    const transactions: any[] = body.transactions || []
+    const gateways = transactions.map((t: any) => t.gateway)
+    console.log(`Refund ${refundId} — note: ${body.note ?? 'null'}, gateways: [${gateways.join(', ')}]`)
+
+    const isReturnPrime = transactions.some((t: any) =>
+      t.gateway === 'gift_card' || t.gateway === 'shopify_store_credit'
+    )
+
+    if (!isReturnPrime) {
+      console.log(`Skipping refund ${refundId} — no store credit transaction found, not a Return Prime refund`)
+      return new Response(JSON.stringify({ skipped: true, reason: 'not a Return Prime refund' }), { status: 200 })
+    }
+
+    // ── Gate 2: Only restock fulfilled items (delivered to customer) ──────────
+    // Ensures we never restock items that were never shipped.
     const toRestock: any[] = (body.refund_line_items || []).filter(
-      (item: any) => item.restock_type === 'no_restock' && (item.quantity ?? 0) > 0
+      (item: any) =>
+        item.restock_type === 'no_restock' &&
+        (item.quantity ?? 0) > 0 &&
+        item.line_item?.fulfillment_status === 'fulfilled'
     )
     if (toRestock.length === 0) {
-      return new Response(JSON.stringify({ skipped: true, reason: 'no items to restock' }), { status: 200 })
+      return new Response(JSON.stringify({ skipped: true, reason: 'no fulfilled items to restock' }), { status: 200 })
     }
 
     // ── Shopify REST helper ───────────────────────────────────────────────────
@@ -102,16 +126,34 @@ serve(async (req) => {
       return res.json()
     }
 
-    // ── Get order number ──────────────────────────────────────────────────────
-    const orderResp   = await shopifyRest(`orders/${shopifyOrderId}.json?fields=id,name`)
-    const orderNumber = orderResp.order?.name || `#${shopifyOrderId}`
+    // ── Shopify GraphQL helper ────────────────────────────────────────────────
+    const shopifyGql = async (query: string, variables?: Record<string, unknown>) => {
+      const res = await fetch(`https://${shopDomain}/admin/api/2026-04/graphql.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
+        body: JSON.stringify(variables ? { query, variables } : { query }),
+      })
+      if (!res.ok) throw new Error(`Shopify GQL ${res.status}: ${await res.text()}`)
+      return res.json()
+    }
+
+    // ── Get order number + primary location (in parallel) ────────────────────
+    const [orderResp, locResp] = await Promise.all([
+      shopifyRest(`orders/${shopifyOrderId}.json?fields=id,name`),
+      shopifyRest('locations.json?active=1&fields=id,name'),
+    ])
+    const orderNumber      = orderResp.order?.name || `#${shopifyOrderId}`
+
+    // Return Prime leaves location_id null on refund_line_items — fall back to
+    // the store's primary location (first active location) for inventory adjust.
+    const primaryLocationId = locResp.locations?.[0]?.id?.toString() || null
 
     // ── Process each line item ────────────────────────────────────────────────
     const lineItemsData: any[] = []
 
     for (const item of toRestock) {
       const variantId  = item.line_item?.variant_id
-      const locationId = item.location_id || item.line_item?.location_id
+      const locationId = item.location_id || item.line_item?.location_id || primaryLocationId
 
       if (!variantId || !locationId) {
         console.warn(`Skipping item — missing variantId or locationId`, { variantId, locationId })
@@ -149,6 +191,12 @@ serve(async (req) => {
       return new Response(JSON.stringify({ skipped: true, reason: 'no valid items after variant lookup' }), { status: 200 })
     }
 
+    // ── Calculate store credit from transactions (not line item subtotals) ───
+    // Return Prime puts ₹0 on line item subtotals; actual refund is in transactions.
+    const totalStoreCredit = transactions
+      .filter((t: any) => t.gateway === 'gift_card' || t.gateway === 'shopify_store_credit')
+      .reduce((sum: number, t: any) => sum + parseFloat(t.amount || '0'), 0)
+
     // ── Write to DB ───────────────────────────────────────────────────────────
     const { error: dbErr } = await admin.from('return_restocks').insert({
       shopify_order_id:     shopifyOrderId,
@@ -157,18 +205,60 @@ serve(async (req) => {
       processed_at:         body.processed_at || body.created_at || new Date().toISOString(),
       line_items:           lineItemsData,
       total_units:          lineItemsData.reduce((s: number, i: any) => s + i.quantity, 0),
-      total_refund_amount:  lineItemsData.reduce((s: number, i: any) => s + i.refund_amount, 0),
+      total_refund_amount:  totalStoreCredit,
       currency:             'INR',
     })
     if (dbErr) throw dbErr
 
     console.log(`✓ Restocked ${lineItemsData.length} item(s) for order ${orderNumber}`)
 
+    // ── Close the Shopify Return so the "Restock" button is cleared ───────────
+    // Non-fatal: if the app lacks write_returns scope this just logs a warning.
+    const closedReturns: string[] = []
+    try {
+      const returnsResp = await shopifyGql(`
+        query getOpenReturns($orderId: ID!) {
+          order(id: $orderId) {
+            returns(first: 10) {
+              edges { node { id status } }
+            }
+          }
+        }
+      `, { orderId: `gid://shopify/Order/${shopifyOrderId}` })
+
+      const openReturns = (returnsResp.data?.order?.returns?.edges || [])
+        .filter((e: any) => e.node.status === 'OPEN')
+        .map((e: any) => e.node.id)
+
+      for (const returnId of openReturns) {
+        const closeResp = await shopifyGql(`
+          mutation closeReturn($id: ID!) {
+            returnClose(id: $id) {
+              return { id status }
+              userErrors { field message }
+            }
+          }
+        `, { id: returnId })
+
+        const errs = closeResp.data?.returnClose?.userErrors
+        if (errs?.length) {
+          console.warn(`returnClose userErrors for ${returnId}:`, JSON.stringify(errs))
+        } else {
+          closedReturns.push(returnId)
+          console.log(`✓ Closed return ${returnId} for order ${orderNumber}`)
+        }
+      }
+    } catch (closeErr: unknown) {
+      // Scope or network error — restock already succeeded, just warn
+      console.warn(`returnClose failed (non-fatal): ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`)
+    }
+
     return new Response(
       JSON.stringify({
-        success:   true,
-        order:     orderNumber,
-        restocked: lineItemsData.map((i: any) => ({ sku: i.sku, qty: i.quantity })),
+        success:        true,
+        order:          orderNumber,
+        restocked:      lineItemsData.map((i: any) => ({ sku: i.sku, qty: i.quantity })),
+        returns_closed: closedReturns.length,
       }),
       { status: 200 }
     )
