@@ -5295,6 +5295,12 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
   const [customTo, setCustomTo] = useState(localToday());
   const [expandedKarigar, setExpandedKarigar] = useState(null);
 
+  // Auto-fetch pipeline health data when tab is activated
+  useEffect(() => {
+    if (prodView === 'pipeline_health') fetchPipelineHealthData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prodView]);
+
   // Karigar performance stats — equal split of completed per karigar
   const perfStats = useMemo(() => {
     const now = new Date();
@@ -5415,7 +5421,7 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
       <div className="flex gap-1 bg-white p-1 rounded-md border border-stone-200 w-fit overflow-x-auto max-w-full">
         <SubTabBtn active={prodView === 'batches'} onClick={() => setProdView('batches')}><Package className="w-3.5 h-3.5" /> Batches</SubTabBtn>
         <SubTabBtn active={prodView === 'performance'} onClick={() => setProdView('performance')}><TrendingDown className="w-3.5 h-3.5" /> Karigar Performance</SubTabBtn>
-        <SubTabBtn active={prodView === 'pipeline_health'} onClick={() => { setProdView('pipeline_health'); fetchPipelineHealthData(); }}><BarChart2 className="w-3.5 h-3.5" /> Pipeline Health</SubTabBtn>
+        <SubTabBtn active={prodView === 'pipeline_health'} onClick={() => setProdView('pipeline_health')}><BarChart2 className="w-3.5 h-3.5" /> Pipeline Health</SubTabBtn>
       </div>
 
       {/* ── BATCHES ── */}
