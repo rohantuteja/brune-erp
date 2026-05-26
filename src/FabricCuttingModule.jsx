@@ -5773,7 +5773,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
   const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
   const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
-  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(true);
+  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(false);
 
   const currentMonthStr = () => {
     const now = new Date();
