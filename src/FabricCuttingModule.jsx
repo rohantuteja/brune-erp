@@ -583,6 +583,7 @@ export default function FabricCuttingModule() {
             setProdView={setProdView}
             pipelineRawData={pipelineRawDash}
             refreshPipelineData={refreshPipelineDash}
+            fetchPipelineHealthData={fetchPipelineHealthData}
           />
         )}
 
@@ -2889,7 +2890,7 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
   );
 }
 
-function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, setProdView, pipelineRawData, refreshPipelineData }) {
+function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, setProdView, pipelineRawData, refreshPipelineData, fetchPipelineHealthData }) {
   const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
@@ -3402,6 +3403,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 // Re-fetch pipeline health immediately so the new lookback / thresholds
                 // are reflected without requiring a page refresh.
                 refreshPipelineData();
+                fetchPipelineHealthData?.();
               }}
               className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 min-h-[40px]"
             >
