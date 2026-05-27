@@ -21,7 +21,7 @@ import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 //     promise; the cache is updated for the next open.
 //   - A module-level in-flight promise deduplicates concurrent callers so the
 //     network request is made at most once even when multiple effects fire.
-const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v3';
+const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v4';
 const _PIPELINE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 let _pipelineInflight = null;
 
@@ -3363,7 +3363,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 if (![7, 14, 30].includes(vlb)) return;
                 setSettingsSaving(true);
                 // Invalidate pipeline health cache so new thresholds take effect immediately
-                try { localStorage.removeItem('brune_pipeline_health_v3'); } catch {}
+                try { localStorage.removeItem('brune_pipeline_health_v4'); } catch {}
                 await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, production_lead_days: pld, cutting_lead_days: cld, fabric_lead_days: fld, safety_buffer_days: sbd, overdue_batch_days: obd, velocity_lookback_days: vlb });
                 setSettingsForm(null);
                 setSettingsSaving(false);
