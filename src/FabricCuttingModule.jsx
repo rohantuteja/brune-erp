@@ -155,22 +155,49 @@ export default function FabricCuttingModule() {
 
   // Production
   const [prodView, setProdView] = useState('batches');
+
+  // ── Pipeline Health state (lifted so ProductionPage + alerts can share it) ─
+  const [pipelineHealthData, setPipelineHealthData] = useState([]);
+  const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
+  const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all');
+  const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
+  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(false);
+
+  const fetchPipelineHealthData = async () => {
+    setPipelineHealthLoading(true);
+    const { data, error } = await supabase.rpc('pipeline_health');
+    if (error) {
+      showToast(`Pipeline Health error: ${error.message}`, 'error');
+    } else {
+      setPipelineHealthData(data || []);
+    }
+    setPipelineHealthLoading(false);
+  };
   const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
-  const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState(() => {
+  const [pipelineRawDash, setPipelineRawDash] = useState(() => {
     // Seed from localStorage synchronously — visible on first paint even after
     // closing and reopening the PWA
     const cached = _readPipelineCache();
-    return cached ? cached.data.filter(r => r.alert_level !== 'ok') : [];
+    return cached ? cached.data : [];
   });
   useEffect(() => {
     fetchPipelineHealth(fresh => {
       // Called when stale cache was served and background refresh completes
-      setPipelineHealthAlerts(fresh.filter(r => r.alert_level !== 'ok'));
+      setPipelineRawDash(fresh);
     }).then(data => {
-      setPipelineHealthAlerts(data.filter(r => r.alert_level !== 'ok'));
+      setPipelineRawDash(data);
     });
   }, []);
+  // Filtered subset passed to RunsListView (alert_level !== 'ok')
+  const pipelineHealthAlerts = useMemo(
+    () => pipelineRawDash.filter(r => r.alert_level !== 'ok'),
+    [pipelineRawDash]
+  );
+  const refreshPipelineDash = () => {
+    fetchPipelineHealth(fresh => setPipelineRawDash(fresh))
+      .then(data => setPipelineRawDash(data));
+  };
   // Dashboard alert thresholds — loaded from DB via useAppData
 
   const [expandedRunId, setExpandedRunId] = useState(null);
@@ -553,6 +580,10 @@ export default function FabricCuttingModule() {
             setInvFabricFilter={setInvFabricFilter}
             setInvColorFilter={setInvColorFilter}
             setAnalyticsSection={setAnalyticsSection}
+            setProdView={setProdView}
+            pipelineRawData={pipelineRawDash}
+            refreshPipelineData={refreshPipelineDash}
+            fetchPipelineHealthData={fetchPipelineHealthData}
           />
         )}
 
@@ -666,6 +697,16 @@ export default function FabricCuttingModule() {
             onDeleteBatch={deleteProductionBatch}
             onEditCompletedDate={editBatchCompletedDate}
             onEditBatch={editProductionBatch}
+            pipelineHealthData={pipelineHealthData}
+            pipelineHealthLoading={pipelineHealthLoading}
+            pipelineHealthFilter={pipelineHealthFilter}
+            setPipelineHealthFilter={setPipelineHealthFilter}
+            pipelineHealthStyle={pipelineHealthStyle}
+            setPipelineHealthStyle={setPipelineHealthStyle}
+            pipelineActiveRunsOnly={pipelineActiveRunsOnly}
+            setPipelineActiveRunsOnly={setPipelineActiveRunsOnly}
+            fetchPipelineHealthData={fetchPipelineHealthData}
+            showToast={showToast}
           />
         )}
 
@@ -2849,23 +2890,15 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
   );
 }
 
-function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection }) {
+function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, setProdView, pipelineRawData, refreshPipelineData, fetchPipelineHealthData }) {
   const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
-  const [pipelineRawData, setPipelineRawData] = useState(() => {
-    const cached = _readPipelineCache();
-    return cached ? cached.data : [];
-  });
-  useEffect(() => {
-    fetchPipelineHealth(fresh => setPipelineRawData(fresh))
-      .then(data => setPipelineRawData(data));
-  }, []);
 
   // alert_level now comes directly from the SQL function (driven by lead-time settings)
   const pipelineAlerts = useMemo(() => {
-    return pipelineRawData.filter(r => r.has_active_run && r.alert_level !== 'ok');
+    return (pipelineRawData || []).filter(r => r.has_active_run && r.alert_level !== 'ok');
   }, [pipelineRawData]);
   const [settingsForm, setSettingsForm] = useState(null); // null = not yet initialised
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -3068,7 +3101,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               <AlertGroup label="Stock Alerts" alerts={inventoryAlerts} onAlertTap={handleAlertTap} />
             )}
             {pipelineAlerts.length > 0 && (
-              <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setAnalyticsSection={setAnalyticsSection} />
+              <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setProdView={setProdView} />
             )}
             {otherAlerts.map((a, i) => (
               <button
@@ -3369,8 +3402,8 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 setSettingsSaving(false);
                 // Re-fetch pipeline health immediately so the new lookback / thresholds
                 // are reflected without requiring a page refresh.
-                fetchPipelineHealth(fresh => setPipelineRawData(fresh))
-                  .then(data => setPipelineRawData(data));
+                refreshPipelineData();
+                fetchPipelineHealthData?.();
               }}
               className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 min-h-[40px]"
             >
@@ -3425,7 +3458,7 @@ function AlertGroup({ label, alerts, onAlertTap }) {
   );
 }
 
-function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
+function PipelineAlertGroup({ alerts, onNavigate, setProdView }) {
   const [open, setOpen] = useState(false);
   const hasCritical = alerts.some(a => a.alert_level === 'critical');
   const hasWarning  = alerts.some(a => a.alert_level === 'warning');
@@ -3492,7 +3525,7 @@ function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
             return (
               <button
                 key={i}
-                onClick={() => { setAnalyticsSection('pipeline_health'); onNavigate('analytics'); }}
+                onClick={() => { setProdView('pipeline_health'); onNavigate('production'); }}
                 className={`w-full text-left flex items-start gap-2.5 px-3 py-2.5 text-xs transition ${rowColor}`}
               >
                 <span className="flex-shrink-0 mt-0.5 opacity-70">{emoji}</span>
@@ -3502,7 +3535,7 @@ function PipelineAlertGroup({ alerts, onNavigate, setAnalyticsSection }) {
             );
           })}
           <button
-            onClick={() => { setAnalyticsSection('pipeline_health'); onNavigate('analytics'); }}
+            onClick={() => { setProdView('pipeline_health'); onNavigate('production'); }}
             className={`w-full text-center px-3 py-2 text-xs font-medium opacity-60 hover:opacity-100 transition ${hasCritical ? 'text-red-700 hover:bg-red-100' : hasWarning ? 'text-orange-700 hover:bg-orange-100' : 'text-yellow-700 hover:bg-yellow-100'}`}
           >
             View all in Pipeline Health →
@@ -4964,8 +4997,293 @@ function StyleFilterButton({ options, value, onChange, placeholder = 'Style' }) 
   );
 }
 
+// ─── PIPELINE HEALTH VIEW ────────────────────────────────────────────
+function PipelineHealthView({
+  pipelineHealthData, pipelineHealthLoading,
+  pipelineHealthFilter, setPipelineHealthFilter,
+  pipelineHealthStyle, setPipelineHealthStyle,
+  pipelineActiveRunsOnly, setPipelineActiveRunsOnly,
+  fetchPipelineHealthData,
+}) {
+  const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
+  const enriched = pipelineHealthData;
+  const filtered = enriched
+    .filter(r => {
+      if (pipelineActiveRunsOnly && !r.has_active_run) return false;
+      if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
+      if (pipelineHealthStyle && r.style_code !== pipelineHealthStyle) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const lvlDiff = (ALERT_ORDER[a.alert_level] ?? 3) - (ALERT_ORDER[b.alert_level] ?? 3);
+      if (lvlDiff !== 0) return lvlDiff;
+      return (a.effective_days ?? 9999) - (b.effective_days ?? 9999);
+    });
+
+  const alertMeta = {
+    critical: { emoji: '🔴', bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
+    warning:  { emoji: '🟠', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+    watch:    { emoji: '🟡', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
+    ok:       { emoji: '',   bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-stone-500 px-0.5">
+        Size-level pipeline status. Effective days = (Shopify stock + pieces in production) ÷ daily velocity. Thresholds based on your configured lead times.
+      </div>
+
+      {/* Summary + refresh */}
+      {!pipelineHealthLoading && pipelineHealthData.length > 0 && (() => {
+        const critical = filtered.filter(r => r.alert_level === 'critical').length;
+        const warning  = filtered.filter(r => r.alert_level === 'warning').length;
+        const watch    = filtered.filter(r => r.alert_level === 'watch').length;
+        return (
+          <div className="flex items-center gap-3 flex-wrap">
+            {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
+            {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Warning</span>}
+            {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Watch</span>}
+            {critical === 0 && warning === 0 && watch === 0 && (
+              <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full">✅ All healthy</span>
+            )}
+            <button onClick={fetchPipelineHealthData} className="ml-auto flex items-center gap-1 text-xs text-stone-500 hover:text-stone-800 px-2 py-1 border border-stone-200 rounded-lg hover:bg-stone-50 transition-colors">
+              <RefreshCw className="w-3 h-3" /> Refresh
+            </button>
+          </div>
+        );
+      })()}
+
+      {/* Filters */}
+      {!pipelineHealthLoading && pipelineHealthData.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <StyleFilterButton
+            value={pipelineHealthStyle}
+            onChange={setPipelineHealthStyle}
+            placeholder="Style"
+            options={Array.from(new Set(
+              enriched
+                .filter(r => {
+                  if (pipelineActiveRunsOnly && !r.has_active_run) return false;
+                  if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
+                  return true;
+                })
+                .map(r => r.style_code)
+            )).sort()}
+          />
+          <span className="text-stone-300 select-none">|</span>
+          {[
+            { value: 'all',      label: 'All' },
+            { value: 'critical', label: '🔴 Critical' },
+            { value: 'warning',  label: '🟠 Warning' },
+            { value: 'watch',    label: '🟡 Watch' },
+            { value: 'ok',       label: '🟢 OK' },
+          ].map(f => (
+            <button
+              key={f.value}
+              onClick={() => setPipelineHealthFilter(f.value)}
+              className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
+                pipelineHealthFilter === f.value
+                  ? 'bg-stone-900 text-white border-stone-900'
+                  : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+          <span className="text-stone-300 select-none">|</span>
+          <button
+            onClick={() => setPipelineActiveRunsOnly(v => !v)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
+              pipelineActiveRunsOnly
+                ? 'bg-stone-900 text-white border-stone-900'
+                : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
+            }`}
+          >
+            Active runs only
+          </button>
+        </div>
+      )}
+
+      {/* Table */}
+      {pipelineHealthLoading ? (
+        <div className="bg-white rounded-lg border border-stone-200 p-12 text-center text-sm text-stone-400">Loading pipeline data…</div>
+      ) : pipelineHealthData.length === 0 ? (
+        <div className="bg-white rounded-lg border border-stone-200 p-12 text-center">
+          <div className="text-sm text-stone-500">No pipeline data found.</div>
+          <div className="text-xs text-stone-400 mt-1">Sync Shopify inventory to populate pipeline health data.</div>
+        </div>
+      ) : (() => {
+        if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthStyle) {
+          return (
+            <div className="bg-white rounded-lg border border-emerald-200 p-8 text-center">
+              <div className="text-sm font-medium text-emerald-700">✅ All sizes are healthy — no pipeline alerts.</div>
+            </div>
+          );
+        }
+        if (filtered.length === 0) {
+          return <div className="bg-white rounded-lg border border-stone-200 p-8 text-center text-sm text-stone-400">No sizes match your filters.</div>;
+        }
+
+        const rowData = filtered.map(row => {
+          const meta        = alertMeta[row.alert_level] || alertMeta.ok;
+          const hasVelocity = parseFloat(row.daily_velocity) > 0;
+          const cuts        = row.cuttings_available;
+          const fab         = row.fabric_available;
+          const effStr      = row.effective_days != null ? `${parseFloat(row.effective_days).toFixed(1)}d effective` : null;
+          const badgeLabel  = (() => {
+            if (row.alert_level === 'critical') {
+              if (cuts > 0)      return 'Issue Now';
+              if (fab === true)  return 'Cut Urgently';
+              if (fab === false) return 'Order Urgently';
+              return 'Act Now';
+            }
+            if (row.alert_level === 'warning') {
+              if (cuts > 0)      return 'Issue Soon';
+              if (fab === true)  return 'Cut Now';
+              if (fab === false) return 'Order Now';
+              return 'Cut Now';
+            }
+            if (row.alert_level === 'watch') return 'Plan Ahead';
+            return 'OK';
+          })();
+          const cutsStr  = cuts > 0 ? `${cuts} cuttings ready` : `${cuts} cuttings available`;
+          const stockStr = `${row.shopify_stock} units left`;
+          const p        = (num) => effStr ? `${effStr} · ${num}` : num;
+          const actionText = (() => {
+            if (row.alert_level === 'critical') {
+              if (cuts > 0)      return `${p(cutsStr)} — issue to production NOW`;
+              if (fab === true)  return `${p(cutsStr)} — cut fabric NOW`;
+              if (fab === false) return `${p(stockStr)} — order fabric URGENTLY`;
+              return `${p(stockStr)} — check fabric and act NOW`;
+            }
+            if (row.alert_level === 'warning') {
+              if (cuts > 0)      return `${p(cutsStr)} — issue to production soon`;
+              if (fab === true)  return `${p(cutsStr)} — cut fabric now`;
+              if (fab === false) return `${p(stockStr)} — order fabric now`;
+              return `${p(stockStr)} — cut or order fabric`;
+            }
+            if (row.alert_level === 'watch') {
+              if (cuts > 0)      return `${p(cutsStr)} — plan to issue soon`;
+              if (fab === true)  return `${p(cutsStr)} — plan a cut`;
+              if (fab === false) return `${p(stockStr)} — order fabric`;
+              return effStr ? `${effStr} — check fabric availability` : 'Check fabric availability';
+            }
+            return 'Stock levels are healthy — no action needed.';
+          })();
+          return { ...row, meta, hasVelocity, effStr, badgeLabel, actionText };
+        });
+
+        const footerText = (
+          <div className="px-4 py-2 border-t border-stone-100 text-xs text-stone-400">
+            Showing {filtered.length} of {pipelineActiveRunsOnly ? pipelineHealthData.filter(r => r.has_active_run).length : pipelineHealthData.length} size combinations
+            {pipelineActiveRunsOnly && ` (active runs only)`}
+          </div>
+        );
+
+        return (
+          <div className="rounded-lg border border-stone-200 overflow-hidden bg-white">
+            {/* ── MOBILE: card list ── */}
+            <div className="sm:hidden divide-y divide-stone-100">
+              {rowData.map((row, i) => (
+                <div key={i} className="p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-mono font-semibold text-stone-900 text-sm leading-snug">
+                      {row.style_code}<span className="text-stone-400 mx-1">·</span>{row.size}
+                      {row.has_active_run && <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium not-font-mono">Run</span>}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="bg-stone-50 rounded-lg px-2 py-2">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Stock</div>
+                      <div className={`text-sm font-semibold ${row.shopify_stock < 0 ? 'text-red-700' : row.shopify_stock === 0 ? 'text-red-500' : 'text-stone-800'}`}>{row.shopify_stock}</div>
+                    </div>
+                    <div className="bg-stone-50 rounded-lg px-2 py-2">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Vel/day</div>
+                      <div className="text-sm font-semibold text-stone-800">{row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}</div>
+                    </div>
+                    <div className="bg-stone-50 rounded-lg px-2 py-2">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Effective</div>
+                      <div className={`text-sm font-semibold ${row.effective_days != null ? (row.alert_level === 'critical' ? 'text-red-600' : row.alert_level === 'warning' ? 'text-orange-600' : row.alert_level === 'watch' ? 'text-yellow-600' : 'text-stone-800') : 'text-stone-300'}`}>
+                        {row.effective_days != null ? `${parseFloat(row.effective_days).toFixed(1)}d` : '—'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-center">
+                    <div className="bg-stone-50 rounded-lg px-2 py-2">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Available</div>
+                      <div className="text-sm font-semibold text-stone-800">{row.cuttings_available}</div>
+                    </div>
+                    <div className="bg-stone-50 rounded-lg px-2 py-2">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">In Production</div>
+                      <div className="text-sm font-semibold text-stone-500">{row.cuttings_in_production}</div>
+                    </div>
+                  </div>
+                  <div className={`rounded-lg px-3 py-2.5 border ${row.meta.bg} ${row.meta.border}`}>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      {row.alert_level === 'ok' ? <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" /> : <span className="text-sm leading-none">{row.meta.emoji}</span>}
+                      <span className={`text-xs font-semibold ${row.meta.text}`}>{row.badgeLabel}</span>
+                    </div>
+                    <p className={`text-xs leading-snug ${row.meta.text} opacity-80`}>{row.actionText}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* ── DESKTOP: table ── */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="w-full text-sm min-w-[680px]">
+                <thead>
+                  <tr className="border-b border-stone-100 bg-stone-50 text-xs text-stone-500 uppercase tracking-wide">
+                    <th className="text-left px-4 py-3 font-medium">Style · Size</th>
+                    <th className="text-right px-4 py-3 font-medium">Shopify Stock</th>
+                    <th className="text-right px-4 py-3 font-medium">Velocity/day</th>
+                    <th className="text-right px-4 py-3 font-medium">Effective Days</th>
+                    <th className="text-right px-4 py-3 font-medium">Available</th>
+                    <th className="text-right px-4 py-3 font-medium">In Production</th>
+                    <th className="text-right px-4 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {rowData.map((row, i) => (
+                    <tr key={i} className="hover:bg-stone-50 transition-colors">
+                      <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
+                        {row.style_code} <span className="text-stone-400">·</span> {row.size}
+                        {row.has_active_run && <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded-full font-medium not-font-mono">Run</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
+                      <td className="px-4 py-3 text-right text-stone-500 text-xs">
+                        {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {row.effective_days != null
+                          ? <span className={row.alert_level === 'critical' ? 'text-red-600 font-semibold' : row.alert_level === 'warning' ? 'text-orange-600 font-semibold' : row.alert_level === 'watch' ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
+                              {parseFloat(row.effective_days).toFixed(1)}d
+                            </span>
+                          : <span className="text-stone-300 text-xs">No data</span>
+                        }
+                      </td>
+                      <td className="px-4 py-3 text-right text-stone-700">{row.cuttings_available}</td>
+                      <td className="px-4 py-3 text-right text-stone-500">{row.cuttings_in_production}</td>
+                      <td className="px-4 py-3 text-right">
+                        <span title={row.actionText} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${row.meta.bg} ${row.meta.text} ${row.meta.border}`}>
+                          {row.alert_level === 'ok' ? <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" /> : <span className="leading-none">{row.meta.emoji}</span>}
+                          <span>{row.badgeLabel}</span>
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {footerText}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
-function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs }) {
+function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs, pipelineHealthData, pipelineHealthLoading, pipelineHealthFilter, setPipelineHealthFilter, pipelineHealthStyle, setPipelineHealthStyle, pipelineActiveRunsOnly, setPipelineActiveRunsOnly, fetchPipelineHealthData, showToast }) {
   const { can } = usePermissions();
   const canEditProduction = can('can_edit_production');
   const canDeleteProduction = can('can_delete_production');
@@ -4980,6 +5298,12 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState(localToday());
   const [expandedKarigar, setExpandedKarigar] = useState(null);
+
+  // Auto-fetch pipeline health data when tab is activated
+  useEffect(() => {
+    if (prodView === 'pipeline_health') fetchPipelineHealthData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prodView]);
 
   // Karigar performance stats — equal split of completed per karigar
   const perfStats = useMemo(() => {
@@ -5101,6 +5425,7 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
       <div className="flex gap-1 bg-white p-1 rounded-md border border-stone-200 w-fit overflow-x-auto max-w-full">
         <SubTabBtn active={prodView === 'batches'} onClick={() => setProdView('batches')}><Package className="w-3.5 h-3.5" /> Batches</SubTabBtn>
         <SubTabBtn active={prodView === 'performance'} onClick={() => setProdView('performance')}><TrendingDown className="w-3.5 h-3.5" /> Karigar Performance</SubTabBtn>
+        <SubTabBtn active={prodView === 'pipeline_health'} onClick={() => setProdView('pipeline_health')}><BarChart2 className="w-3.5 h-3.5" /> Pipeline Health</SubTabBtn>
       </div>
 
       {/* ── BATCHES ── */}
@@ -5478,6 +5803,21 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
           onCancel={() => setConfirmDeleteBatchId(null)}
         />
       )}
+
+      {/* ── PIPELINE HEALTH ── */}
+      {prodView === 'pipeline_health' && (
+        <PipelineHealthView
+          pipelineHealthData={pipelineHealthData}
+          pipelineHealthLoading={pipelineHealthLoading}
+          pipelineHealthFilter={pipelineHealthFilter}
+          setPipelineHealthFilter={setPipelineHealthFilter}
+          pipelineHealthStyle={pipelineHealthStyle}
+          setPipelineHealthStyle={setPipelineHealthStyle}
+          pipelineActiveRunsOnly={pipelineActiveRunsOnly}
+          setPipelineActiveRunsOnly={setPipelineActiveRunsOnly}
+          fetchPipelineHealthData={fetchPipelineHealthData}
+        />
+      )}
     </div>
   );
 }
@@ -5768,12 +6108,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [confirmDeleteCodSnapshotId, setConfirmDeleteCodSnapshotId] = useState(null);
   const [deletingCodSnapshotId, setDeletingCodSnapshotId] = useState(null);
 
-  // ── Pipeline Health state ────────────────────────────────────────────
-  const [pipelineHealthData, setPipelineHealthData] = useState([]);
-  const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
-  const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all'); // 'all'|'critical'|'warning'|'watch'|'ok'
-  const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
-  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(false);
 
   const currentMonthStr = () => {
     const now = new Date();
@@ -6056,21 +6390,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     finally { setDeletingCodSnapshotId(null); setConfirmDeleteCodSnapshotId(null); }
   };
 
-  const fetchPipelineHealth = async () => {
-    setPipelineHealthLoading(true);
-    const { data, error } = await supabase.rpc('pipeline_health');
-    if (error) {
-      showToast(`Pipeline Health error: ${error.message}`, 'error');
-    } else {
-      setPipelineHealthData(data || []);
-    }
-    setPipelineHealthLoading(false);
-  };
-
-  useEffect(() => {
-    if (activeSection !== 'pipeline_health') return;
-    fetchPipelineHealth();
-  }, [activeSection]);
 
   const takeShopifySnapshot = async () => {
     if (takingShopifySnapshot) return;
@@ -6621,7 +6940,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'shopify_stock', label: 'Shopify Stock Value' },
     { id: 'wip', label: 'WIP Value' },
     { id: 'cod_pending', label: 'Pending COD' },
-    { id: 'pipeline_health', label: 'Pipeline Health' },
     { id: 'returns', label: 'Returns' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
@@ -8337,319 +8655,6 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           </div>
         </div>
       )}
-
-      {activeSection === 'pipeline_health' && (() => {
-        // alert_level comes directly from SQL (driven by configurable lead-time thresholds)
-        const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
-        const enriched = pipelineHealthData; // no client-side override needed
-        const filtered = enriched
-          .filter(r => {
-            if (pipelineActiveRunsOnly && !r.has_active_run) return false;
-            if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
-            if (pipelineHealthStyle && r.style_code !== pipelineHealthStyle) return false;
-            return true;
-          })
-          .sort((a, b) => {
-            const lvlDiff = (ALERT_ORDER[a.alert_level] ?? 3) - (ALERT_ORDER[b.alert_level] ?? 3);
-            if (lvlDiff !== 0) return lvlDiff;
-            return (a.effective_days ?? 9999) - (b.effective_days ?? 9999);
-          });
-
-        return (
-        <div className="space-y-3">
-          <div className="text-xs text-stone-500 px-0.5">
-            Size-level pipeline status. Effective days = (Shopify stock + pieces in production) ÷ daily velocity. Thresholds based on your configured lead times.
-          </div>
-
-          {/* Summary + refresh — counts reflect current filters */}
-          {!pipelineHealthLoading && pipelineHealthData.length > 0 && (() => {
-            const critical = filtered.filter(r => r.alert_level === 'critical').length;
-            const warning  = filtered.filter(r => r.alert_level === 'warning').length;
-            const watch    = filtered.filter(r => r.alert_level === 'watch').length;
-            return (
-              <div className="flex items-center gap-3 flex-wrap">
-                {critical > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded-full">🔴 {critical} Critical</span>}
-                {warning  > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-full">🟠 {warning} Warning</span>}
-                {watch    > 0 && <span className="flex items-center gap-1 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded-full">🟡 {watch} Watch</span>}
-                {critical === 0 && warning === 0 && watch === 0 && (
-                  <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full">✅ All healthy</span>
-                )}
-                <button onClick={fetchPipelineHealth} className="ml-auto flex items-center gap-1 text-xs text-stone-500 hover:text-stone-800 px-2 py-1 border border-stone-200 rounded-lg hover:bg-stone-50 transition-colors">
-                  <RefreshCw className="w-3 h-3" /> Refresh
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* Filters */}
-          {!pipelineHealthLoading && pipelineHealthData.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <StyleFilterButton
-                value={pipelineHealthStyle}
-                onChange={setPipelineHealthStyle}
-                placeholder="Style"
-                options={Array.from(new Set(
-                  enriched
-                    .filter(r => {
-                      if (pipelineActiveRunsOnly && !r.has_active_run) return false;
-                      if (pipelineHealthFilter !== 'all' && r.alert_level !== pipelineHealthFilter) return false;
-                      return true;
-                    })
-                    .map(r => r.style_code)
-                )).sort()}
-              />
-              <span className="text-stone-300 select-none">|</span>
-              {[
-                { value: 'all',      label: 'All' },
-                { value: 'critical', label: '🔴 Critical' },
-                { value: 'warning',  label: '🟠 Warning' },
-                { value: 'watch',    label: '🟡 Watch' },
-                { value: 'ok',       label: '🟢 OK' },
-              ].map(f => (
-                <button
-                  key={f.value}
-                  onClick={() => setPipelineHealthFilter(f.value)}
-                  className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
-                    pipelineHealthFilter === f.value
-                      ? 'bg-stone-900 text-white border-stone-900'
-                      : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-              <span className="text-stone-300 select-none">|</span>
-              <button
-                onClick={() => setPipelineActiveRunsOnly(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
-                  pipelineActiveRunsOnly
-                    ? 'bg-stone-900 text-white border-stone-900'
-                    : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
-                }`}
-              >
-                Active runs only
-              </button>
-            </div>
-          )}
-
-          {/* Table */}
-          {pipelineHealthLoading ? (
-            <div className="bg-white rounded-lg border border-stone-200 p-12 text-center text-sm text-stone-400">Loading pipeline data…</div>
-          ) : pipelineHealthData.length === 0 ? (
-            <div className="bg-white rounded-lg border border-stone-200 p-12 text-center">
-              <div className="text-sm text-stone-500">No pipeline data found.</div>
-              <div className="text-xs text-stone-400 mt-1">Sync Shopify inventory to populate pipeline health data.</div>
-            </div>
-          ) : (() => {
-            const allOk = enriched.every(r => r.alert_level === 'ok');
-            if (filtered.length === 0 && pipelineHealthFilter === 'all' && !pipelineHealthStyle) {
-              return (
-                <div className="bg-white rounded-lg border border-emerald-200 p-8 text-center">
-                  <div className="text-sm font-medium text-emerald-700">✅ All sizes are healthy — no pipeline alerts.</div>
-                </div>
-              );
-            }
-            if (filtered.length === 0) {
-              return <div className="bg-white rounded-lg border border-stone-200 p-8 text-center text-sm text-stone-400">No sizes match your filters.</div>;
-            }
-
-            const alertMeta = {
-              critical: { emoji: '🔴', bg: 'bg-red-50',    text: 'text-red-700',    border: 'border-red-200' },
-              warning:  { emoji: '🟠', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-              watch:    { emoji: '🟡', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-              ok:       { emoji: '',   bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-            };
-
-            // Shared per-row derived values — used by both mobile cards and desktop table
-            const rowData = filtered.map(row => {
-              const meta        = alertMeta[row.alert_level] || alertMeta.ok;
-              const hasVelocity = parseFloat(row.daily_velocity) > 0;
-              const cuts        = row.cuttings_available;
-              const fab         = row.fabric_available; // true | false | null
-              // effective_days = Shopify + in-production, drives alert level
-              const effStr = row.effective_days != null
-                ? `${parseFloat(row.effective_days).toFixed(1)}d effective`
-                : null;
-              // Specific action badge label — varies by what's available at this urgency tier
-              const badgeLabel = (() => {
-                if (row.alert_level === 'critical') {
-                  if (cuts > 0)      return 'Issue Now';
-                  if (fab === true)  return 'Cut Urgently';
-                  if (fab === false) return 'Order Urgently';
-                  return 'Act Now';
-                }
-                if (row.alert_level === 'warning') {
-                  if (cuts > 0)      return 'Issue Soon';
-                  if (fab === true)  return 'Cut Now';
-                  if (fab === false) return 'Order Now';
-                  return 'Cut Now';
-                }
-                if (row.alert_level === 'watch') return 'Plan Ahead';
-                return 'OK';
-              })();
-              // Detailed tooltip / mobile description
-              // Cuttings-action scenarios show cuttings count (even 0); order scenarios show stock
-              const cutsStr  = cuts > 0 ? `${cuts} cuttings ready` : `${cuts} cuttings available`;
-              const stockStr = `${row.shopify_stock} units left`;
-              const p = (num) => effStr ? `${effStr} · ${num}` : num;
-              const actionText = (() => {
-                if (row.alert_level === 'critical') {
-                  if (cuts > 0)      return `${p(cutsStr)} — issue to production NOW`;
-                  if (fab === true)  return `${p(cutsStr)} — cut fabric NOW`;
-                  if (fab === false) return `${p(stockStr)} — order fabric URGENTLY`;
-                  return `${p(stockStr)} — check fabric and act NOW`;
-                }
-                if (row.alert_level === 'warning') {
-                  if (cuts > 0)      return `${p(cutsStr)} — issue to production soon`;
-                  if (fab === true)  return `${p(cutsStr)} — cut fabric now`;
-                  if (fab === false) return `${p(stockStr)} — order fabric now`;
-                  return `${p(stockStr)} — cut or order fabric`;
-                }
-                if (row.alert_level === 'watch') {
-                  if (cuts > 0)      return `${p(cutsStr)} — plan to issue soon`;
-                  if (fab === true)  return `${p(cutsStr)} — plan a cut`;
-                  if (fab === false) return `${p(stockStr)} — order fabric`;
-                  return effStr ? `${effStr} — check fabric availability` : 'Check fabric availability';
-                }
-                return 'Stock levels are healthy — no action needed.';
-              })();
-              return { ...row, meta, hasVelocity, effStr, badgeLabel, actionText };
-            });
-
-            const footerText = (
-              <div className="px-4 py-2 border-t border-stone-100 text-xs text-stone-400">
-                Showing {filtered.length} of {pipelineActiveRunsOnly ? pipelineHealthData.filter(r => r.has_active_run).length : pipelineHealthData.length} size combinations
-                {pipelineActiveRunsOnly && ` (active runs only)`}
-              </div>
-            );
-
-            return (
-              <div className="rounded-lg border border-stone-200 overflow-hidden bg-white">
-
-                {/* ── MOBILE: card list (hidden on sm+) ── */}
-                <div className="sm:hidden divide-y divide-stone-100">
-                  {rowData.map((row, i) => (
-                    <div key={i} className="p-4 space-y-3">
-                      {/* Header: style · size + Run badge */}
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="font-mono font-semibold text-stone-900 text-sm leading-snug">
-                          {row.style_code}
-                          <span className="text-stone-400 mx-1">·</span>
-                          {row.size}
-                          {row.has_active_run && (
-                            <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium not-font-mono">Run</span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Metrics grid: 3 cols */}
-                      <div className="grid grid-cols-3 gap-2 text-center">
-                        <div className="bg-stone-50 rounded-lg px-2 py-2">
-                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Stock</div>
-                          <div className={`text-sm font-semibold ${row.shopify_stock < 0 ? 'text-red-700' : row.shopify_stock === 0 ? 'text-red-500' : 'text-stone-800'}`}>
-                            {row.shopify_stock}
-                          </div>
-                        </div>
-                        <div className="bg-stone-50 rounded-lg px-2 py-2">
-                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Vel/day</div>
-                          <div className="text-sm font-semibold text-stone-800">
-                            {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
-                          </div>
-                        </div>
-                        <div className="bg-stone-50 rounded-lg px-2 py-2">
-                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Effective</div>
-                          <div className={`text-sm font-semibold ${row.effective_days != null ? (row.alert_level === 'critical' ? 'text-red-600' : row.alert_level === 'warning' ? 'text-orange-600' : row.alert_level === 'watch' ? 'text-yellow-600' : 'text-stone-800') : 'text-stone-300'}`}>
-                            {row.effective_days != null ? `${parseFloat(row.effective_days).toFixed(1)}d` : '—'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-center">
-                        <div className="bg-stone-50 rounded-lg px-2 py-2">
-                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Available</div>
-                          <div className="text-sm font-semibold text-stone-800">{row.cuttings_available}</div>
-                        </div>
-                        <div className="bg-stone-50 rounded-lg px-2 py-2">
-                          <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">In Production</div>
-                          <div className="text-sm font-semibold text-stone-500">{row.cuttings_in_production}</div>
-                        </div>
-                      </div>
-
-                      {/* Status + action text */}
-                      <div className={`rounded-lg px-3 py-2.5 border ${row.meta.bg} ${row.meta.border}`}>
-                        <div className="flex items-center gap-1.5 mb-1">
-                          {row.alert_level === 'ok'
-                            ? <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" />
-                            : <span className="text-sm leading-none">{row.meta.emoji}</span>}
-                          <span className={`text-xs font-semibold ${row.meta.text}`}>{row.badgeLabel}</span>
-                        </div>
-                        <p className={`text-xs leading-snug ${row.meta.text} opacity-80`}>{row.actionText}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* ── DESKTOP: table (hidden below sm) ── */}
-                <div className="hidden sm:block overflow-x-auto">
-                  <table className="w-full text-sm min-w-[680px]">
-                    <thead>
-                      <tr className="border-b border-stone-100 bg-stone-50 text-xs text-stone-500 uppercase tracking-wide">
-                        <th className="text-left px-4 py-3 font-medium">Style · Size</th>
-                        <th className="text-right px-4 py-3 font-medium">Shopify Stock</th>
-                        <th className="text-right px-4 py-3 font-medium">Velocity/day</th>
-                        <th className="text-right px-4 py-3 font-medium">Effective Days</th>
-                        <th className="text-right px-4 py-3 font-medium">Available</th>
-                        <th className="text-right px-4 py-3 font-medium">In Production</th>
-                        <th className="text-right px-4 py-3 font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-stone-100">
-                      {rowData.map((row, i) => (
-                        <tr key={i} className="hover:bg-stone-50 transition-colors">
-                          <td className="px-4 py-3 font-mono font-medium text-stone-900 text-xs">
-                            {row.style_code} <span className="text-stone-400">·</span> {row.size}
-                            {row.has_active_run && (
-                              <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded-full font-medium not-font-mono">Run</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
-                          <td className="px-4 py-3 text-right text-stone-500 text-xs">
-                            {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            {row.effective_days != null
-                              ? <span className={row.alert_level === 'critical' ? 'text-red-600 font-semibold' : row.alert_level === 'warning' ? 'text-orange-600 font-semibold' : row.alert_level === 'watch' ? 'text-yellow-600 font-medium' : 'text-stone-700'}>
-                                  {parseFloat(row.effective_days).toFixed(1)}d
-                                </span>
-                              : <span className="text-stone-300 text-xs">No data</span>
-                            }
-                          </td>
-                          <td className="px-4 py-3 text-right text-stone-700">{row.cuttings_available}</td>
-                          <td className="px-4 py-3 text-right text-stone-500">{row.cuttings_in_production}</td>
-                          <td className="px-4 py-3 text-right">
-                            <span
-                              title={row.actionText}
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${row.meta.bg} ${row.meta.text} ${row.meta.border}`}
-                            >
-                              {row.alert_level === 'ok'
-                                ? <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
-                                : <span className="leading-none">{row.meta.emoji}</span>}
-                              <span>{row.badgeLabel}</span>
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {footerText}
-              </div>
-            );
-          })()}
-        </div>
-        );
-      })()}
 
       {/* ── RETURNS ── */}
       {activeSection === 'returns' && (() => {
