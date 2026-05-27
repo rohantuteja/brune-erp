@@ -3513,7 +3513,7 @@ function PipelineAlertGroup({ alerts, onNavigate, setProdView }) {
         className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-medium transition ${headerColor}`}
       >
         <span className="flex-shrink-0">{headerEmoji}</span>
-        <span className="flex-1 text-left">Stock Pipeline</span>
+        <span className="flex-1 text-left">Stock Pipeline (Active Runs)</span>
         <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${badgeColor}`}>{alerts.length}</span>
         <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
