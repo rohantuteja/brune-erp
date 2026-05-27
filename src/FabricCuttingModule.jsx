@@ -3533,7 +3533,7 @@ function PipelineAlertGroup({ alerts, onNavigate, setProdView }) {
             );
           })}
           <button
-            onClick={() => { setAnalyticsSection('pipeline_health'); onNavigate('analytics'); }}
+            onClick={() => { setProdView('pipeline_health'); onNavigate('production'); }}
             className={`w-full text-center px-3 py-2 text-xs font-medium opacity-60 hover:opacity-100 transition ${hasCritical ? 'text-red-700 hover:bg-red-100' : hasWarning ? 'text-orange-700 hover:bg-orange-100' : 'text-yellow-700 hover:bg-yellow-100'}`}
           >
             View all in Pipeline Health →
