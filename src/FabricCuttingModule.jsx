@@ -175,20 +175,29 @@ export default function FabricCuttingModule() {
   };
   const [analyticsSection, setAnalyticsSection] = useState('inventory');
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
-  const [pipelineHealthAlerts, setPipelineHealthAlerts] = useState(() => {
+  const [pipelineRawDash, setPipelineRawDash] = useState(() => {
     // Seed from localStorage synchronously — visible on first paint even after
     // closing and reopening the PWA
     const cached = _readPipelineCache();
-    return cached ? cached.data.filter(r => r.alert_level !== 'ok') : [];
+    return cached ? cached.data : [];
   });
   useEffect(() => {
     fetchPipelineHealth(fresh => {
       // Called when stale cache was served and background refresh completes
-      setPipelineHealthAlerts(fresh.filter(r => r.alert_level !== 'ok'));
+      setPipelineRawDash(fresh);
     }).then(data => {
-      setPipelineHealthAlerts(data.filter(r => r.alert_level !== 'ok'));
+      setPipelineRawDash(data);
     });
   }, []);
+  // Filtered subset passed to RunsListView (alert_level !== 'ok')
+  const pipelineHealthAlerts = useMemo(
+    () => pipelineRawDash.filter(r => r.alert_level !== 'ok'),
+    [pipelineRawDash]
+  );
+  const refreshPipelineDash = () => {
+    fetchPipelineHealth(fresh => setPipelineRawDash(fresh))
+      .then(data => setPipelineRawDash(data));
+  };
   // Dashboard alert thresholds — loaded from DB via useAppData
 
   const [expandedRunId, setExpandedRunId] = useState(null);
@@ -572,6 +581,8 @@ export default function FabricCuttingModule() {
             setInvColorFilter={setInvColorFilter}
             setAnalyticsSection={setAnalyticsSection}
             setProdView={setProdView}
+            pipelineRawData={pipelineRawDash}
+            refreshPipelineData={refreshPipelineDash}
           />
         )}
 
@@ -2878,23 +2889,15 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
   );
 }
 
-function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, setProdView }) {
+function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, setProdView, pipelineRawData, refreshPipelineData }) {
   const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
   const [showSettings, setShowSettings] = useState(false);
-  const [pipelineRawData, setPipelineRawData] = useState(() => {
-    const cached = _readPipelineCache();
-    return cached ? cached.data : [];
-  });
-  useEffect(() => {
-    fetchPipelineHealth(fresh => setPipelineRawData(fresh))
-      .then(data => setPipelineRawData(data));
-  }, []);
 
   // alert_level now comes directly from the SQL function (driven by lead-time settings)
   const pipelineAlerts = useMemo(() => {
-    return pipelineRawData.filter(r => r.has_active_run && r.alert_level !== 'ok');
+    return (pipelineRawData || []).filter(r => r.has_active_run && r.alert_level !== 'ok');
   }, [pipelineRawData]);
   const [settingsForm, setSettingsForm] = useState(null); // null = not yet initialised
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -3398,8 +3401,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 setSettingsSaving(false);
                 // Re-fetch pipeline health immediately so the new lookback / thresholds
                 // are reflected without requiring a page refresh.
-                fetchPipelineHealth(fresh => setPipelineRawData(fresh))
-                  .then(data => setPipelineRawData(data));
+                refreshPipelineData();
               }}
               className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded-md hover:bg-stone-800 disabled:opacity-60 min-h-[40px]"
             >
