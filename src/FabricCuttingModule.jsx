@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday, isRunActive } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
@@ -90,11 +90,36 @@ const PAGE_TO_PATH = {
 };
 const PATH_TO_PAGE = Object.fromEntries(Object.entries(PAGE_TO_PATH).map(([k, v]) => [v, k]));
 
+// Analytics tab slug ↔ section-id mapping
+const ANALYTICS_TAB_TO_SLUG = {
+  inventory:    'inventory-value',
+  shopify_stock:'shopify-stock',
+  wip:          'wip',
+  cod_pending:  'pending-cod',
+  returns:      'returns',
+  health:       'stock-health',
+  production:   'production',
+  costing:      'costing',
+  pipeline:     'pipeline',
+  fabric_usage: 'fabric-usage',
+};
+const ANALYTICS_SLUG_TO_TAB = Object.fromEntries(
+  Object.entries(ANALYTICS_TAB_TO_SLUG).map(([tab, slug]) => [slug, tab])
+);
+
 export default function FabricCuttingModule() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const activePage = PATH_TO_PAGE[pathname] ?? 'home';
+
+  // Derive active page — /analytics/* sub-paths all belong to the 'analytics' page
+  const activePage = pathname.startsWith('/analytics') ? 'analytics' : (PATH_TO_PAGE[pathname] ?? 'home');
   const setActivePage = (page) => navigate(PAGE_TO_PATH[page] ?? '/');
+
+  // Derive analytics sub-tab from URL path, e.g. /analytics/returns → 'returns'
+  const analyticsSlug = pathname.startsWith('/analytics/') ? pathname.slice('/analytics/'.length) : null;
+  const analyticsSection = (analyticsSlug && ANALYTICS_SLUG_TO_TAB[analyticsSlug]) ?? 'inventory';
+  const setAnalyticsSection = (section) =>
+    navigate(`/analytics/${ANALYTICS_TAB_TO_SLUG[section] ?? 'inventory-value'}`);
   const { signOut, user } = useAuth();
   const { can, profile, isAdmin } = usePermissions();
 
@@ -116,6 +141,11 @@ export default function FabricCuttingModule() {
     if (perm && !can(perm)) { navigate('/', { replace: true }); return; }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePage, profile]);
+
+  // Redirect bare /analytics to default tab
+  useEffect(() => {
+    if (pathname === '/analytics') navigate('/analytics/inventory-value', { replace: true });
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
   const [navOpen, setNavOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editingStockId, setEditingStockId] = useState(null);
@@ -173,7 +203,7 @@ export default function FabricCuttingModule() {
     }
     setPipelineHealthLoading(false);
   };
-  const [analyticsSection, setAnalyticsSection] = useState('inventory');
+  // analyticsSection + setAnalyticsSection are now derived from URL (see top of component)
   const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
   const [pipelineRawDash, setPipelineRawDash] = useState(() => {
     // Seed from localStorage synchronously — visible on first paint even after
@@ -6062,8 +6092,18 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
 function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
   const { isAdmin, can } = usePermissions();
-  const [receivedFrom, setReceivedFrom] = useState('');
-  const [receivedTo, setReceivedTo] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ── URL-backed filters ───────────────────────────────────────────────
+  // Inventory Value date range
+  const receivedFrom = searchParams.get('from') ?? '';
+  const receivedTo   = searchParams.get('to')   ?? '';
+  const setReceivedFrom = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('from', v) : n.delete('from'); return n; }, { replace: true });
+  const setReceivedTo   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('to', v)   : n.delete('to');   return n; }, { replace: true });
+
+  // Returns month filter
+  const restockFilterMonth = searchParams.get('month') ?? 'all';
+  const setRestockFilterMonth = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all' ? n.set('month', v) : n.delete('month'); return n; }, { replace: true });
 
   // ── Monthly Snapshot state ───────────────────────────────────────────
   const [snapshots, setSnapshots] = useState([]);
@@ -6097,7 +6137,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // ── Returns state ────────────────────────────────────────────────────
   const [returnRestocks, setReturnRestocks] = useState([]);
   const [returnRestocksLoading, setReturnRestocksLoading] = useState(false);
-  const [restockFilterMonth, setRestockFilterMonth] = useState('all');
+  // restockFilterMonth is now URL-backed via useSearchParams (see top of component)
 
   // ── Pending COD state ────────────────────────────────────────────────
   const [codSnapshots, setCodSnapshots] = useState([]);
