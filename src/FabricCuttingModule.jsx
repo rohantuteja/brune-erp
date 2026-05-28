@@ -8714,9 +8714,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
         // Build unique months from data for the filter dropdown
-        const availableMonths = [...new Set(
-          returnRestocks.map(r => (r.processed_at || r.created_at || '').slice(0, 7)).filter(Boolean)
-        )].sort((a, b) => b.localeCompare(a));
+        const availableMonths = [...new Set([
+          ...returnRestocks.map(r => (r.processed_at || r.created_at || '').slice(0, 7)).filter(Boolean),
+          ...(restockFilterMonth !== 'all' ? [restockFilterMonth] : []),
+        ])].sort((a, b) => b.localeCompare(a));
 
         const fmtMonthLabel = (ym) => {
           const [y, m] = ym.split('-');
