@@ -3088,7 +3088,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
       const completePct = totalCut > 0 ? Math.min(100, Math.round(totalCompleted / totalCut * 100)) : 0;
       const stage = totalCompleted >= totalCut && totalCut > 0 ? 'done'
         : totalIssued > 0 ? 'in_production' : 'cutting';
-      return { style_code: r.style_code, totalCut, totalIssued, totalCompleted, issuePct, completePct, stage };
+      return { id: r.id, style_code: r.style_code, totalCut, totalIssued, totalCompleted, issuePct, completePct, stage };
     }).filter(p => p.stage !== 'done').sort((a, b) => {
       const o = { in_production: 0, cutting: 1 };
       return o[a.stage] - o[b.stage];
@@ -3225,7 +3225,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 ? <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">In Production</span>
                 : <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-stone-100 border border-stone-200 text-stone-600">Cutting</span>;
               return (
-                <div key={p.style_code} className="bg-white rounded-lg border border-stone-200 p-3">
+                <div key={p.id} className="bg-white rounded-lg border border-stone-200 p-3">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-sm font-semibold text-stone-900">{p.style_code}</span>
@@ -6792,7 +6792,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       let stage = 'cutting';
       if (totalIssued > 0 && totalCompleted < totalCut) stage = 'in_production';
       if (totalCompleted >= totalCut && totalCut > 0) stage = 'done';
-      return { style_code: r.style_code, totalCut, totalIssued, totalCompleted, pendingIssue, pendingCompletion, stage, firstCutDate: r.first_cut_date };
+      return { id: r.id, style_code: r.style_code, totalCut, totalIssued, totalCompleted, pendingIssue, pendingCompletion, stage, firstCutDate: r.first_cut_date };
     }).sort((a, b) => {
       const stageOrder = { cutting: 0, in_production: 1, done: 2 };
       return stageOrder[a.stage] - stageOrder[b.stage] || b.totalCut - a.totalCut;
@@ -7627,7 +7627,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
               const stageBg = p.stage === 'done' ? 'bg-emerald-50 border-emerald-200' : p.stage === 'in_production' ? 'bg-amber-50 border-amber-200' : 'bg-stone-50 border-stone-200';
               const stageText = p.stage === 'done' ? 'text-emerald-700' : p.stage === 'in_production' ? 'text-amber-700' : 'text-stone-600';
               return (
-                <div key={p.style_code} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
+                <div key={p.id} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-sm font-semibold text-stone-900">{p.style_code}</span>
@@ -7708,11 +7708,11 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     <div className="text-xs text-stone-500 mt-0.5">Only styles with a costing entry can be compared</div>
                   </div>
                   <div className="divide-y divide-stone-100">
-                    {fabricUsageStats.filter(s => s.plannedPerPiece !== null).map(s => {
+                    {fabricUsageStats.filter(s => s.plannedPerPiece !== null).map((s, sIdx) => {
                       const over = (s.variance || 0) > 0;
                       const varColor = over ? 'text-red-700 bg-red-50 border-red-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200';
                       return (
-                        <div key={s.style_code} className="p-3 sm:p-4">
+                        <div key={`${s.style_code}-${sIdx}`} className="p-3 sm:p-4">
                           <div className="flex items-center justify-between mb-2">
                             <span className="font-mono text-sm font-semibold text-stone-900">{s.style_code}</span>
                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${varColor}`}>
@@ -7751,8 +7751,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     <div className="text-xs text-stone-500 mt-0.5">No costing entry found — add one to see planned vs actual</div>
                   </div>
                   <div className="divide-y divide-stone-100">
-                    {fabricUsageStats.filter(s => s.plannedPerPiece === null).map(s => (
-                      <div key={s.style_code} className="p-3 flex items-center justify-between">
+                    {fabricUsageStats.filter(s => s.plannedPerPiece === null).map((s, sIdx) => (
+                      <div key={`${s.style_code}-${sIdx}`} className="p-3 flex items-center justify-between">
                         <span className="font-mono text-sm font-medium text-stone-900">{s.style_code}</span>
                         <div className="text-right text-xs">
                           <div className="font-semibold text-stone-900">{s.actualPerPiece.toFixed(2)} m/pc</div>
@@ -8158,8 +8158,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   </button>
                   {shopifyNegativeExpanded && (
                     <div className="border-t border-red-200 px-3 pb-3 pt-2 space-y-1.5">
-                      {shopifyStockStats.negativeStyles.map(ns => (
-                        <div key={ns.style_code} className="flex items-start gap-2 flex-wrap">
+                      {shopifyStockStats.negativeStyles.map((ns, nsIdx) => (
+                        <div key={`${ns.style_code}-${nsIdx}`} className="flex items-start gap-2 flex-wrap">
                           <span className="font-medium shrink-0">{ns.title}{ns.style_code ? ` (${ns.style_code})` : ''}:</span>
                           <div className="flex flex-wrap gap-1">
                             {ns.sizes.map(s => (
@@ -8194,11 +8194,11 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     <div className="border-t border-stone-100 p-8 text-center text-sm text-stone-400">No costed styles with stock.</div>
                   ) : (
                     <div className="border-t border-stone-100 divide-y divide-stone-100">
-                      {shopifyStockStats.costed.map((row) => {
+                      {shopifyStockStats.costed.map((row, rowIdx) => {
                         const pct = shopifyStockStats.totalValue > 0
                           ? Math.round(row.styleValue / shopifyStockStats.totalValue * 100) : 0;
                         return (
-                          <div key={row.style_code} className="p-3 sm:p-4">
+                          <div key={`${row.style_code}-${rowIdx}`} className="p-3 sm:p-4">
                             <div className="flex items-start justify-between gap-3 mb-1.5">
                               <div className="min-w-0">
                                 <span className="font-mono text-sm font-medium text-stone-900">{row.style_code}</span>
@@ -8237,8 +8237,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   </button>
                   {shopifyUncostedExpanded && (
                     <div className="border-t border-stone-100 divide-y divide-stone-100">
-                      {shopifyStockStats.uncosted.map(row => (
-                        <div key={row.style_code} className="px-4 py-2.5 flex items-center justify-between">
+                      {shopifyStockStats.uncosted.map((row, rowIdx) => (
+                        <div key={`${row.style_code}-${rowIdx}`} className="px-4 py-2.5 flex items-center justify-between">
                           <div>
                             <span className="font-mono text-sm font-medium text-stone-700">{row.style_code}</span>
                             {row.title && <span className="text-xs text-stone-400 ml-2">{row.title}</span>}
@@ -8985,8 +8985,8 @@ function KarigarPaymentCard({ k, onPay, onEditPayment, onDeletePayment }) {
               {/* Style breakdown */}
               {k.breakdown.length > 0 && (
                 <div className="mb-3 space-y-1">
-                  {k.breakdown.map(b => (
-                    <div key={b.style_code} className="flex items-center justify-between text-xs">
+                  {k.breakdown.map((b, bIdx) => (
+                    <div key={`${b.style_code}-${bIdx}`} className="flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-stone-700">{b.style_code}</span>
                         <span className="text-stone-400">{Math.round(b.pieces)} pcs</span>
@@ -9192,8 +9192,8 @@ function RecordPaymentModal({ karigar, onClose, onSave }) {
     >
       {/* Payment summary */}
       <div className="p-3 bg-stone-50 rounded-lg border border-stone-200 mb-4 space-y-2">
-        {karigar.breakdown.filter(b => b.subtotal !== null).map(b => (
-          <div key={b.style_code} className="flex items-center justify-between text-sm">
+        {karigar.breakdown.filter(b => b.subtotal !== null).map((b, bIdx) => (
+          <div key={`${b.style_code}-${bIdx}`} className="flex items-center justify-between text-sm">
             <div className="flex items-center gap-2">
               <span className="font-mono text-stone-700">{b.style_code}</span>
               <span className="text-xs text-stone-400">{b.pieces} pcs × ₹{b.rate}</span>
