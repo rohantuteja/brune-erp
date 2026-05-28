@@ -6098,8 +6098,16 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // Inventory Value date range
   const receivedFrom = searchParams.get('from') ?? '';
   const receivedTo   = searchParams.get('to')   ?? '';
+  // Single-param setters (used by the individual date inputs)
   const setReceivedFrom = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('from', v) : n.delete('from'); return n; }, { replace: true });
   const setReceivedTo   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('to', v)   : n.delete('to');   return n; }, { replace: true });
+  // Combined setter for preset buttons — one setSearchParams call so both params land together
+  const setDateRange = (from, to) => setSearchParams(p => {
+    const n = new URLSearchParams(p);
+    from ? n.set('from', from) : n.delete('from');
+    to   ? n.set('to',   to)  : n.delete('to');
+    return n;
+  }, { replace: true });
 
   // Returns month filter
   const restockFilterMonth = searchParams.get('month') ?? 'all';
@@ -6609,8 +6617,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const invStats = useMemo(() => {
     // Filter by received date range (if set) + must have remaining stock
     const snap = inventory.filter(i => {
-      if (receivedFrom && i.received_date && i.received_date < receivedFrom) return false;
-      if (receivedTo && i.received_date && i.received_date > receivedTo) return false;
+      // When a date filter is active, exclude items with no received_date
+      if ((receivedFrom || receivedTo) && !i.received_date) return false;
+      if (receivedFrom && i.received_date < receivedFrom) return false;
+      if (receivedTo   && i.received_date > receivedTo)   return false;
       const remaining = parseFloat(i.format === 'roll' ? i.current_weight_kg : i.current_length_m) || 0;
       return remaining > 0;
     });
@@ -7030,7 +7040,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 return (
                   <button
                     key={p.label}
-                    onClick={() => { setReceivedFrom(p.from); setReceivedTo(p.to); }}
+                    onClick={() => setDateRange(p.from, p.to)}
                     className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
                       isActive
                         ? 'bg-stone-900 text-white border-stone-900'
