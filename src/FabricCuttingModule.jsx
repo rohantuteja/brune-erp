@@ -3503,7 +3503,9 @@ function PipelineAlertGroup({ alerts, onNavigate, setProdView }) {
 
   const sorted = [...alerts].sort((a, b) => {
     const o = { critical: 0, warning: 1, watch: 2 };
-    return (o[a.alert_level] ?? 3) - (o[b.alert_level] ?? 3);
+    const levelDiff = (o[a.alert_level] ?? 3) - (o[b.alert_level] ?? 3);
+    if (levelDiff !== 0) return levelDiff;
+    return (a.effective_days ?? 0) - (b.effective_days ?? 0);
   });
 
   return (
