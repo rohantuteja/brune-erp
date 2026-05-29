@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { isRunActive } from '../lib/constants';
 import { RefreshCw, ShoppingBag, Search, X, CheckCircle2, Clock, EyeOff, Eye, ArrowDownUp, ChevronDown } from 'lucide-react';
@@ -18,17 +19,25 @@ function writeCache(data) {
 
 export default function ShopifyInventoryPage({ runs = [], productionBatches = [], showToast }) {
   const cached = useMemo(() => readCache(), []);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [products, setProducts] = useState(cached?.products || []);
   const [lastSyncedAt, setLastSyncedAt] = useState(cached?.lastSyncedAt || null);
   // Only show full-page loading spinner if there's nothing cached to show
   const [loading, setLoading] = useState(!cached);
   const [syncing, setSyncing] = useState(false);
-  const [search, setSearch] = useState('');
-  const [activeRunsOnly, setActiveRunsOnly] = useState(false);
-  const [showZeroStock, setShowZeroStock] = useState(false);
   const [notConnected, setNotConnected] = useState(false);
-  const [sort, setSort] = useState('recently_updated');
+
+  // ── URL-backed filter state ──────────────────────────────────────────────
+  const search        = searchParams.get('q')           ?? '';
+  const activeRunsOnly = searchParams.get('activeOnly') === '1';
+  const showZeroStock  = searchParams.get('showZero')   === '1';
+  const sort           = searchParams.get('sort')        ?? 'recently_updated';
+
+  const setSearch        = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
+  const setActiveRunsOnly = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('activeOnly', '1') : n.delete('activeOnly'); return n; }, { replace: true });
+  const setShowZeroStock  = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('showZero', '1') : n.delete('showZero'); return n; }, { replace: true });
+  const setSort           = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'recently_updated' ? n.set('sort', v) : n.delete('sort'); return n; }, { replace: true });
   const [, setTick] = useState(0);
 
   // Tick every 30s so the relative timestamp ("5m ago") stays current between syncs

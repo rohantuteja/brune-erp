@@ -117,13 +117,35 @@ const PROD_SLUG_TO_TAB = Object.fromEntries(
   Object.entries(PROD_TAB_TO_SLUG).map(([tab, slug]) => [slug, tab])
 );
 
+// Cuttings tab slug ↔ view-id mapping
+const CUTTINGS_TAB_TO_SLUG = {
+  list:     'list',
+  by_style: 'by-style',
+};
+const CUTTINGS_SLUG_TO_TAB = Object.fromEntries(
+  Object.entries(CUTTINGS_TAB_TO_SLUG).map(([tab, slug]) => [slug, tab])
+);
+
+// Masters tab slug ↔ tab-id mapping
+const MASTERS_TAB_TO_SLUG = {
+  fabric_types: 'fabric-types',
+  suppliers:    'suppliers',
+  style_codes:  'style-codes',
+  karigars:     'karigars',
+};
+const MASTERS_SLUG_TO_TAB = Object.fromEntries(
+  Object.entries(MASTERS_TAB_TO_SLUG).map(([tab, slug]) => [slug, tab])
+);
+
 export default function FabricCuttingModule() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
-  // Derive active page — /analytics/* and /production/* sub-paths belong to their parent pages
+  // Derive active page — sub-paths all belong to their parent pages
   const activePage = pathname.startsWith('/analytics') ? 'analytics'
     : pathname.startsWith('/production/') ? 'production'
+    : pathname.startsWith('/cuttings/') ? 'cuttings'
+    : pathname.startsWith('/masters/') ? 'masters'
     : (PATH_TO_PAGE[pathname] ?? 'home');
   const setActivePage = (page) => navigate(PAGE_TO_PATH[page] ?? '/');
 
@@ -164,6 +186,16 @@ export default function FabricCuttingModule() {
     if (pathname === '/production') navigate('/production/batches', { replace: true });
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Redirect bare /cuttings to default tab
+  useEffect(() => {
+    if (pathname === '/cuttings') navigate('/cuttings/list', { replace: true });
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Redirect bare /masters to default tab
+  useEffect(() => {
+    if (pathname === '/masters') navigate('/masters/fabric-types', { replace: true });
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-fetch pipeline health when navigating to that tab
   useEffect(() => {
     if (pathname === '/production/pipeline-health') fetchPipelineHealthData();
@@ -181,29 +213,7 @@ export default function FabricCuttingModule() {
   const [confirmDeleteEntry, setConfirmDeleteEntry] = useState(null);
   const [cutEntryOverrideConfirm, setCutEntryOverrideConfirm] = useState(null); // { message, newData }
 
-  // Inventory filters
-  const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('available');
-  const [formatFilter, setFormatFilter] = useState('all');
-  const [invFabricFilter, setInvFabricFilter] = useState('all');
-  const [invSupplierFilter, setInvSupplierFilter] = useState('all');
-  const [invColorFilter, setInvColorFilter] = useState('all');
-  const [invLowStockOnly, setInvLowStockOnly] = useState(false);
-  const [invSort, setInvSort] = useState('added_desc');
-
-  // Style runs filters
-  const [runStatusFilter, setRunStatusFilter] = useState('active');
-  const [runSearchTerm, setRunSearchTerm] = useState('');
-  const [runSort, setRunSort] = useState('last_cut_desc');
-
-  // Stock by Style filters
-  const [stockSearchTerm, setStockSearchTerm] = useState('');
-  const [stockFlagFilter, setStockFlagFilter] = useState('all');
-
-  // Costing filters
-  const [costingSearchTerm, setCostingSearchTerm] = useState('');
-  const [costingFabricFilter, setCostingFabricFilter] = useState('all');
-  const [costingSort, setCostingSort] = useState('style_asc');
+  // (Inventory, Cuttings, Costing filters are now URL-backed inside their components)
 
   // ── Pipeline Health data (fetched here, shared with ProductionPage) ────────
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
@@ -220,7 +230,7 @@ export default function FabricCuttingModule() {
     setPipelineHealthLoading(false);
   };
   // analyticsSection + setAnalyticsSection are now derived from URL (see top of component)
-  const [mastersInitialTab, setMastersInitialTab] = useState('fabric_types');
+  // (Masters tab state is now URL-backed inside MastersPage)
   const [pipelineRawDash, setPipelineRawDash] = useState(() => {
     // Seed from localStorage synchronously — visible on first paint even after
     // closing and reopening the PWA
@@ -247,7 +257,6 @@ export default function FabricCuttingModule() {
   // Dashboard alert thresholds — loaded from DB via useAppData
 
   const [expandedRunId, setExpandedRunId] = useState(null);
-  const [cuttingsView, setCuttingsView] = useState('list');
 
   const [toast, setToast] = useState(null);
 
@@ -280,124 +289,7 @@ export default function FabricCuttingModule() {
   const getSupplier = (id) => suppliers.find(s => s.id === id);
   const getInventory = (id) => inventory.find(i => i.id === id);
 
-  const filtered = useMemo(() => {
-    const q = searchTerm.toLowerCase().trim();
-    let list = inventory.filter(i => {
-      const ft = getFabricType(i.fabric_type_id);
-      const sup = getSupplier(i.supplier_id);
-      const matchesSearch = !q ||
-        i.inventory_number.toLowerCase().includes(q) ||
-        (i.color || '').toLowerCase().includes(q) ||
-        (ft?.name || '').toLowerCase().includes(q) ||
-        (sup?.name || '').toLowerCase().includes(q) ||
-        (i.notes || '').toLowerCase().includes(q);
-      const matchesStatus = statusFilter === 'all' || i.status === statusFilter;
-      const matchesFormat = formatFilter === 'all' || i.format === formatFilter;
-      const matchesFabric = invFabricFilter === 'all' || i.fabric_type_id === parseInt(invFabricFilter);
-      const matchesSupplier = invSupplierFilter === 'all' || i.supplier_id === parseInt(invSupplierFilter);
-      const matchesColor = invColorFilter === 'all' || i.color === invColorFilter;
-
-      let matchesLowStock = true;
-      if (invLowStockOnly) {
-        const isRoll = i.format === 'roll';
-        const initial = isRoll ? i.initial_weight_kg : i.initial_length_m;
-        const current = isRoll ? i.current_weight_kg : i.current_length_m;
-        matchesLowStock = initial > 0 && (current / initial) <= 0.2;
-      }
-
-      return matchesSearch && matchesStatus && matchesFormat && matchesFabric && matchesSupplier && matchesColor && matchesLowStock;
-    });
-
-    list = [...list].sort((a, b) => {
-      switch (invSort) {
-        case 'added_desc': return b.id - a.id; // most recently added to system first
-        case 'added_asc': return a.id - b.id; // oldest added to system first
-        case 'received_desc': {
-          const da = a.received_date ? new Date(a.received_date).getTime() : 0;
-          const db = b.received_date ? new Date(b.received_date).getTime() : 0;
-          return db !== da ? db - da : b.id - a.id;
-        }
-        case 'received_asc': {
-          const da = a.received_date ? new Date(a.received_date).getTime() : 0;
-          const db = b.received_date ? new Date(b.received_date).getTime() : 0;
-          return da !== db ? da - db : a.id - b.id;
-        }
-        case 'number_asc': return (a.inventory_number || '').localeCompare(b.inventory_number || '');
-        case 'stock_asc': {
-          const ca = parseFloat(a.format === 'roll' ? a.current_weight_kg : a.current_length_m) || 0;
-          const cb = parseFloat(b.format === 'roll' ? b.current_weight_kg : b.current_length_m) || 0;
-          return ca - cb;
-        }
-        case 'stock_desc': {
-          const ca = parseFloat(a.format === 'roll' ? a.current_weight_kg : a.current_length_m) || 0;
-          const cb = parseFloat(b.format === 'roll' ? b.current_weight_kg : b.current_length_m) || 0;
-          return cb - ca;
-        }
-        default: return b.id - a.id;
-      }
-    });
-
-    return list;
-  }, [inventory, searchTerm, statusFilter, formatFilter, invFabricFilter, invSupplierFilter, invColorFilter, invLowStockOnly, invSort, fabricTypes, suppliers]);
-
-  const filteredRuns = useMemo(() => {
-    const q = runSearchTerm.toLowerCase().trim();
-
-    // Derive run status from batch data.
-    // active    — any size still has cuttings available to issue
-    // issued    — all cuttings issued but ≥1 batch not yet completed
-    // completed — all cuttings issued AND all batches completed
-    const getRunStatus = (r) => {
-      const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
-      if (totalCut === 0) return 'active';
-      const batches = productionBatches.filter(b => b.run_id === r.id);
-      const issuedBySize = {};
-      batches.forEach(b => {
-        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
-          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
-        });
-      });
-      const hasCuttingsAvailable = r.pieces.some(p => p.quantity > (issuedBySize[p.size] || 0));
-      const hasOpenBatch = batches.some(b => b.status !== 'completed');
-      if (!hasCuttingsAvailable && !hasOpenBatch) return 'completed';
-      if (!hasCuttingsAvailable) return 'issued';
-      return 'active';
-    };
-
-    let list = runs.map(r => ({ ...r, _derivedStatus: getRunStatus(r) })).filter(r => {
-      // Completed runs only visible in "All" tab
-      if (r._derivedStatus === 'completed' && runStatusFilter !== 'all') return false;
-      const matchesStatus =
-        runStatusFilter === 'all' ||
-        (runStatusFilter === 'active' && r._derivedStatus === 'active') ||
-        (runStatusFilter === 'issued' && r._derivedStatus === 'issued');
-      const matchesSearch = !q || r.style_code.toLowerCase().includes(q);
-      return matchesStatus && matchesSearch;
-    });
-
-    // For a given run, the ID of its most recently added cut entry.
-    // Used as a tiebreak when two runs share the same date — the run where
-    // a new entry was most recently recorded bubbles to the top.
-    const maxEntryId = (r) => r.entries.length > 0 ? Math.max(...r.entries.map(e => e.id)) : 0;
-
-    list = [...list].sort((a, b) => {
-      switch (runSort) {
-        case 'last_cut_desc': return b.last_append_date.localeCompare(a.last_append_date) || maxEntryId(b) - maxEntryId(a);
-        case 'last_cut_asc': return a.last_append_date.localeCompare(b.last_append_date) || maxEntryId(a) - maxEntryId(b);
-        case 'first_cut_desc': return b.first_cut_date.localeCompare(a.first_cut_date) || maxEntryId(b) - maxEntryId(a);
-        case 'first_cut_asc': return a.first_cut_date.localeCompare(b.first_cut_date) || maxEntryId(a) - maxEntryId(b);
-        case 'pieces_desc': {
-          const ta = a.pieces.reduce((s, p) => s + p.quantity, 0);
-          const tb = b.pieces.reduce((s, p) => s + p.quantity, 0);
-          return tb - ta || maxEntryId(b) - maxEntryId(a);
-        }
-        case 'style_asc': return a.style_code.localeCompare(b.style_code) || maxEntryId(b) - maxEntryId(a);
-        default: return b.last_append_date.localeCompare(a.last_append_date) || maxEntryId(b) - maxEntryId(a);
-      }
-    });
-
-    return list;
-  }, [runs, productionBatches, runStatusFilter, runSearchTerm, runSort]);
+  // (filteredRuns moved into CuttingsPage where URL-backed filter state lives)
 
   const stats = useMemo(() => {
     const rolls = inventory.filter(i => i.format === 'roll');
@@ -622,10 +514,6 @@ export default function FabricCuttingModule() {
             alertSettings={alertSettings}
             saveAlertSettings={saveAlertSettings}
             onNavigate={setActivePage}
-            setCuttingsView={setCuttingsView}
-            setInvFabricFilter={setInvFabricFilter}
-            setInvColorFilter={setInvColorFilter}
-            setAnalyticsSection={setAnalyticsSection}
             pipelineRawData={pipelineRawDash}
             refreshPipelineData={refreshPipelineDash}
             fetchPipelineHealthData={fetchPipelineHealthData}
@@ -633,15 +521,7 @@ export default function FabricCuttingModule() {
         )}
 
         {activePage === 'inventory' && (
-          <InventoryTable inventory={filtered} allInventory={inventory} getFabricType={getFabricType} getSupplier={getSupplier}
-            searchTerm={searchTerm} setSearchTerm={setSearchTerm}
-            statusFilter={statusFilter} setStatusFilter={setStatusFilter}
-            formatFilter={formatFilter} setFormatFilter={setFormatFilter}
-            fabricFilter={invFabricFilter} setFabricFilter={setInvFabricFilter}
-            supplierFilter={invSupplierFilter} setSupplierFilter={setInvSupplierFilter}
-            colorFilter={invColorFilter} setColorFilter={setInvColorFilter}
-            lowStockOnly={invLowStockOnly} setLowStockOnly={setInvLowStockOnly}
-            sortBy={invSort} setSortBy={setInvSort}
+          <InventoryTable inventory={inventory} allInventory={inventory} getFabricType={getFabricType} getSupplier={getSupplier}
             fabricTypes={fabricTypes} suppliers={suppliers}
             onAdd={() => setShowAdd(true)}
             onEdit={(id) => setEditingStockId(id)}
@@ -650,40 +530,17 @@ export default function FabricCuttingModule() {
         )}
 
         {activePage === 'cuttings' && (
-          <>
-            <div className="flex gap-1 mb-3 bg-white p-1 rounded-md border border-stone-200 w-fit">
-              <SubTabBtn active={cuttingsView === 'list'} onClick={() => setCuttingsView('list')}>
-                <Scissors className="w-3.5 h-3.5" /> Style Runs
-              </SubTabBtn>
-              <SubTabBtn active={cuttingsView === 'by_style'} onClick={() => setCuttingsView('by_style')}>
-                <Boxes className="w-3.5 h-3.5" /> Stock by Style
-              </SubTabBtn>
-            </div>
-
-            {cuttingsView === 'list' && (
-              <RunsListView runs={filteredRuns} allRuns={runs} stats={stats}
-                runStatusFilter={runStatusFilter} setRunStatusFilter={setRunStatusFilter}
-                searchTerm={runSearchTerm} setSearchTerm={setRunSearchTerm}
-                sortBy={runSort} setSortBy={setRunSort}
-                onAddCutting={() => setShowStylePicker(true)}
-                onIssue={(r) => setIssuingForRun(r)}
-                getIssuedQty={getIssuedQty}
-                getIssuedBySizeMap={getIssuedBySizeMap}
-                expandedRunId={expandedRunId} setExpandedRunId={setExpandedRunId}
-                getInventory={getInventory}
-                onEditEntry={(runId, entryId) => setEditingEntry({ runId, entryId })}
-                onDeleteEntry={(runId, entryId) => setConfirmDeleteEntry({ runId, entryId })}
-                pipelineHealthAlerts={pipelineHealthAlerts} />
-            )}
-
-            {cuttingsView === 'by_style' && (
-              <StockByStyleView styleRollup={styleRollup}
-                searchTerm={stockSearchTerm} setSearchTerm={setStockSearchTerm}
-                flagFilter={stockFlagFilter} setFlagFilter={setStockFlagFilter}
-                onAddCutting={() => setShowStylePicker(true)}
-                onMarkFinished={(r) => setIssuingForRun(r)} />
-            )}
-          </>
+          <CuttingsPage
+            runs={runs} productionBatches={productionBatches} styleRollup={styleRollup} stats={stats}
+            onAddCutting={() => setShowStylePicker(true)}
+            onIssue={(r) => setIssuingForRun(r)}
+            getIssuedQty={getIssuedQty}
+            getIssuedBySizeMap={getIssuedBySizeMap}
+            expandedRunId={expandedRunId} setExpandedRunId={setExpandedRunId}
+            getInventory={getInventory}
+            onEditEntry={(runId, entryId) => setEditingEntry({ runId, entryId })}
+            onDeleteEntry={(runId, entryId) => setConfirmDeleteEntry({ runId, entryId })}
+            pipelineHealthAlerts={pipelineHealthAlerts} />
         )}
 
         {activePage === 'masters' && (
@@ -709,8 +566,6 @@ export default function FabricCuttingModule() {
             onToggleKarigarActive={toggleKarigarActive}
             onUpdateKarigarPaymentType={updateKarigarPaymentType}
             showToast={showToast}
-            initialTab={mastersInitialTab}
-            onTabChange={setMastersInitialTab}
           />
         )}
 
@@ -721,9 +576,6 @@ export default function FabricCuttingModule() {
             fabricTypes={fabricTypes}
             getMaxCostPerMeter={getMaxCostPerMeter}
             getCostingTotal={getCostingTotal}
-            searchTerm={costingSearchTerm} setSearchTerm={setCostingSearchTerm}
-            fabricFilter={costingFabricFilter} setFabricFilter={setCostingFabricFilter}
-            sortBy={costingSort} setSortBy={setCostingSort}
             onAdd={() => { setDuplicatingCostingId(null); setEditingCostingId('new'); }}
             onEdit={(id) => { setDuplicatingCostingId(null); setEditingCostingId(id); }}
             onDuplicate={(id) => { setDuplicatingCostingId(id); setEditingCostingId('new'); }}
@@ -810,7 +662,7 @@ export default function FabricCuttingModule() {
         />
       )}
 
-      {showAdd && <AddInventoryModal fabricTypes={fabricTypes} suppliers={suppliers} inventory={inventory} onClose={() => setShowAdd(false)} onSave={addInventory} onAddFabricType={addFabricType} onAddSupplier={addSupplier} onGoToFabricTypes={() => { setShowAdd(false); setMastersInitialTab('fabric_types'); setActivePage('masters'); }} />}
+      {showAdd && <AddInventoryModal fabricTypes={fabricTypes} suppliers={suppliers} inventory={inventory} onClose={() => setShowAdd(false)} onSave={addInventory} onAddFabricType={addFabricType} onAddSupplier={addSupplier} onGoToFabricTypes={() => { setShowAdd(false); navigate('/masters/fabric-types'); }} />}
       {editingStockId && (
         <AddInventoryModal
           fabricTypes={fabricTypes}
@@ -821,7 +673,7 @@ export default function FabricCuttingModule() {
           onSave={(data) => { updateInventory(editingStockId, data); setEditingStockId(null); }}
           onAddFabricType={addFabricType}
           onAddSupplier={addSupplier}
-          onGoToFabricTypes={() => { setEditingStockId(null); setMastersInitialTab('fabric_types'); setActivePage('masters'); }}
+          onGoToFabricTypes={() => { setEditingStockId(null); navigate('/masters/fabric-types'); }}
         />
       )}
 
@@ -835,7 +687,7 @@ export default function FabricCuttingModule() {
           onSave={(data) => { addInventory(data); setDuplicatingFromId(null); }}
           onAddFabricType={addFabricType}
           onAddSupplier={addSupplier}
-          onGoToFabricTypes={() => { setDuplicatingFromId(null); setMastersInitialTab('fabric_types'); setActivePage('masters'); }}
+          onGoToFabricTypes={() => { setDuplicatingFromId(null); navigate('/masters/fabric-types'); }}
         />
       )}
 
@@ -943,22 +795,40 @@ export default function FabricCuttingModule() {
 
 function InventoryTable({
   inventory, allInventory, getFabricType, getSupplier,
-  searchTerm, setSearchTerm,
-  statusFilter, setStatusFilter,
-  formatFilter, setFormatFilter,
-  fabricFilter, setFabricFilter,
-  supplierFilter, setSupplierFilter,
-  colorFilter, setColorFilter,
-  lowStockOnly, setLowStockOnly,
-  sortBy, setSortBy,
   fabricTypes, suppliers,
   onAdd, onEdit, onDelete, onDuplicate
 }) {
   const { can } = usePermissions();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canEdit = can('can_edit_inventory');
   const canDelete = can('can_delete_inventory');
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // ── URL-backed filter state ──────────────────────────────────────────────
+  const searchTerm     = searchParams.get('q')        ?? '';
+  const statusFilter   = searchParams.get('status')   ?? 'available';
+  const formatFilter   = searchParams.get('format')   ?? 'all';
+  const fabricFilter   = searchParams.get('fabric')   ?? 'all';
+  const supplierFilter = searchParams.get('supplier') ?? 'all';
+  const colorFilter    = searchParams.get('color')    ?? 'all';
+  const lowStockOnly   = searchParams.get('lowStock') === '1';
+  const sortBy         = searchParams.get('sort')     ?? 'added_desc';
+
+  const set = (key, val, def) => setSearchParams(p => {
+    const n = new URLSearchParams(p);
+    val && val !== def ? n.set(key, val) : n.delete(key);
+    return n;
+  }, { replace: true });
+
+  const setSearchTerm     = (v) => set('q', v, '');
+  const setStatusFilter   = (v) => set('status', v, 'available');
+  const setFormatFilter   = (v) => set('format', v, 'all');
+  const setFabricFilter   = (v) => set('fabric', v, 'all');
+  const setSupplierFilter = (v) => set('supplier', v, 'all');
+  const setColorFilter    = (v) => set('color', v, 'all');
+  const setLowStockOnly   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('lowStock', '1') : n.delete('lowStock'); return n; }, { replace: true });
+  const setSortBy         = (v) => set('sort', v, 'added_desc');
 
   const handleDelete = (id) => {
     setConfirmDeleteId(null);
@@ -1218,6 +1088,115 @@ function ConfirmDialog({ title, message, confirmLabel, danger, onConfirm, onCanc
     >
       <p className="text-sm text-stone-600">{message}</p>
     </Modal>
+  );
+}
+
+// ─── CUTTINGS PAGE ──────────────────────────────────────────────────────────
+function CuttingsPage({ runs, productionBatches, styleRollup, stats, onAddCutting, onIssue, getIssuedQty, getIssuedBySizeMap, expandedRunId, setExpandedRunId, getInventory, onEditEntry, onDeleteEntry, pipelineHealthAlerts }) {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ── Derive active tab from URL ───────────────────────────────────────────
+  const cuttingsSlug = pathname.startsWith('/cuttings/') ? pathname.slice('/cuttings/'.length) : null;
+  const cuttingsView = (cuttingsSlug && CUTTINGS_SLUG_TO_TAB[cuttingsSlug]) ?? 'list';
+  const setTab = (view) => navigate(`/cuttings/${CUTTINGS_TAB_TO_SLUG[view] ?? 'list'}`);
+
+  // ── URL-backed filter state ──────────────────────────────────────────────
+  // Style Runs tab
+  const runStatusFilter = searchParams.get('status') ?? 'active';
+  const runSearchTerm   = searchParams.get('q')      ?? '';
+  const runSort         = searchParams.get('sort')   ?? 'last_cut_desc';
+  const setRunStatusFilter = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'active' ? n.set('status', v) : n.delete('status'); return n; }, { replace: true });
+  const setRunSearchTerm   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
+  const setRunSort         = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'last_cut_desc' ? n.set('sort', v) : n.delete('sort'); return n; }, { replace: true });
+
+  // Stock by Style tab
+  const stockSearchTerm = searchParams.get('q')    ?? '';
+  const stockFlagFilter = searchParams.get('flag') ?? 'all';
+  const setStockSearchTerm = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
+  const setStockFlagFilter = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all' ? n.set('flag', v) : n.delete('flag'); return n; }, { replace: true });
+
+  // ── Derived: filtered runs (logic moved from FabricCuttingModule) ────────
+  const filteredRuns = useMemo(() => {
+    const q = runSearchTerm.toLowerCase().trim();
+    const getRunStatus = (r) => {
+      const totalCut = r.pieces.reduce((s, p) => s + p.quantity, 0);
+      if (totalCut === 0) return 'active';
+      const batches = productionBatches.filter(b => b.run_id === r.id);
+      const issuedBySize = {};
+      batches.forEach(b => {
+        Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
+          issuedBySize[size] = (issuedBySize[size] || 0) + (parseInt(qty) || 0);
+        });
+      });
+      const hasCuttingsAvailable = r.pieces.some(p => p.quantity > (issuedBySize[p.size] || 0));
+      const hasOpenBatch = batches.some(b => b.status !== 'completed');
+      if (!hasCuttingsAvailable && !hasOpenBatch) return 'completed';
+      if (!hasCuttingsAvailable) return 'issued';
+      return 'active';
+    };
+    const maxEntryId = (r) => r.entries.length > 0 ? Math.max(...r.entries.map(e => e.id)) : 0;
+    let list = runs.map(r => ({ ...r, _derivedStatus: getRunStatus(r) })).filter(r => {
+      if (r._derivedStatus === 'completed' && runStatusFilter !== 'all') return false;
+      const matchesStatus = runStatusFilter === 'all' ||
+        (runStatusFilter === 'active' && r._derivedStatus === 'active') ||
+        (runStatusFilter === 'issued' && r._derivedStatus === 'issued');
+      return matchesStatus && (!q || r.style_code.toLowerCase().includes(q));
+    });
+    list = [...list].sort((a, b) => {
+      switch (runSort) {
+        case 'last_cut_desc': return b.last_append_date.localeCompare(a.last_append_date) || maxEntryId(b) - maxEntryId(a);
+        case 'last_cut_asc':  return a.last_append_date.localeCompare(b.last_append_date) || maxEntryId(a) - maxEntryId(b);
+        case 'first_cut_desc':return b.first_cut_date.localeCompare(a.first_cut_date)     || maxEntryId(b) - maxEntryId(a);
+        case 'first_cut_asc': return a.first_cut_date.localeCompare(b.first_cut_date)     || maxEntryId(a) - maxEntryId(b);
+        case 'pieces_desc': {
+          const ta = a.pieces.reduce((s, p) => s + p.quantity, 0);
+          const tb = b.pieces.reduce((s, p) => s + p.quantity, 0);
+          return tb - ta || maxEntryId(b) - maxEntryId(a);
+        }
+        case 'style_asc': return a.style_code.localeCompare(b.style_code) || maxEntryId(b) - maxEntryId(a);
+        default: return b.last_append_date.localeCompare(a.last_append_date) || maxEntryId(b) - maxEntryId(a);
+      }
+    });
+    return list;
+  }, [runs, productionBatches, runStatusFilter, runSearchTerm, runSort]);
+
+  return (
+    <>
+      <div className="flex gap-1 mb-3 bg-white p-1 rounded-md border border-stone-200 w-fit">
+        <SubTabBtn active={cuttingsView === 'list'} onClick={() => setTab('list')}>
+          <Scissors className="w-3.5 h-3.5" /> Style Runs
+        </SubTabBtn>
+        <SubTabBtn active={cuttingsView === 'by_style'} onClick={() => setTab('by_style')}>
+          <Boxes className="w-3.5 h-3.5" /> Stock by Style
+        </SubTabBtn>
+      </div>
+
+      {cuttingsView === 'list' && (
+        <RunsListView runs={filteredRuns} allRuns={runs} stats={stats}
+          runStatusFilter={runStatusFilter} setRunStatusFilter={setRunStatusFilter}
+          searchTerm={runSearchTerm} setSearchTerm={setRunSearchTerm}
+          sortBy={runSort} setSortBy={setRunSort}
+          onAddCutting={onAddCutting}
+          onIssue={onIssue}
+          getIssuedQty={getIssuedQty}
+          getIssuedBySizeMap={getIssuedBySizeMap}
+          expandedRunId={expandedRunId} setExpandedRunId={setExpandedRunId}
+          getInventory={getInventory}
+          onEditEntry={onEditEntry}
+          onDeleteEntry={onDeleteEntry}
+          pipelineHealthAlerts={pipelineHealthAlerts} />
+      )}
+
+      {cuttingsView === 'by_style' && (
+        <StockByStyleView styleRollup={styleRollup}
+          searchTerm={stockSearchTerm} setSearchTerm={setStockSearchTerm}
+          flagFilter={stockFlagFilter} setFlagFilter={setStockFlagFilter}
+          onAddCutting={onAddCutting}
+          onMarkFinished={onIssue} />
+      )}
+    </>
   );
 }
 
@@ -2927,7 +2906,8 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
   );
 }
 
-function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, pipelineRawData, refreshPipelineData, fetchPipelineHealthData }) {
+function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, pipelineRawData, refreshPipelineData, fetchPipelineHealthData }) {
+  const navigate = useNavigate();
   const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
@@ -3121,8 +3101,12 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
           const perm = pagePermMap[a.page];
           if (perm && !can(perm)) return;
           if (a.page === 'inventory' && a.filters) {
-            if (a.filters.fabricTypeId && a.filters.fabricTypeId !== 'all') setInvFabricFilter(String(a.filters.fabricTypeId));
-            if (a.filters.color) setInvColorFilter(a.filters.color);
+            const params = new URLSearchParams();
+            if (a.filters.fabricTypeId && a.filters.fabricTypeId !== 'all') params.set('fabric', String(a.filters.fabricTypeId));
+            if (a.filters.color) params.set('color', a.filters.color);
+            const qs = params.toString();
+            navigate(`/inventory${qs ? '?' + qs : ''}`);
+            return;
           }
           onNavigate(a.page);
         };
@@ -3168,7 +3152,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
           const cardBtn = cardBase + " hover:border-stone-300 hover:bg-stone-50 active:scale-[0.99]";
           return (<>
             {canCuttings
-              ? <button onClick={() => { onNavigate('cuttings'); setCuttingsView('by_style'); }} className={cardBtn}>
+              ? <button onClick={() => navigate('/cuttings/by-style')} className={cardBtn}>
                   <div className="text-[11px] text-stone-500 uppercase tracking-wide mb-1.5">Cuttings Available</div>
                   <div className="text-xl sm:text-2xl font-bold text-stone-900">{keyNumbers.cuttingsAvailable}</div>
                   <div className="text-[11px] text-stone-400 mt-1">pieces yet to be issued</div>
@@ -3224,7 +3208,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
         <div>
           <div className="flex items-center justify-between mb-2 px-0.5">
             <div className="text-xs font-semibold text-stone-700 uppercase tracking-wide">Active Pipeline</div>
-            {can('can_view_analytics') && <button onClick={() => { setAnalyticsSection('pipeline'); onNavigate('analytics'); }} className="text-xs text-stone-500 hover:text-stone-900 font-medium">Full view →</button>}
+            {can('can_view_analytics') && <button onClick={() => navigate('/analytics/pipeline')} className="text-xs text-stone-500 hover:text-stone-900 font-medium">Full view →</button>}
           </div>
           <div className="space-y-2">
             {pipeline.map(p => {
@@ -3599,16 +3583,17 @@ function DashStat({ icon, label, value, sub, accent }) {
   );
 }
 
-function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onToggleStyleCodeDiscontinued, onAddKarigar, onDeleteKarigar, onToggleKarigarActive, onUpdateKarigarPaymentType, showToast, initialTab, onTabChange }) {
+function MastersPage({ fabricTypes, suppliers, styleCodes, karigars, inventory, runs, onAddFabricType, onUpdateFabricType, onDeleteFabricType, onAddSupplier, onUpdateSupplier, onDeleteSupplier, onAddStyleCode, onUpdateStyleCode, onDeleteStyleCode, onToggleStyleCodeDiscontinued, onAddKarigar, onDeleteKarigar, onToggleKarigarActive, onUpdateKarigarPaymentType, showToast }) {
   const { can } = usePermissions();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const canEdit = can('can_edit_masters');
   const canDelete = can('can_delete_masters');
-  const [activeTab, setActiveTab] = useState(initialTab || 'fabric_types');
 
-  const handleTabChange = (tab) => {
-    setActiveTab(tab);
-    if (onTabChange) onTabChange(tab);
-  };
+  // ── Derive active tab from URL ───────────────────────────────────────────
+  const mastersSlug = pathname.startsWith('/masters/') ? pathname.slice('/masters/'.length) : null;
+  const activeTab = (mastersSlug && MASTERS_SLUG_TO_TAB[mastersSlug]) ?? 'fabric_types';
+  const handleTabChange = (tab) => navigate(`/masters/${MASTERS_TAB_TO_SLUG[tab] ?? 'fabric-types'}`);
   const [editingFabricType, setEditingFabricType] = useState(null);
   const [editingSupplier, setEditingSupplier] = useState(null);
   const [editingStyleCode, setEditingStyleCode] = useState(null);
@@ -4368,11 +4353,20 @@ function SupplierFormModal({ existing, onClose, onSave }) {
   );
 }
 
-function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, getCostingTotal, searchTerm, setSearchTerm, fabricFilter, setFabricFilter, sortBy, setSortBy, onAdd, onEdit, onDuplicate, onDelete }) {
+function CostingPage({ costings, styleCodes, fabricTypes, getMaxCostPerMeter, getCostingTotal, onAdd, onEdit, onDuplicate, onDelete }) {
   const { can } = usePermissions();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canEdit = can('can_edit_costing');
   const canDelete = can('can_delete_costing');
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  // ── URL-backed filter state ──────────────────────────────────────────────
+  const searchTerm  = searchParams.get('q')      ?? '';
+  const fabricFilter = searchParams.get('fabric') ?? 'all';
+  const sortBy       = searchParams.get('sort')   ?? 'style_asc';
+  const setSearchTerm   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
+  const setFabricFilter = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all' ? n.set('fabric', v) : n.delete('fabric'); return n; }, { replace: true });
+  const setSortBy       = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'style_asc' ? n.set('sort', v) : n.delete('sort'); return n; }, { replace: true });
 
   const sortOptions = [
     { value: 'style_asc', label: 'Style code A-Z' },
@@ -8876,9 +8870,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
 function PaymentsPage({ karigars, batches, costings, getCostingTotal, karigarPayments, onRecordPayment, onEditPayment, onDeletePayment }) {
   const { can } = usePermissions();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canEditPayments = can('can_edit_payments');
   const [payingKarigarId, setPayingKarigarId] = useState(null);
-  const [search, setSearch] = useState('');
+
+  // ── URL-backed filter state ──────────────────────────────────────────────
+  const search = searchParams.get('q') ?? '';
+  const setSearch = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
 
   // For each piece-rate karigar, compute earnings from completed batches
   const karigarStats = useMemo(() => {
