@@ -107,12 +107,24 @@ const ANALYTICS_SLUG_TO_TAB = Object.fromEntries(
   Object.entries(ANALYTICS_TAB_TO_SLUG).map(([tab, slug]) => [slug, tab])
 );
 
+// Production tab slug ↔ view-id mapping
+const PROD_TAB_TO_SLUG = {
+  batches:         'batches',
+  performance:     'performance',
+  pipeline_health: 'pipeline-health',
+};
+const PROD_SLUG_TO_TAB = Object.fromEntries(
+  Object.entries(PROD_TAB_TO_SLUG).map(([tab, slug]) => [slug, tab])
+);
+
 export default function FabricCuttingModule() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
-  // Derive active page — /analytics/* sub-paths all belong to the 'analytics' page
-  const activePage = pathname.startsWith('/analytics') ? 'analytics' : (PATH_TO_PAGE[pathname] ?? 'home');
+  // Derive active page — /analytics/* and /production/* sub-paths belong to their parent pages
+  const activePage = pathname.startsWith('/analytics') ? 'analytics'
+    : pathname.startsWith('/production/') ? 'production'
+    : (PATH_TO_PAGE[pathname] ?? 'home');
   const setActivePage = (page) => navigate(PAGE_TO_PATH[page] ?? '/');
 
   // Derive analytics sub-tab from URL path, e.g. /analytics/returns → 'returns'
@@ -145,6 +157,16 @@ export default function FabricCuttingModule() {
   // Redirect bare /analytics to default tab
   useEffect(() => {
     if (pathname === '/analytics') navigate('/analytics/inventory-value', { replace: true });
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Redirect bare /production to default tab
+  useEffect(() => {
+    if (pathname === '/production') navigate('/production/batches', { replace: true });
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-fetch pipeline health when navigating to that tab
+  useEffect(() => {
+    if (pathname === '/production/pipeline-health') fetchPipelineHealthData();
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
   const [navOpen, setNavOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -183,15 +205,9 @@ export default function FabricCuttingModule() {
   const [costingFabricFilter, setCostingFabricFilter] = useState('all');
   const [costingSort, setCostingSort] = useState('style_asc');
 
-  // Production
-  const [prodView, setProdView] = useState('batches');
-
-  // ── Pipeline Health state (lifted so ProductionPage + alerts can share it) ─
+  // ── Pipeline Health data (fetched here, shared with ProductionPage) ────────
   const [pipelineHealthData, setPipelineHealthData] = useState([]);
   const [pipelineHealthLoading, setPipelineHealthLoading] = useState(false);
-  const [pipelineHealthFilter, setPipelineHealthFilter] = useState('all');
-  const [pipelineHealthStyle, setPipelineHealthStyle] = useState('');
-  const [pipelineActiveRunsOnly, setPipelineActiveRunsOnly] = useState(false);
 
   const fetchPipelineHealthData = async () => {
     setPipelineHealthLoading(true);
@@ -610,7 +626,6 @@ export default function FabricCuttingModule() {
             setInvFabricFilter={setInvFabricFilter}
             setInvColorFilter={setInvColorFilter}
             setAnalyticsSection={setAnalyticsSection}
-            setProdView={setProdView}
             pipelineRawData={pipelineRawDash}
             refreshPipelineData={refreshPipelineDash}
             fetchPipelineHealthData={fetchPipelineHealthData}
@@ -721,20 +736,12 @@ export default function FabricCuttingModule() {
             batches={productionBatches}
             karigars={karigars}
             runs={runs}
-            prodView={prodView}
-            setProdView={setProdView}
             onCompleteBatch={completeBatch}
             onDeleteBatch={deleteProductionBatch}
             onEditCompletedDate={editBatchCompletedDate}
             onEditBatch={editProductionBatch}
             pipelineHealthData={pipelineHealthData}
             pipelineHealthLoading={pipelineHealthLoading}
-            pipelineHealthFilter={pipelineHealthFilter}
-            setPipelineHealthFilter={setPipelineHealthFilter}
-            pipelineHealthStyle={pipelineHealthStyle}
-            setPipelineHealthStyle={setPipelineHealthStyle}
-            pipelineActiveRunsOnly={pipelineActiveRunsOnly}
-            setPipelineActiveRunsOnly={setPipelineActiveRunsOnly}
             fetchPipelineHealthData={fetchPipelineHealthData}
             showToast={showToast}
           />
@@ -2920,7 +2927,7 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
   );
 }
 
-function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, setProdView, pipelineRawData, refreshPipelineData, fetchPipelineHealthData }) {
+function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, costings, getCostingTotal, alertSettings, saveAlertSettings, onNavigate, setCuttingsView, setInvFabricFilter, setInvColorFilter, setAnalyticsSection, pipelineRawData, refreshPipelineData, fetchPipelineHealthData }) {
   const { can } = usePermissions();
   const today = localToday();
   const thisMonth = today.slice(0, 7);
@@ -3131,7 +3138,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
               <AlertGroup label="Stock Alerts" alerts={inventoryAlerts} onAlertTap={handleAlertTap} />
             )}
             {pipelineAlerts.length > 0 && (
-              <PipelineAlertGroup alerts={pipelineAlerts} onNavigate={onNavigate} setProdView={setProdView} />
+              <PipelineAlertGroup alerts={pipelineAlerts} />
             )}
             {otherAlerts.map((a, i) => (
               <button
@@ -3488,7 +3495,8 @@ function AlertGroup({ label, alerts, onAlertTap }) {
   );
 }
 
-function PipelineAlertGroup({ alerts, onNavigate, setProdView }) {
+function PipelineAlertGroup({ alerts }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const hasCritical = alerts.some(a => a.alert_level === 'critical');
   const hasWarning  = alerts.some(a => a.alert_level === 'warning');
@@ -3557,7 +3565,7 @@ function PipelineAlertGroup({ alerts, onNavigate, setProdView }) {
             return (
               <button
                 key={i}
-                onClick={() => { setProdView('pipeline_health'); onNavigate('production'); }}
+                onClick={() => navigate('/production/pipeline-health')}
                 className={`w-full text-left flex items-start gap-2.5 px-3 py-2.5 text-xs transition ${rowColor}`}
               >
                 <span className="flex-shrink-0 mt-0.5 opacity-70">{emoji}</span>
@@ -5315,27 +5323,50 @@ function PipelineHealthView({
 }
 
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
-function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs, pipelineHealthData, pipelineHealthLoading, pipelineHealthFilter, setPipelineHealthFilter, pipelineHealthStyle, setPipelineHealthStyle, pipelineActiveRunsOnly, setPipelineActiveRunsOnly, fetchPipelineHealthData, showToast }) {
+function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs, pipelineHealthData, pipelineHealthLoading, fetchPipelineHealthData, showToast }) {
   const { can } = usePermissions();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canEditProduction = can('can_edit_production');
   const canDeleteProduction = can('can_delete_production');
-  const [batchFilter, setBatchFilter] = useState('issued');
-  const [batchSearch, setBatchSearch] = useState('');
-  const [batchKarigarFilter, setBatchKarigarFilter] = useState('all');
+
+  // ── Derive active tab from URL path ─────────────────────────────────────
+  const prodSlug = pathname.startsWith('/production/') ? pathname.slice('/production/'.length) : null;
+  const prodView = (prodSlug && PROD_SLUG_TO_TAB[prodSlug]) ?? 'batches';
+  const setTab = (view) => navigate(`/production/${PROD_TAB_TO_SLUG[view] ?? 'batches'}`);
+
+  // ── URL-backed filter state ──────────────────────────────────────────────
+  // Batches tab
+  const batchFilter        = searchParams.get('status')  ?? 'issued';
+  const batchSearch        = searchParams.get('q')       ?? '';
+  const batchKarigarFilter = searchParams.get('karigar') ?? 'all';
+  const setBatchFilter        = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'issued' ? n.set('status', v)  : n.delete('status');  return n; }, { replace: true });
+  const setBatchSearch        = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
+  const setBatchKarigarFilter = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all'    ? n.set('karigar', v) : n.delete('karigar'); return n; }, { replace: true });
+
+  // Performance tab
+  const dashRange  = searchParams.get('range') ?? '30d';
+  const customFrom = searchParams.get('from')  ?? '';
+  const customTo   = searchParams.get('to')    ?? localToday();
+  const setDashRange  = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== '30d'   ? n.set('range', v) : n.delete('range'); return n; }, { replace: true });
+  const setCustomFrom = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('from', v) : n.delete('from'); return n; }, { replace: true });
+  const setCustomTo   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('to', v)   : n.delete('to');   return n; }, { replace: true });
+
+  // Pipeline Health tab
+  const pipelineHealthFilter   = searchParams.get('filter')    ?? 'all';
+  const pipelineHealthStyle    = searchParams.get('style')     ?? '';
+  const pipelineActiveRunsOnly = searchParams.get('activeOnly') === '1';
+  const setPipelineHealthFilter   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all' ? n.set('filter', v)    : n.delete('filter');    return n; }, { replace: true });
+  const setPipelineHealthStyle    = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('style', v)     : n.delete('style');     return n; }, { replace: true });
+  const setPipelineActiveRunsOnly = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('activeOnly', '1') : n.delete('activeOnly'); return n; }, { replace: true });
+
+  // Non-URL local state (modals, UI toggles)
   const [completingAssignment, setCompletingAssignment] = useState(null);
   const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState(null);
   const [editingDateBatchId, setEditingDateBatchId] = useState(null);
   const [editingBatchId, setEditingBatchId] = useState(null);
-  const [dashRange, setDashRange] = useState('30d');
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState(localToday());
   const [expandedKarigar, setExpandedKarigar] = useState(null);
-
-  // Auto-fetch pipeline health data when tab is activated
-  useEffect(() => {
-    if (prodView === 'pipeline_health') fetchPipelineHealthData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prodView]);
 
   // Karigar performance stats — equal split of completed per karigar
   const perfStats = useMemo(() => {
@@ -5455,9 +5486,9 @@ function ProductionPage({ batches, karigars, prodView, setProdView, onCompleteBa
     <div className="space-y-3">
       {/* Sub-tabs */}
       <div className="flex gap-1 bg-white p-1 rounded-md border border-stone-200 w-fit overflow-x-auto max-w-full">
-        <SubTabBtn active={prodView === 'batches'} onClick={() => setProdView('batches')}><Package className="w-3.5 h-3.5" /> Batches</SubTabBtn>
-        <SubTabBtn active={prodView === 'performance'} onClick={() => setProdView('performance')}><TrendingDown className="w-3.5 h-3.5" /> Karigar Performance</SubTabBtn>
-        <SubTabBtn active={prodView === 'pipeline_health'} onClick={() => setProdView('pipeline_health')}><BarChart2 className="w-3.5 h-3.5" /> Pipeline Health</SubTabBtn>
+        <SubTabBtn active={prodView === 'batches'} onClick={() => setTab('batches')}><Package className="w-3.5 h-3.5" /> Batches</SubTabBtn>
+        <SubTabBtn active={prodView === 'performance'} onClick={() => setTab('performance')}><TrendingDown className="w-3.5 h-3.5" /> Karigar Performance</SubTabBtn>
+        <SubTabBtn active={prodView === 'pipeline_health'} onClick={() => setTab('pipeline_health')}><BarChart2 className="w-3.5 h-3.5" /> Pipeline Health</SubTabBtn>
       </div>
 
       {/* ── BATCHES ── */}
