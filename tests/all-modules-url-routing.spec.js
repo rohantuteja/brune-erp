@@ -108,20 +108,40 @@ test.describe('Masters URL routing', () => {
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 test.describe('Inventory URL routing', () => {
 
-  test('I1: ?status=all shows all inventory', async ({ page }) => {
+  test('I1: filters actually work — ?status=all shows more rows than default (available only)', async ({ page }) => {
+    // Default: only 'available' items shown
+    await page.goto('/inventory');
+    await expect(page.locator('table tbody tr').first()).toBeVisible({ timeout: 8000 });
+    const defaultRows = await page.locator('table tbody tr').count();
+
+    // ?status=all: all statuses shown (should be >= available count)
     await page.goto('/inventory?status=all');
-    await expect(page).toHaveURL(/\/inventory\?status=all/);
-    await page.reload();
-    await expect(page).toHaveURL(/\/inventory\?status=all/);
+    await expect(page.locator('table tbody tr').first()).toBeVisible({ timeout: 8000 });
+    const allRows = await page.locator('table tbody tr').count();
+
+    expect(allRows).toBeGreaterThanOrEqual(defaultRows);
   });
 
-  test('I2: ?q= search persists on reload', async ({ page }) => {
-    await page.goto('/inventory?q=cotton');
-    await page.reload();
-    await expect(page).toHaveURL(/\/inventory\?q=cotton/);
+  test('I2: search filter actually narrows the list to zero for nonsense query', async ({ page }) => {
+    await page.goto('/inventory?status=all');
+    await expect(page.locator('table tbody tr').first()).toBeVisible({ timeout: 8000 });
+    const allRows = await page.locator('table tbody tr').count();
+    expect(allRows).toBeGreaterThan(0);
+
+    // A query that won't match any inventory number, fabric, color, or supplier
+    await page.goto('/inventory?status=all&q=zzznomatchxyz9999');
+    await expect(page.getByText('No items found.').first()).toBeVisible({ timeout: 8000 });
   });
 
-  test('I3: no console errors on inventory page', async ({ page }) => {
+  test('I3: URL params persist on reload', async ({ page }) => {
+    await page.goto('/inventory?status=all&q=roll');
+    await page.reload();
+    await expect(page).toHaveURL(/\/inventory\?status=all&q=roll/);
+    // Page should still be showing inventory (not login)
+    await expect(page.getByPlaceholder('Search inventory...')).toBeVisible({ timeout: 8000 });
+  });
+
+  test('I4: no console errors on inventory page', async ({ page }) => {
     const errors = [];
     page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
     page.on('pageerror', err => errors.push(err.message));

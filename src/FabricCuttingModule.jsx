@@ -863,6 +863,64 @@ function InventoryTable({
     { value: 'stock_desc', label: 'Stock: high to low' },
   ];
 
+  // ── Apply filters + sort to produce the visible list ────────────────────
+  const filtered = useMemo(() => {
+    const q = searchTerm.toLowerCase().trim();
+    let list = inventory.filter(i => {
+      const ft = getFabricType(i.fabric_type_id);
+      const sup = getSupplier(i.supplier_id);
+      const matchesSearch = !q ||
+        i.inventory_number.toLowerCase().includes(q) ||
+        (i.color || '').toLowerCase().includes(q) ||
+        (ft?.name || '').toLowerCase().includes(q) ||
+        (sup?.name || '').toLowerCase().includes(q) ||
+        (i.notes || '').toLowerCase().includes(q);
+      const matchesStatus   = statusFilter === 'all'   || i.status === statusFilter;
+      const matchesFormat   = formatFilter === 'all'   || i.format === formatFilter;
+      const matchesFabric   = fabricFilter === 'all'   || i.fabric_type_id === parseInt(fabricFilter);
+      const matchesSupplier = supplierFilter === 'all' || i.supplier_id === parseInt(supplierFilter);
+      const matchesColor    = colorFilter === 'all'    || i.color === colorFilter;
+      let matchesLowStock = true;
+      if (lowStockOnly) {
+        const isRoll = i.format === 'roll';
+        const initial = isRoll ? i.initial_weight_kg : i.initial_length_m;
+        const current = isRoll ? i.current_weight_kg : i.current_length_m;
+        matchesLowStock = initial > 0 && (current / initial) <= 0.2;
+      }
+      return matchesSearch && matchesStatus && matchesFormat && matchesFabric && matchesSupplier && matchesColor && matchesLowStock;
+    });
+
+    list = [...list].sort((a, b) => {
+      switch (sortBy) {
+        case 'added_desc': return b.id - a.id;
+        case 'added_asc':  return a.id - b.id;
+        case 'received_desc': {
+          const da = a.received_date ? new Date(a.received_date).getTime() : 0;
+          const db = b.received_date ? new Date(b.received_date).getTime() : 0;
+          return db !== da ? db - da : b.id - a.id;
+        }
+        case 'received_asc': {
+          const da = a.received_date ? new Date(a.received_date).getTime() : 0;
+          const db = b.received_date ? new Date(b.received_date).getTime() : 0;
+          return da !== db ? da - db : a.id - b.id;
+        }
+        case 'number_asc': return (a.inventory_number || '').localeCompare(b.inventory_number || '');
+        case 'stock_asc': {
+          const ca = parseFloat(a.format === 'roll' ? a.current_weight_kg : a.current_length_m) || 0;
+          const cb = parseFloat(b.format === 'roll' ? b.current_weight_kg : b.current_length_m) || 0;
+          return ca - cb;
+        }
+        case 'stock_desc': {
+          const ca = parseFloat(a.format === 'roll' ? a.current_weight_kg : a.current_length_m) || 0;
+          const cb = parseFloat(b.format === 'roll' ? b.current_weight_kg : b.current_length_m) || 0;
+          return cb - ca;
+        }
+        default: return b.id - a.id;
+      }
+    });
+    return list;
+  }, [inventory, searchTerm, statusFilter, formatFilter, fabricFilter, supplierFilter, colorFilter, lowStockOnly, sortBy, getFabricType, getSupplier]);
+
   return (
     <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
       <div className="p-3 sm:p-4 border-b border-stone-200">
@@ -936,7 +994,7 @@ function InventoryTable({
         {/* Active filters indicator */}
         {(searchTerm || advancedFilterCount > 0 || statusFilter !== 'all' || formatFilter !== 'all') && (
           <div className="mt-2 text-[11px] text-stone-500">
-            Showing <span className="font-medium text-stone-700">{inventory.length}</span> of {allInventory.length} items
+            Showing <span className="font-medium text-stone-700">{filtered.length}</span> of {allInventory.length} items
           </div>
         )}
       </div>
@@ -951,7 +1009,7 @@ function InventoryTable({
             </tr>
           </thead>
           <tbody>
-            {inventory.map(i => {
+            {filtered.map(i => {
               const isRoll = i.format === 'roll';
               const initial = isRoll ? i.initial_weight_kg : i.initial_length_m;
               const current = isRoll ? i.current_weight_kg : i.current_length_m;
@@ -994,12 +1052,12 @@ function InventoryTable({
             })}
           </tbody>
         </table>
-        {inventory.length === 0 && <div className="p-12 text-center text-stone-400 text-sm">No items found.</div>}
+        {filtered.length === 0 && <div className="p-12 text-center text-stone-400 text-sm">No items found.</div>}
       </div>
 
       {/* Mobile card layout */}
       <div className="md:hidden divide-y divide-stone-100">
-        {inventory.map(i => {
+        {filtered.map(i => {
           const isRoll = i.format === 'roll';
           const initial = isRoll ? i.initial_weight_kg : i.initial_length_m;
           const current = isRoll ? i.current_weight_kg : i.current_length_m;
@@ -1057,7 +1115,7 @@ function InventoryTable({
             </div>
           );
         })}
-        {inventory.length === 0 && <div className="p-12 text-center text-stone-400 text-sm">No items found.</div>}
+        {filtered.length === 0 && <div className="p-12 text-center text-stone-400 text-sm">No items found.</div>}
       </div>
 
       {confirmDeleteId !== null && (
