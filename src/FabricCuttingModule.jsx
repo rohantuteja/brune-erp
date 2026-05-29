@@ -5184,7 +5184,7 @@ function PipelineHealthView({
           ))}
           <span className="text-stone-300 select-none">|</span>
           <button
-            onClick={() => setPipelineActiveRunsOnly(v => !v)}
+            onClick={() => setPipelineActiveRunsOnly(!pipelineActiveRunsOnly)}
             className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
               pipelineActiveRunsOnly
                 ? 'bg-stone-900 text-white border-stone-900'

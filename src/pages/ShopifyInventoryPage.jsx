@@ -241,7 +241,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
         <span className="text-stone-300 select-none">|</span>
 
         <button
-          onClick={() => setActiveRunsOnly(v => !v)}
+          onClick={() => setActiveRunsOnly(!activeRunsOnly)}
           className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
             activeRunsOnly
               ? 'bg-stone-900 text-white border-stone-900'
@@ -255,7 +255,7 @@ export default function ShopifyInventoryPage({ runs = [], productionBatches = []
         <span className="text-stone-300 select-none">|</span>
 
         <button
-          onClick={() => setShowZeroStock(v => !v)}
+          onClick={() => setShowZeroStock(!showZeroStock)}
           className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
             showZeroStock
               ? 'bg-stone-900 text-white border-stone-900'

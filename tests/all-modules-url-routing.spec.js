@@ -192,6 +192,24 @@ test.describe('Payments URL routing', () => {
   });
 });
 
+// ─── PIPELINE HEALTH TOGGLE ──────────────────────────────────────────────────
+test.describe('Pipeline Health toggle filters', () => {
+
+  test('PH1: Active runs only — can be toggled on AND off', async ({ page }) => {
+    await page.goto('/production/pipeline-health');
+    const toggleBtn = page.getByRole('button', { name: 'Active runs only' });
+    await expect(toggleBtn).toBeVisible({ timeout: 10000 });
+
+    // Toggle ON → URL should gain activeOnly=1
+    await toggleBtn.click();
+    await expect(page).toHaveURL(/activeOnly=1/);
+
+    // Toggle OFF → URL should lose activeOnly
+    await toggleBtn.click();
+    await expect(page).not.toHaveURL(/activeOnly/);
+  });
+});
+
 // ─── SHOPIFY ─────────────────────────────────────────────────────────────────
 test.describe('Shopify URL routing', () => {
 
@@ -201,7 +219,21 @@ test.describe('Shopify URL routing', () => {
     await expect(page).toHaveURL(/\/shopify\?sort=style_asc&activeOnly=1/);
   });
 
-  test('S2: no console errors on shopify page', async ({ page }) => {
+  test('S2: Active runs only toggle — can be toggled on AND off', async ({ page }) => {
+    await page.goto('/shopify');
+    const toggleBtn = page.getByRole('button', { name: /Active runs only/i });
+    await expect(toggleBtn).toBeVisible({ timeout: 8000 });
+
+    // Toggle ON
+    await toggleBtn.click();
+    await expect(page).toHaveURL(/activeOnly=1/);
+
+    // Toggle OFF
+    await toggleBtn.click();
+    await expect(page).not.toHaveURL(/activeOnly/);
+  });
+
+  test('S3: no console errors on shopify page', async ({ page }) => {
     const errors = [];
     page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
     page.on('pageerror', err => errors.push(err.message));
