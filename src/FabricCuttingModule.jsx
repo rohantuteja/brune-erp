@@ -1003,6 +1003,10 @@ function InventoryTable({
                 <button onClick={clearAllFilters} className="text-xs text-stone-600 hover:text-stone-900 font-medium">Clear all</button>
               )}
             </div>
+            <div className="flex items-center gap-2 mb-3">
+              <input type="checkbox" id="lowstock" checked={lowStockOnly} onChange={e => setLowStockOnly(e.target.checked)} className="w-4 h-4" />
+              <label htmlFor="lowstock" className="text-sm text-stone-700">Show only low-stock items (≤20% remaining)</label>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label="Fabric Type">
                 <select value={fabricFilter} onChange={e => setFabricFilter(e.target.value)} className="form-input">
@@ -1022,10 +1026,6 @@ function InventoryTable({
                   {distinctColors.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </Field>
-              <div className="sm:col-span-3 flex items-center gap-2">
-                <input type="checkbox" id="lowstock" checked={lowStockOnly} onChange={e => setLowStockOnly(e.target.checked)} className="w-4 h-4" />
-                <label htmlFor="lowstock" className="text-sm text-stone-700">Show only low-stock items (≤20% remaining)</label>
-              </div>
               {/* ── Used by Style filter ────────────────────────────────── */}
               <div className="sm:col-span-3">
                 <div className="text-xs font-medium text-stone-600 mb-1.5">Used by Style</div>
