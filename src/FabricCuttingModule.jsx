@@ -522,7 +522,7 @@ export default function FabricCuttingModule() {
 
         {activePage === 'inventory' && (
           <InventoryTable inventory={inventory} allInventory={inventory} getFabricType={getFabricType} getSupplier={getSupplier}
-            fabricTypes={fabricTypes} suppliers={suppliers}
+            fabricTypes={fabricTypes} suppliers={suppliers} runs={runs}
             onAdd={() => setShowAdd(true)}
             onEdit={(id) => setEditingStockId(id)}
             onDuplicate={(id) => setDuplicatingFromId(id)}
@@ -795,7 +795,7 @@ export default function FabricCuttingModule() {
 
 function InventoryTable({
   inventory, allInventory, getFabricType, getSupplier,
-  fabricTypes, suppliers,
+  fabricTypes, suppliers, runs = [],
   onAdd, onEdit, onDelete, onDuplicate
 }) {
   const { can } = usePermissions();
@@ -814,6 +814,7 @@ function InventoryTable({
   const colorFilter    = searchParams.get('color')    ?? 'all';
   const lowStockOnly   = searchParams.get('lowStock') === '1';
   const sortBy         = searchParams.get('sort')     ?? 'added_desc';
+  const styleFilter    = searchParams.get('style')    ?? '';   // style code, e.g. "TARA-WHITE-DRESS-51"
 
   const set = (key, val, def) => setSearchParams(p => {
     const n = new URLSearchParams(p);
@@ -829,6 +830,43 @@ function InventoryTable({
   const setColorFilter    = (v) => set('color', v, 'all');
   const setLowStockOnly   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('lowStock', '1') : n.delete('lowStock'); return n; }, { replace: true });
   const setSortBy         = (v) => set('sort', v, 'added_desc');
+  const setStyleFilter    = (v) => set('style', v, '');
+
+  // Style picker local UI state (not URL-backed — just search within the dropdown)
+  const [stylePickerOpen, setStylePickerOpen] = useState(false);
+  const [styleSearch, setStyleSearch] = useState('');
+
+  // Derive all style codes from runs for the dropdown
+  const allStyleCodes = useMemo(() =>
+    [...new Set(runs.map(r => r.style_code))].sort(),
+  [runs]);
+
+  // For the selected style: compute which (fabric_type_id, color) pairs it uses,
+  // then build a Set of inventory IDs that match — same logic as stock alerts
+  const styleMatchedInventoryIds = useMemo(() => {
+    if (!styleFilter) return null; // null = no style filter active
+    const styleRuns = runs.filter(r => r.style_code === styleFilter);
+    if (!styleRuns.length) return new Set();
+
+    // Collect unique (fabric_type_id, color) pairs from all cutting entries
+    const pairs = new Set();
+    styleRuns.forEach(r => {
+      r.entries.forEach(e => {
+        e.usage.forEach(u => {
+          const item = inventory.find(i => i.id === u.inventory_id);
+          if (item) pairs.add(`${item.fabric_type_id}|||${item.color ?? ''}`);
+        });
+      });
+    });
+
+    // Find all inventory items matching any of those pairs
+    const ids = new Set();
+    inventory.forEach(i => {
+      const key = `${i.fabric_type_id}|||${i.color ?? ''}`;
+      if (pairs.has(key)) ids.add(i.id);
+    });
+    return ids;
+  }, [styleFilter, runs, inventory]);
 
   const handleDelete = (id) => {
     setConfirmDeleteId(null);
@@ -845,12 +883,13 @@ function InventoryTable({
   const advancedFilterCount = (fabricFilter !== 'all' ? 1 : 0)
     + (supplierFilter !== 'all' ? 1 : 0)
     + (colorFilter !== 'all' ? 1 : 0)
-    + (lowStockOnly ? 1 : 0);
+    + (lowStockOnly ? 1 : 0)
+    + (styleFilter ? 1 : 0);
 
   const clearAllFilters = () => {
     setStatusFilter('all'); setFormatFilter('all');
     setFabricFilter('all'); setSupplierFilter('all'); setColorFilter('all');
-    setLowStockOnly(false);
+    setLowStockOnly(false); setStyleFilter('');
   };
 
   const sortOptions = [
@@ -887,7 +926,8 @@ function InventoryTable({
         const current = isRoll ? i.current_weight_kg : i.current_length_m;
         matchesLowStock = initial > 0 && (current / initial) <= 0.2;
       }
-      return matchesSearch && matchesStatus && matchesFormat && matchesFabric && matchesSupplier && matchesColor && matchesLowStock;
+      const matchesStyle = !styleMatchedInventoryIds || styleMatchedInventoryIds.has(i.id);
+      return matchesSearch && matchesStatus && matchesFormat && matchesFabric && matchesSupplier && matchesColor && matchesLowStock && matchesStyle;
     });
 
     list = [...list].sort((a, b) => {
@@ -919,7 +959,7 @@ function InventoryTable({
       }
     });
     return list;
-  }, [inventory, searchTerm, statusFilter, formatFilter, fabricFilter, supplierFilter, colorFilter, lowStockOnly, sortBy, getFabricType, getSupplier]);
+  }, [inventory, searchTerm, statusFilter, formatFilter, fabricFilter, supplierFilter, colorFilter, lowStockOnly, sortBy, styleMatchedInventoryIds, getFabricType, getSupplier]);
 
   return (
     <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
@@ -985,6 +1025,79 @@ function InventoryTable({
               <div className="sm:col-span-3 flex items-center gap-2">
                 <input type="checkbox" id="lowstock" checked={lowStockOnly} onChange={e => setLowStockOnly(e.target.checked)} className="w-4 h-4" />
                 <label htmlFor="lowstock" className="text-sm text-stone-700">Show only low-stock items (≤20% remaining)</label>
+              </div>
+              {/* ── Used by Style filter ────────────────────────────────── */}
+              <div className="sm:col-span-3">
+                <div className="text-xs font-medium text-stone-600 mb-1.5">Used by Style</div>
+                <div className="relative">
+                  <button
+                    onClick={() => { setStylePickerOpen(o => !o); setStyleSearch(''); }}
+                    className={`w-full sm:w-64 flex items-center justify-between gap-2 px-3 py-2 text-sm border rounded-md transition-colors ${
+                      styleFilter
+                        ? 'border-stone-900 bg-stone-900 text-white'
+                        : 'border-stone-300 bg-white text-stone-700 hover:border-stone-400'
+                    }`}
+                  >
+                    <span className="truncate font-mono">{styleFilter || 'All styles'}</span>
+                    <ChevronDown className={`w-4 h-4 flex-shrink-0 transition-transform ${stylePickerOpen ? 'rotate-180' : ''} ${styleFilter ? 'opacity-70' : 'text-stone-400'}`} />
+                  </button>
+                  {styleFilter && (
+                    <button
+                      onClick={() => setStyleFilter('')}
+                      className="absolute right-9 top-1/2 -translate-y-1/2 p-1 text-white hover:text-stone-200"
+                      title="Clear style filter"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {stylePickerOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setStylePickerOpen(false)} />
+                    <div className="absolute z-50 mt-1 w-full sm:w-64 bg-white border border-stone-200 rounded-lg shadow-lg overflow-hidden">
+                      <div className="p-2 border-b border-stone-100">
+                        <div className="flex items-center gap-2 px-2 py-1.5 bg-stone-50 rounded-md">
+                          <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+                          <input
+                            autoFocus
+                            type="text"
+                            value={styleSearch}
+                            onChange={e => setStyleSearch(e.target.value)}
+                            placeholder="Search styles..."
+                            className="flex-1 bg-transparent text-sm outline-none placeholder:text-stone-400"
+                          />
+                        </div>
+                      </div>
+                      <div className="max-h-56 overflow-y-auto">
+                        {allStyleCodes
+                          .filter(s => !styleSearch || s.toLowerCase().includes(styleSearch.toLowerCase()))
+                          .map(s => (
+                            <button
+                              key={s}
+                              onClick={() => { setStyleFilter(s === styleFilter ? '' : s); setStylePickerOpen(false); }}
+                              className={`w-full text-left px-4 py-2.5 text-sm font-mono transition-colors ${
+                                s === styleFilter
+                                  ? 'bg-stone-900 text-white'
+                                  : 'text-stone-800 hover:bg-stone-50'
+                              }`}
+                            >
+                              {s}
+                            </button>
+                          ))
+                        }
+                        {allStyleCodes.filter(s => !styleSearch || s.toLowerCase().includes(styleSearch.toLowerCase())).length === 0 && (
+                          <div className="px-4 py-3 text-sm text-stone-400">No styles found</div>
+                        )}
+                      </div>
+                    </div>
+                    </>
+                  )}
+                </div>
+                {styleFilter && styleMatchedInventoryIds !== null && (
+                  <p className="mt-1.5 text-xs text-stone-500">
+                    Showing fabric used by <span className="font-mono font-medium text-stone-700">{styleFilter}</span>
+                    {' '}({styleMatchedInventoryIds.size} item{styleMatchedInventoryIds.size !== 1 ? 's' : ''} match)
+                  </p>
+                )}
               </div>
             </div>
             <FormStyles />
