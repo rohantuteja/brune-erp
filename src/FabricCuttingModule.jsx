@@ -887,9 +887,13 @@ function InventoryTable({
     + (styleFilter ? 1 : 0);
 
   const clearAllFilters = () => {
-    setStatusFilter('all'); setFormatFilter('all');
-    setFabricFilter('all'); setSupplierFilter('all'); setColorFilter('all');
-    setLowStockOnly(false); setStyleFilter('');
+    setSearchParams(p => {
+      const n = new URLSearchParams(p);
+      n.delete('status'); n.delete('format');
+      n.delete('fabric'); n.delete('supplier'); n.delete('color');
+      n.delete('lowStock'); n.delete('style');
+      return n;
+    }, { replace: true });
   };
 
   const sortOptions = [
