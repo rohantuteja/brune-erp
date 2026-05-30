@@ -1022,10 +1022,6 @@ function InventoryTable({
                   {distinctColors.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </Field>
-              <div className="sm:col-span-3 flex items-center gap-2">
-                <input type="checkbox" id="lowstock" checked={lowStockOnly} onChange={e => setLowStockOnly(e.target.checked)} className="w-4 h-4" />
-                <label htmlFor="lowstock" className="text-sm text-stone-700">Show only low-stock items (≤20% remaining)</label>
-              </div>
               {/* ── Used by Style filter ────────────────────────────────── */}
               <div className="sm:col-span-3">
                 <div className="text-xs font-medium text-stone-600 mb-1.5">Used by Style</div>
@@ -1098,6 +1094,10 @@ function InventoryTable({
                     {' '}({styleMatchedInventoryIds.size} item{styleMatchedInventoryIds.size !== 1 ? 's' : ''} match)
                   </p>
                 )}
+              </div>
+              <div className="sm:col-span-3 flex items-center gap-2">
+                <input type="checkbox" id="lowstock" checked={lowStockOnly} onChange={e => setLowStockOnly(e.target.checked)} className="w-4 h-4" />
+                <label htmlFor="lowstock" className="text-sm text-stone-700">Show only low-stock items (≤20% remaining)</label>
               </div>
             </div>
             <FormStyles />
