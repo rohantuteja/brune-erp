@@ -6320,6 +6320,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [expandedSnapshotId, setExpandedSnapshotId] = useState(null);
   const [deletingSnapshotId, setDeletingSnapshotId] = useState(null);
   const [confirmDeleteSnapshotId, setConfirmDeleteSnapshotId] = useState(null);
+  const [invByFabricExpanded, setInvByFabricExpanded] = useState(false);
+  const [invBySupplierExpanded, setInvBySupplierExpanded] = useState(false);
 
   // ── Shopify Stock Value state ────────────────────────────────────────
   const [shopifyProducts, setShopifyProducts] = useState([]);
@@ -7311,63 +7313,75 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
           {/* By fabric type */}
           <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-            <div className="p-3 sm:p-4 border-b border-stone-200">
+            <button
+              onClick={() => setInvByFabricExpanded(p => !p)}
+              className="w-full p-3 sm:p-4 flex items-center justify-between hover:bg-stone-50 transition-colors"
+            >
               <div className="text-sm font-medium text-stone-900">By Fabric Type</div>
-            </div>
-            <div className="divide-y divide-stone-100">
-              {Object.entries(invStats.byFabric).sort((a, b) => b[1].value - a[1].value).map(([name, d]) => {
-                const pct = invStats.totalValue > 0 ? (d.value / invStats.totalValue * 100) : 0;
-                return (
-                  <div key={name} className="p-3 sm:p-4">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-sm font-medium text-stone-900">{name}</span>
-                      <span className="text-sm font-semibold text-stone-900">₹{d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+              <span className="text-stone-400 text-xs">{invByFabricExpanded ? '▲' : '▼'}</span>
+            </button>
+            {invByFabricExpanded && (
+              <div className="divide-y divide-stone-100 border-t border-stone-200">
+                {Object.entries(invStats.byFabric).sort((a, b) => b[1].value - a[1].value).map(([name, d]) => {
+                  const pct = invStats.totalValue > 0 ? (d.value / invStats.totalValue * 100) : 0;
+                  return (
+                    <div key={name} className="p-3 sm:p-4">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-medium text-stone-900">{name}</span>
+                        <span className="text-sm font-semibold text-stone-900">₹{d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1.5">
+                        <div className="h-full bg-stone-700 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="flex justify-between text-xs text-stone-500">
+                        <span>
+                          {d.kg > 0 && `${d.kg.toFixed(2)} kg`}
+                          {d.kg > 0 && d.m > 0 && ' · '}
+                          {d.m > 0 && `${d.m.toFixed(2)} m`}
+                        </span>
+                        <span>{pct.toFixed(1)}% of total</span>
+                      </div>
                     </div>
-                    <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1.5">
-                      <div className="h-full bg-stone-700 rounded-full" style={{ width: `${pct}%` }} />
-                    </div>
-                    <div className="flex justify-between text-xs text-stone-500">
-                      <span>
-                        {d.kg > 0 && `${d.kg.toFixed(2)} kg`}
-                        {d.kg > 0 && d.m > 0 && ' · '}
-                        {d.m > 0 && `${d.m.toFixed(2)} m`}
-                      </span>
-                      <span>{pct.toFixed(1)}% of total</span>
-                    </div>
-                  </div>
-                );
-              })}
-              {Object.keys(invStats.byFabric).length === 0 && (
-                <div className="p-8 text-center text-sm text-stone-400">No inventory data for this date.</div>
-              )}
-            </div>
+                  );
+                })}
+                {Object.keys(invStats.byFabric).length === 0 && (
+                  <div className="p-8 text-center text-sm text-stone-400">No inventory data for this date.</div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* By supplier */}
           <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-            <div className="p-3 sm:p-4 border-b border-stone-200">
+            <button
+              onClick={() => setInvBySupplierExpanded(p => !p)}
+              className="w-full p-3 sm:p-4 flex items-center justify-between hover:bg-stone-50 transition-colors"
+            >
               <div className="text-sm font-medium text-stone-900">By Supplier</div>
-            </div>
-            <div className="divide-y divide-stone-100">
-              {Object.entries(invStats.bySupplier).sort((a, b) => b[1].value - a[1].value).map(([name, d]) => {
-                const pct = invStats.totalValue > 0 ? (d.value / invStats.totalValue * 100) : 0;
-                return (
-                  <div key={name} className="p-3 sm:p-4">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-sm font-medium text-stone-900">{name}</span>
-                      <span className="text-sm font-semibold text-stone-900">₹{d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+              <span className="text-stone-400 text-xs">{invBySupplierExpanded ? '▲' : '▼'}</span>
+            </button>
+            {invBySupplierExpanded && (
+              <div className="divide-y divide-stone-100 border-t border-stone-200">
+                {Object.entries(invStats.bySupplier).sort((a, b) => b[1].value - a[1].value).map(([name, d]) => {
+                  const pct = invStats.totalValue > 0 ? (d.value / invStats.totalValue * 100) : 0;
+                  return (
+                    <div key={name} className="p-3 sm:p-4">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-medium text-stone-900">{name}</span>
+                        <span className="text-sm font-semibold text-stone-900">₹{d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1.5">
+                        <div className="h-full bg-stone-500 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="flex justify-between text-xs text-stone-500">
+                        <span>{d.count} item{d.count !== 1 ? 's' : ''}</span>
+                        <span>{pct.toFixed(1)}% of total</span>
+                      </div>
                     </div>
-                    <div className="w-full h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1.5">
-                      <div className="h-full bg-stone-500 rounded-full" style={{ width: `${pct}%` }} />
-                    </div>
-                    <div className="flex justify-between text-xs text-stone-500">
-                      <span>{d.count} item{d.count !== 1 ? 's' : ''}</span>
-                      <span>{pct.toFixed(1)}% of total</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* ── Monthly Snapshots ── */}
