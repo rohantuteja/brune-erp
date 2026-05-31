@@ -6322,6 +6322,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [confirmDeleteSnapshotId, setConfirmDeleteSnapshotId] = useState(null);
   const [invByFabricExpanded, setInvByFabricExpanded] = useState(false);
   const [invBySupplierExpanded, setInvBySupplierExpanded] = useState(false);
+  const [wipCuttingsExpanded, setWipCuttingsExpanded] = useState(false);
+  const [wipProductionExpanded, setWipProductionExpanded] = useState(false);
 
   // ── Shopify Stock Value state ────────────────────────────────────────
   const [shopifyProducts, setShopifyProducts] = useState([]);
@@ -8042,92 +8044,108 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           {/* Cuttings WIP by style */}
           {Object.keys(wipStats.cuttingsByStyle).length > 0 && (
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-              <div className="p-3 sm:p-4 border-b border-stone-200">
-                <div className="text-sm font-medium text-stone-900">Cuttings WIP by Style</div>
-                <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces cut but not yet issued · waiting to go to karigars</div>
-              </div>
-              <div className="divide-y divide-stone-100">
-                {Object.entries(wipStats.cuttingsByStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
-                  const pct = wipStats.cuttingsWip > 0 ? Math.round(d.value / wipStats.cuttingsWip * 100) : 0;
-                  return (
-                    <div key={code} className="p-3 sm:p-4">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
-                          {d.hasCost && d.qty > 0 && (
-                            <span className="text-xs text-stone-400">
-                              {d.qty} pcs × ₹{(d.value / d.qty).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
-                          )}
-                          {!d.hasCost && (
-                            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
-                          )}
+              <button
+                onClick={() => setWipCuttingsExpanded(p => !p)}
+                className="w-full p-3 sm:p-4 flex items-start justify-between hover:bg-stone-50 transition-colors text-left"
+              >
+                <div>
+                  <div className="text-sm font-medium text-stone-900">Cuttings WIP by Style</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces cut but not yet issued · waiting to go to karigars</div>
+                </div>
+                <span className="text-stone-400 text-xs mt-0.5 ml-2 shrink-0">{wipCuttingsExpanded ? '▲' : '▼'}</span>
+              </button>
+              {wipCuttingsExpanded && (
+                <div className="divide-y divide-stone-100 border-t border-stone-200">
+                  {Object.entries(wipStats.cuttingsByStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
+                    const pct = wipStats.cuttingsWip > 0 ? Math.round(d.value / wipStats.cuttingsWip * 100) : 0;
+                    return (
+                      <div key={code} className="p-3 sm:p-4">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
+                            {d.hasCost && d.qty > 0 && (
+                              <span className="text-xs text-stone-400">
+                                {d.qty} pcs × ₹{(d.value / d.qty).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            )}
+                            {!d.hasCost && (
+                              <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
+                            )}
+                          </div>
+                          <span className="text-sm font-semibold text-stone-900">
+                            {d.hasCost ? `₹${d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : `${d.qty} pcs`}
+                          </span>
                         </div>
-                        <span className="text-sm font-semibold text-stone-900">
-                          {d.hasCost ? `₹${d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : `${d.qty} pcs`}
-                        </span>
+                        {d.hasCost && (
+                          <>
+                            <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
+                              <div className="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <div className="flex justify-between text-[11px] text-stone-400">
+                              <span>{d.qty} pcs waiting to issue</span>
+                              <span>{pct}% of cuttings WIP</span>
+                            </div>
+                          </>
+                        )}
                       </div>
-                      {d.hasCost && (
-                        <>
-                          <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
-                            <div className="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                          <div className="flex justify-between text-[11px] text-stone-400">
-                            <span>{d.qty} pcs waiting to issue</span>
-                            <span>{pct}% of cuttings WIP</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
           {/* Production WIP by style */}
           {Object.keys(wipStats.byStyle).length > 0 && (
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-              <div className="p-3 sm:p-4 border-b border-stone-200">
-                <div className="text-sm font-medium text-stone-900">Production WIP by Style</div>
-                <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces issued to karigars but not yet completed · currently in stitching</div>
-              </div>
-              <div className="divide-y divide-stone-100">
-                {Object.entries(wipStats.byStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
-                  const pct = wipStats.productionWip > 0 ? Math.round(d.value / wipStats.productionWip * 100) : 0;
-                  return (
-                    <div key={code} className="p-3 sm:p-4">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
-                          {d.hasCost && d.qty > 0 && (
-                            <span className="text-xs text-stone-400">
-                              {d.qty} pcs × ₹{(d.value / d.qty).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
-                          )}
-                          {!d.hasCost && (
-                            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
-                          )}
+              <button
+                onClick={() => setWipProductionExpanded(p => !p)}
+                className="w-full p-3 sm:p-4 flex items-start justify-between hover:bg-stone-50 transition-colors text-left"
+              >
+                <div>
+                  <div className="text-sm font-medium text-stone-900">Production WIP by Style</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Fabric cost of pieces issued to karigars but not yet completed · currently in stitching</div>
+                </div>
+                <span className="text-stone-400 text-xs mt-0.5 ml-2 shrink-0">{wipProductionExpanded ? '▲' : '▼'}</span>
+              </button>
+              {wipProductionExpanded && (
+                <div className="divide-y divide-stone-100 border-t border-stone-200">
+                  {Object.entries(wipStats.byStyle).sort((a, b) => b[1].value - a[1].value).map(([code, d]) => {
+                    const pct = wipStats.productionWip > 0 ? Math.round(d.value / wipStats.productionWip * 100) : 0;
+                    return (
+                      <div key={code} className="p-3 sm:p-4">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
+                            {d.hasCost && d.qty > 0 && (
+                              <span className="text-xs text-stone-400">
+                                {d.qty} pcs × ₹{(d.value / d.qty).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            )}
+                            {!d.hasCost && (
+                              <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">no costing</span>
+                            )}
+                          </div>
+                          <span className="text-sm font-semibold text-stone-900">
+                            {d.hasCost ? `₹${d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : `${d.qty} pcs`}
+                          </span>
                         </div>
-                        <span className="text-sm font-semibold text-stone-900">
-                          {d.hasCost ? `₹${d.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : `${d.qty} pcs`}
-                        </span>
+                        {d.hasCost && (
+                          <>
+                            <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
+                              <div className="h-full bg-amber-400 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <div className="flex justify-between text-[11px] text-stone-400">
+                              <span>{d.qty} pcs with karigars</span>
+                              <span>{pct}% of production WIP</span>
+                            </div>
+                          </>
+                        )}
                       </div>
-                      {d.hasCost && (
-                        <>
-                          <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden mb-1">
-                            <div className="h-full bg-amber-400 rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                          <div className="flex justify-between text-[11px] text-stone-400">
-                            <span>{d.qty} pcs with karigars</span>
-                            <span>{pct}% of production WIP</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
