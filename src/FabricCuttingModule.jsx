@@ -6371,6 +6371,15 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     return date.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
   };
 
+  // Format a UTC timestamp as IST date + time, e.g. "31 May, 11:59 PM IST"
+  const fmtSnapTime = (ts) => {
+    if (!ts) return null;
+    const d = new Date(ts);
+    const dateStr = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
+    const timeStr = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+    return `${dateStr}, ${timeStr} IST`;
+  };
+
   const fetchSnapshots = async () => {
     setSnapshotsLoading(true);
     try {
@@ -7417,6 +7426,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             {isCurrentMonth && (
                               <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
                             )}
+                            {snap.created_at && (
+                              <span className="text-xs text-stone-400">{fmtSnapTime(snap.created_at)}</span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                             <span className="text-base font-bold text-stone-900">
@@ -8177,6 +8189,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             {isCurrentMonth && (
                               <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
                             )}
+                            {snap.created_at && (
+                              <span className="text-xs text-stone-400">{fmtSnapTime(snap.created_at)}</span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                             <span className="text-base font-bold text-stone-900">
@@ -8506,6 +8521,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                                 {isCurrentMonth && (
                                   <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
                                 )}
+                                {snap.created_at && (
+                                  <span className="text-xs text-stone-400">{fmtSnapTime(snap.created_at)}</span>
+                                )}
                               </div>
                               <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                                 <span className="text-base font-bold text-stone-900">
@@ -8803,6 +8821,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                             <span className="text-sm font-medium text-stone-900">{fmtMonth(snap.month)}</span>
                             {isCurrentMonth && (
                               <span className="text-xs bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-medium">Current</span>
+                            )}
+                            {snap.created_at && (
+                              <span className="text-xs text-stone-400">{fmtSnapTime(snap.created_at)}</span>
                             )}
                           </div>
                           <div className="flex items-center gap-3 mt-0.5 flex-wrap">
