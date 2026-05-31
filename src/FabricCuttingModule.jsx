@@ -6568,7 +6568,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     setCodSnapshotsLoading(true);
     const { data } = await supabase
       .from('cod_pending_snapshots')
-      .select('id, month, snapshot_date, order_count, pending_count, partially_paid_count, total_outstanding, total_gmv, orders_data')
+      .select('id, month, snapshot_date, order_count, pending_count, partially_paid_count, total_outstanding, total_gmv, orders_data, created_at')
       .order('month', { ascending: false })
       .limit(24);
     setCodSnapshots(data || []);
