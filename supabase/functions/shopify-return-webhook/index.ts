@@ -82,26 +82,17 @@ serve(async (req) => {
       return new Response(JSON.stringify({ skipped: true, reason: 'already processed' }), { status: 200 })
     }
 
-    // ── Gate 1: Verify this refund was created by Return Prime ────────────────
-    // Return Prime refunds to Shopify Store Credit have gateway === 'gift_card'
-    // OR 'shopify_store_credit' depending on Shopify's REST/GraphQL representation.
-    // KwikEngage COD cancellations have no payment transactions (customer never paid).
-    // Log actual gateways so we can verify on real webhooks.
     const transactions: any[] = body.transactions || []
     const gateways = transactions.map((t: any) => t.gateway)
     console.log(`Refund ${refundId} — note: ${body.note ?? 'null'}, gateways: [${gateways.join(', ')}]`)
 
-    const isReturnPrime = transactions.some((t: any) =>
-      t.gateway === 'gift_card' || t.gateway === 'shopify_store_credit'
-    )
-
-    if (!isReturnPrime) {
-      console.log(`Skipping refund ${refundId} — no store credit transaction found, not a Return Prime refund`)
-      return new Response(JSON.stringify({ skipped: true, reason: 'not a Return Prime refund' }), { status: 200 })
-    }
-
-    // ── Gate 2: Only restock fulfilled items (delivered to customer) ──────────
-    // Ensures we never restock items that were never shipped.
+    // ── Gate 1: Only restock fulfilled items with no_restock type ────────────
+    // This naturally covers all non-Return-Prime scenarios:
+    //   • KwikEngage COD cancellations: order never fulfilled → fulfillment_status != 'fulfilled'
+    //   • RTO via Shopify Flow (Cancel Order + Restock): uses restock_type = 'return', not 'no_restock'
+    //   • Manual refunds with Shopify restock: restock_type = 'return'
+    // Only Return Prime returns set restock_type = 'no_restock' on fulfilled items
+    // (Return Prime opts out of Shopify auto-restock and delegates it to this webhook).
     const toRestock: any[] = (body.refund_line_items || []).filter(
       (item: any) =>
         item.restock_type === 'no_restock' &&
@@ -109,7 +100,39 @@ serve(async (req) => {
         item.line_item?.fulfillment_status === 'fulfilled'
     )
     if (toRestock.length === 0) {
-      return new Response(JSON.stringify({ skipped: true, reason: 'no fulfilled items to restock' }), { status: 200 })
+      return new Response(JSON.stringify({ skipped: true, reason: 'no fulfilled items with no_restock type' }), { status: 200 })
+    }
+
+    // ── Gate 2: Verify the order has an active Shopify Return ─────────────────
+    // Return Prime always creates a Shopify Return before issuing the refund.
+    // Shopify's API only exposes OPEN, CLOSED, and CANCELLED — both "Return
+    // requested" and "Return in progress" in the admin UI map to OPEN at the
+    // API level. Any refund arriving without an OPEN return is not a legitimate
+    // Return Prime return (e.g. a manual admin refund).
+    const returnsCheckResp = await fetch(
+      `https://${shopDomain}/admin/api/2026-04/graphql.json`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
+        body: JSON.stringify({
+          query: `query getReturns($orderId: ID!) {
+            order(id: $orderId) {
+              returns(first: 10) {
+                edges { node { id status } }
+              }
+            }
+          }`,
+          variables: { orderId: `gid://shopify/Order/${shopifyOrderId}` },
+        }),
+      }
+    )
+    const returnsCheckJson = await returnsCheckResp.json()
+    const allReturns = (returnsCheckJson.data?.order?.returns?.edges || []).map((e: any) => e.node)
+    const hasActiveReturn = allReturns.some((r: any) => r.status === 'OPEN')
+
+    if (!hasActiveReturn) {
+      console.log(`Skipping refund ${refundId} — no OPEN return on order ${shopifyOrderId}`)
+      return new Response(JSON.stringify({ skipped: true, reason: 'no active return on order' }), { status: 200 })
     }
 
     // ── Shopify REST helper ───────────────────────────────────────────────────
@@ -191,10 +214,10 @@ serve(async (req) => {
       return new Response(JSON.stringify({ skipped: true, reason: 'no valid items after variant lookup' }), { status: 200 })
     }
 
-    // ── Calculate store credit from transactions (not line item subtotals) ───
+    // ── Calculate refund amount from transactions (not line item subtotals) ─────
     // Return Prime puts ₹0 on line item subtotals; actual refund is in transactions.
+    // Sum all transaction amounts regardless of gateway (store credit or cash-back).
     const totalStoreCredit = transactions
-      .filter((t: any) => t.gateway === 'gift_card' || t.gateway === 'shopify_store_credit')
       .reduce((sum: number, t: any) => sum + parseFloat(t.amount || '0'), 0)
 
     // ── Write to DB ───────────────────────────────────────────────────────────
@@ -213,22 +236,13 @@ serve(async (req) => {
     console.log(`✓ Restocked ${lineItemsData.length} item(s) for order ${orderNumber}`)
 
     // ── Close the Shopify Return so the "Restock" button is cleared ───────────
+    // Reuse the returns already fetched in Gate 2 — no extra API call needed.
     // Non-fatal: if the app lacks write_returns scope this just logs a warning.
     const closedReturns: string[] = []
     try {
-      const returnsResp = await shopifyGql(`
-        query getOpenReturns($orderId: ID!) {
-          order(id: $orderId) {
-            returns(first: 10) {
-              edges { node { id status } }
-            }
-          }
-        }
-      `, { orderId: `gid://shopify/Order/${shopifyOrderId}` })
-
-      const openReturns = (returnsResp.data?.order?.returns?.edges || [])
-        .filter((e: any) => e.node.status === 'OPEN')
-        .map((e: any) => e.node.id)
+      const openReturns = allReturns
+        .filter((r: any) => r.status === 'OPEN')
+        .map((r: any) => r.id)
 
       for (const returnId of openReturns) {
         const closeResp = await shopifyGql(`
