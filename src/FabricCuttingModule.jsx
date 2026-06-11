@@ -5491,6 +5491,15 @@ function PipelineHealthView({
   );
 }
 
+// Classify a completed batch's Shopify sync state → 'synced' | 'partial' | 'not_synced'.
+// Mirrors the badge logic on each batch card so the sync filter always matches the label.
+function getBatchSyncStatus(batch) {
+  const adj = batch.shopify_adjustment;
+  if (!adj || (adj.adjusted?.length === 0 && (adj.failed?.length > 0 || adj.skipped?.length > 0))) return 'not_synced';
+  if (adj.status === 'partial') return 'partial';
+  return 'synced';
+}
+
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
 function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs, pipelineHealthData, pipelineHealthLoading, fetchPipelineHealthData, showToast }) {
   const { can } = usePermissions();
@@ -5510,9 +5519,12 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
   const batchFilter        = searchParams.get('status')  ?? 'issued';
   const batchSearch        = searchParams.get('q')       ?? '';
   const batchKarigarFilter = searchParams.get('karigar') ?? 'all';
-  const setBatchFilter        = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'issued' ? n.set('status', v)  : n.delete('status');  return n; }, { replace: true });
+  const batchSyncFilter    = searchParams.get('sync')    ?? 'all';
+  // Sync filter only applies to completed batches — clear it when leaving the Completed tab.
+  const setBatchFilter        = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'issued' ? n.set('status', v)  : n.delete('status'); if (v !== 'completed') n.delete('sync'); return n; }, { replace: true });
   const setBatchSearch        = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('q', v) : n.delete('q'); return n; }, { replace: true });
   const setBatchKarigarFilter = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all'    ? n.set('karigar', v) : n.delete('karigar'); return n; }, { replace: true });
+  const setBatchSyncFilter    = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v && v !== 'all'    ? n.set('sync', v)    : n.delete('sync');    return n; }, { replace: true });
 
   // Performance tab
   const dashRange  = searchParams.get('range') ?? '30d';
@@ -5643,13 +5655,23 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
         (batchFilter === 'completed' && b.status === 'completed');
       const matchKarigar = batchKarigarFilter === 'all' ||
         (b.karigar_ids || []).includes(parseInt(batchKarigarFilter));
-      return matchSearch && matchStatus && matchKarigar;
+      const matchSync = batchFilter !== 'completed' || batchSyncFilter === 'all' ||
+        getBatchSyncStatus(b) === batchSyncFilter;
+      return matchSearch && matchStatus && matchKarigar && matchSync;
     }).sort((a, b) => b.issued_date.localeCompare(a.issued_date) || b.id - a.id);
-  }, [batches, batchFilter, batchSearch, batchKarigarFilter]);
+  }, [batches, batchFilter, batchSearch, batchKarigarFilter, batchSyncFilter]);
 
   const totalIssued = batches.reduce((s, b) => s + (b.total_issued || 0), 0);
   const totalCompleted = batches.filter(b => b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
   const pendingCount = batches.filter(b => b.status === 'issued').length;
+  const completedCount = batches.length - pendingCount;
+
+  // Sync-status counts across completed batches (for the sync filter chips)
+  const syncCounts = useMemo(() => {
+    const counts = { synced: 0, partial: 0, not_synced: 0 };
+    batches.forEach(b => { if (b.status === 'completed') counts[getBatchSyncStatus(b)]++; });
+    return counts;
+  }, [batches]);
 
   return (
     <div className="space-y-3">
@@ -5696,8 +5718,20 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
             <div className="flex gap-1.5 flex-wrap">
               <FilterChip active={batchFilter === 'all'} onClick={() => setBatchFilter('all')}>All ({batches.length})</FilterChip>
               <FilterChip active={batchFilter === 'issued'} onClick={() => setBatchFilter('issued')}>In progress ({pendingCount})</FilterChip>
-              <FilterChip active={batchFilter === 'completed'} onClick={() => setBatchFilter('completed')}>Completed ({batches.length - pendingCount})</FilterChip>
+              <FilterChip active={batchFilter === 'completed'} onClick={() => setBatchFilter('completed')}>Completed ({completedCount})</FilterChip>
             </div>
+            {/* Row 3: Shopify sync chips — only relevant for completed batches */}
+            {batchFilter === 'completed' && (
+              <div className="flex gap-1.5 flex-wrap items-center pt-1 border-t border-stone-100">
+                <span className="text-xs text-stone-400 font-medium mr-0.5">Shopify</span>
+                <FilterChip active={batchSyncFilter === 'all'} onClick={() => setBatchSyncFilter('all')}>All ({completedCount})</FilterChip>
+                <FilterChip active={batchSyncFilter === 'synced'} onClick={() => setBatchSyncFilter('synced')}>Synced ({syncCounts.synced})</FilterChip>
+                <FilterChip active={batchSyncFilter === 'not_synced'} onClick={() => setBatchSyncFilter('not_synced')}>Not synced ({syncCounts.not_synced})</FilterChip>
+                {syncCounts.partial > 0 && (
+                  <FilterChip active={batchSyncFilter === 'partial'} onClick={() => setBatchSyncFilter('partial')}>Partial ({syncCounts.partial})</FilterChip>
+                )}
+              </div>
+            )}
             {/* Clear */}
             {(batchSearch || batchKarigarFilter !== 'all') && (
               <button
@@ -5737,12 +5771,13 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
                         const adj = batch.shopify_adjustment;
                         const syncedSizes = (adj?.adjusted || []).join(', ');
                         const notSyncedSizes = [...(adj?.failed || []).map(f => f.size), ...(adj?.skipped || [])].join(', ');
-                        if (!adj || (adj.adjusted?.length === 0 && (adj.failed?.length > 0 || adj.skipped?.length > 0))) return (
+                        const syncStatus = getBatchSyncStatus(batch);
+                        if (syncStatus === 'not_synced') return (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">
                             <AlertCircle className="w-3 h-3" /> Shopify not synced
                           </span>
                         );
-                        if (adj.status === 'partial') return (
+                        if (syncStatus === 'partial') return (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
                             <AlertCircle className="w-3 h-3" /> Shopify partial · {syncedSizes} synced · {notSyncedSizes} not synced
                           </span>
