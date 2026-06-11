@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
-import { STANDARD_SIZES, orderSizes, localToday, isRunActive } from './lib/constants';
+import { STANDARD_SIZES, orderSizes, localToday, isRunActive, getBatchSyncStatus } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
@@ -280,6 +280,7 @@ export default function FabricCuttingModule() {
     saveCutting, updateCutEntry, deleteCutEntry,
     createProductionBatch, completeBatch, deleteProductionBatch,
     editBatchCompletedDate, editProductionBatch,
+    retryBatchSync, retryAllFailedSyncs,
     alertSettings, saveAlertSettings,
   } = useAppData({ showToast });
 
@@ -592,6 +593,8 @@ export default function FabricCuttingModule() {
             onDeleteBatch={deleteProductionBatch}
             onEditCompletedDate={editBatchCompletedDate}
             onEditBatch={editProductionBatch}
+            onRetryBatchSync={retryBatchSync}
+            onRetryAllFailedSyncs={retryAllFailedSyncs}
             pipelineHealthData={pipelineHealthData}
             pipelineHealthLoading={pipelineHealthLoading}
             fetchPipelineHealthData={fetchPipelineHealthData}
@@ -5491,22 +5494,15 @@ function PipelineHealthView({
   );
 }
 
-// Classify a completed batch's Shopify sync state → 'synced' | 'partial' | 'not_synced'.
-// Mirrors the badge logic on each batch card so the sync filter always matches the label.
-function getBatchSyncStatus(batch) {
-  const adj = batch.shopify_adjustment;
-  if (!adj || (adj.adjusted?.length === 0 && (adj.failed?.length > 0 || adj.skipped?.length > 0))) return 'not_synced';
-  if (adj.status === 'partial') return 'partial';
-  return 'synced';
-}
-
 // ─── PRODUCTION PAGE (batch-based, connected to cutting) ────────────
-function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, runs, pipelineHealthData, pipelineHealthLoading, fetchPipelineHealthData, showToast }) {
-  const { can } = usePermissions();
+function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onEditCompletedDate, onEditBatch, onRetryBatchSync, onRetryAllFailedSyncs, runs, pipelineHealthData, pipelineHealthLoading, fetchPipelineHealthData, showToast }) {
+  const { can, isAdmin } = usePermissions();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const canEditProduction = can('can_edit_production');
+  // Retry triggers a Shopify catalog sync, which is admin-only on the server.
+  const canRetrySync = isAdmin;
   const canDeleteProduction = can('can_delete_production');
 
   // ── Derive active tab from URL path ─────────────────────────────────────
@@ -5548,6 +5544,17 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
   const [editingDateBatchId, setEditingDateBatchId] = useState(null);
   const [editingBatchId, setEditingBatchId] = useState(null);
   const [expandedKarigar, setExpandedKarigar] = useState(null);
+  const [retryingBatchId, setRetryingBatchId] = useState(null);
+  const [retryingAll, setRetryingAll] = useState(false);
+
+  const handleRetryBatch = async (batchId) => {
+    setRetryingBatchId(batchId);
+    try { await onRetryBatchSync(batchId); } finally { setRetryingBatchId(null); }
+  };
+  const handleRetryAll = async () => {
+    setRetryingAll(true);
+    try { await onRetryAllFailedSyncs(); } finally { setRetryingAll(false); }
+  };
 
   // Karigar performance stats — equal split of completed per karigar
   const perfStats = useMemo(() => {
@@ -5730,6 +5737,16 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
                 {syncCounts.partial > 0 && (
                   <FilterChip active={batchSyncFilter === 'partial'} onClick={() => setBatchSyncFilter('partial')}>Partial ({syncCounts.partial})</FilterChip>
                 )}
+                {canRetrySync && (syncCounts.not_synced + syncCounts.partial) > 0 && (
+                  <button
+                    onClick={handleRetryAll}
+                    disabled={retryingAll || retryingBatchId !== null}
+                    className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium bg-stone-900 text-white hover:bg-stone-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${retryingAll ? 'animate-spin' : ''}`} />
+                    {retryingAll ? 'Retrying…' : `Retry all failed (${syncCounts.not_synced + syncCounts.partial})`}
+                  </button>
+                )}
               </div>
             )}
             {/* Clear */}
@@ -5790,6 +5807,18 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
                       })()}
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
+                      {canRetrySync && isComplete && getBatchSyncStatus(batch) !== 'synced' && (
+                        <button
+                          onClick={() => handleRetryBatch(batch.id)}
+                          disabled={retryingBatchId === batch.id || retryingAll}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                          aria-label="Retry Shopify sync"
+                          title="Retry Shopify sync"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${retryingBatchId === batch.id ? 'animate-spin' : ''}`} />
+                          {retryingBatchId === batch.id ? 'Retrying…' : 'Retry sync'}
+                        </button>
+                      )}
                       {canEditProduction && (
                         <button onClick={() => isComplete ? setEditingDateBatchId(batch.id) : setEditingBatchId(batch.id)} className="p-1.5 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded" aria-label="Edit batch">
                           <Edit2 className="w-3.5 h-3.5" />

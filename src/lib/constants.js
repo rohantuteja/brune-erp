@@ -25,6 +25,18 @@ export function isRunActive(run, productionBatches) {
 
 export const STANDARD_SIZES = ['XS', 'S', 'M', 'L', 'XL'];
 
+/**
+ * Classify a completed batch's Shopify sync state → 'synced' | 'partial' | 'not_synced'.
+ * Single source of truth for the batch card badge, the sync filter, and the
+ * retry logic — so the label, the filter, and "what counts as failed" never diverge.
+ */
+export function getBatchSyncStatus(batch) {
+  const adj = batch.shopify_adjustment;
+  if (!adj || (adj.adjusted?.length === 0 && (adj.failed?.length > 0 || adj.skipped?.length > 0))) return 'not_synced';
+  if (adj.status === 'partial') return 'partial';
+  return 'synced';
+}
+
 /** Returns today's date as YYYY-MM-DD in LOCAL time (not UTC). */
 export const localToday = () => {
   const d = new Date();

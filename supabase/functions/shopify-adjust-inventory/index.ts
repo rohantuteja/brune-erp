@@ -1,6 +1,7 @@
-// shopify-adjust-inventory v9
+// shopify-adjust-inventory v10
 // Uses Shopify REST API: POST /inventory_levels/adjust.json
 // Always saves audit trail — tracks adjusted, skipped, and failed sizes separately.
+// Idempotent: a same-direction retry only adjusts sizes not already synced.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -35,7 +36,7 @@ serve(async (req) => {
     // ── Fetch batch ─────────────────────────────────────────────────────────────
     const { data: batch, error: batchErr } = await supabase
       .from('production_batches')
-      .select('id, style_code, issued_sizes')
+      .select('id, style_code, issued_sizes, shopify_adjustment')
       .eq('id', batch_id)
       .single();
 
@@ -43,6 +44,14 @@ serve(async (req) => {
 
     const issuedSizes: Record<string, number> = batch.issued_sizes ?? {};
     if (!Object.keys(issuedSizes).length) return json({ error: 'No issued_sizes on batch' }, 400);
+
+    // ── Idempotency: skip sizes already adjusted in the same direction ──────────
+    // A retry must only touch sizes not yet synced — otherwise re-running a
+    // partial sync would double-count the sizes that already succeeded.
+    const prior = batch.shopify_adjustment;
+    const alreadyAdjusted: string[] = (prior && prior.direction === direction)
+      ? (prior.adjusted ?? [])
+      : [];
 
     // ── Shopify credentials ─────────────────────────────────────────────────────
     const { data: secrets } = await supabase
@@ -74,17 +83,22 @@ serve(async (req) => {
       .single();
 
     if (!shopifyRow?.variants) {
-      return json({ error: `No Shopify inventory found for style ${batch.style_code}` }, 404);
+      // Structured code lets the client decide to pull the product in via a
+      // Shopify sync and retry, rather than treating this as a hard failure.
+      return json({ error: `No Shopify inventory found for style ${batch.style_code}`, code: 'no_shopify_inventory' }, 404);
     }
 
     const variants: Array<{ size: string; inventory_item_id: string }> = shopifyRow.variants;
 
     // ── Adjust each size — collect all outcomes ─────────────────────────────────
     const skipped: string[] = [];   // size not found in shopify_inventory
-    const adjusted: string[] = [];  // successfully adjusted
+    const adjusted: string[] = [...alreadyAdjusted];  // carry forward prior successes
     const failed: Array<{ size: string; reason: string }> = []; // API call failed
 
     for (const [size, qty] of Object.entries(issuedSizes)) {
+      // Idempotent retry: don't re-adjust a size that already succeeded.
+      if (alreadyAdjusted.includes(size)) continue;
+
       const variant = variants.find(v => v.size === size);
       if (!variant?.inventory_item_id) {
         skipped.push(size);
