@@ -2599,13 +2599,16 @@ function AddInventoryModal({ fabricTypes, suppliers, inventory, existing, duplic
     } finally { setSaving(false); }
   };
 
-  // Format isn't user-chosen anymore — derived from fabric type
-  const sameFormat = inventory.filter(i => i.format === format && i.id !== existing?.id);
-  const maxNum = sameFormat.reduce((max, i) => {
-    const match = i.inventory_number?.match(/(\d+)$/);
-    return match ? Math.max(max, parseInt(match[1])) : max;
-  }, 0);
-  const autoNumber = selectedFabric ? `${isRoll ? 'ROLL' : 'THAN'}-${String(maxNum + 1).padStart(4, '0')}` : '';
+  // Single unified numbering sequence for all fabric, regardless of roll/than:
+  // F-0027, F-0028, … continuing from the highest existing number across every
+  // prefix (legacy ROLL-/THAN- entries keep their old numbers).
+  const maxNum = inventory
+    .filter(i => i.id !== existing?.id)
+    .reduce((max, i) => {
+      const match = i.inventory_number?.match(/(\d+)$/);
+      return match ? Math.max(max, parseInt(match[1])) : max;
+    }, 0);
+  const autoNumber = selectedFabric ? `F-${String(maxNum + 1).padStart(4, '0')}` : '';
   const previewNumber = isEdit ? existing.inventory_number : (form.inventory_number_override.trim() || autoNumber || '—');
 
   // Check duplicate against all existing inventory numbers (excluding self on edit)

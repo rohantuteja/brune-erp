@@ -1034,15 +1034,16 @@ export function useAppData({ showToast }) {
 
   const addInventory = async (data) => {
     const isRoll = data.format === 'roll';
-    const prefix = isRoll ? 'ROLL' : 'THAN';
+    // Single unified sequence for all fabric, regardless of roll/than:
+    // F-0027, F-0028, … continuing from the highest existing number across
+    // every prefix (legacy ROLL-/THAN- entries keep their old numbers).
     const maxNum = inventory
-      .filter(i => i.format === data.format)
       .reduce((max, i) => {
         const match = i.inventory_number?.match(/(\d+)$/);
         return match ? Math.max(max, parseInt(match[1])) : max;
       }, 0);
     const qty = parseFloat(data.quantity);
-    const autoNumber = `${prefix}-${String(maxNum + 1).padStart(4, '0')}`;
+    const autoNumber = `F-${String(maxNum + 1).padStart(4, '0')}`;
     const payload = {
       inventory_number:  data.inventory_number || autoNumber,
       format:            data.format,
