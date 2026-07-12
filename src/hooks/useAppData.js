@@ -819,10 +819,23 @@ export function useAppData({ showToast }) {
       completed_qty: batch.total_issued,
       completed_date: localToday(),
     };
-    await supabase.from('production_batches').update(updates).eq('id', batchId);
+    // Atomic transition guard: only flip issued→completed, and only once. If the
+    // batch is already completed (duplicate click, second tab, refetch race),
+    // this changes 0 rows and we must NOT fire the Shopify sync again. This is
+    // the client-side half of the exactly-once guarantee; the edge function's
+    // atomic claim is the server-side half.
+    const { data: changed } = await supabase
+      .from('production_batches')
+      .update(updates)
+      .eq('id', batchId)
+      .eq('status', 'issued')
+      .select('id');
+
     setProductionBatches(prev => prev.map(b =>
       b.id === batchId ? { ...b, ...updates } : b
     ));
+
+    if (!changed?.length) return;  // already completed — no re-sync
     showToast('Batch marked complete');
 
     // Push inventory to Shopify (non-blocking — completion is never gated on this)
@@ -834,10 +847,19 @@ export function useAppData({ showToast }) {
     if (!batch) return;
     if (batch.status === 'completed') {
       const revert = { status: 'issued', completed_qty: null, completed_date: null };
-      await supabase.from('production_batches').update(revert).eq('id', batchId);
+      // Atomic transition guard: only flip completed→issued once, so a duplicate
+      // revert never reverses the Shopify adjustment twice.
+      const { data: changed } = await supabase
+        .from('production_batches')
+        .update(revert)
+        .eq('id', batchId)
+        .eq('status', 'completed')
+        .select('id');
       setProductionBatches(prev => prev.map(b =>
         b.id === batchId ? { ...b, ...revert } : b
       ));
+
+      if (!changed?.length) return;  // already reverted — no re-reverse
       showToast('Batch moved back to In Progress');
 
       // Reverse the Shopify inventory adjustment (non-blocking)

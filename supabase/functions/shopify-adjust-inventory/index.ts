@@ -1,7 +1,11 @@
-// shopify-adjust-inventory v10
+// shopify-adjust-inventory v12
 // Uses Shopify REST API: POST /inventory_levels/adjust.json
 // Always saves audit trail — tracks adjusted, skipped, and failed sizes separately.
-// Idempotent: a same-direction retry only adjusts sizes not already synced.
+// EXACTLY-ONCE: every Shopify adjustment is gated on an atomic DB claim
+// (claim_batch_size_sync). A given (batch, size) can be applied to Shopify at
+// most once — immune to double-clicks, multiple tabs, refetch races, retries,
+// and concurrent calls. On Shopify failure the claim is released so a retry can
+// re-attempt. This is the foolproof guard against duplicate inventory pushes.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -45,14 +49,6 @@ serve(async (req) => {
     const issuedSizes: Record<string, number> = batch.issued_sizes ?? {};
     if (!Object.keys(issuedSizes).length) return json({ error: 'No issued_sizes on batch' }, 400);
 
-    // ── Idempotency: skip sizes already adjusted in the same direction ──────────
-    // A retry must only touch sizes not yet synced — otherwise re-running a
-    // partial sync would double-count the sizes that already succeeded.
-    const prior = batch.shopify_adjustment;
-    const alreadyAdjusted: string[] = (prior && prior.direction === direction)
-      ? (prior.adjusted ?? [])
-      : [];
-
     // ── Shopify credentials ─────────────────────────────────────────────────────
     const { data: secrets } = await supabase
       .from('private_secrets')
@@ -92,13 +88,10 @@ serve(async (req) => {
 
     // ── Adjust each size — collect all outcomes ─────────────────────────────────
     const skipped: string[] = [];   // size not found in shopify_inventory
-    const adjusted: string[] = [...alreadyAdjusted];  // carry forward prior successes
+    const adjusted: string[] = [];  // applied to Shopify (or already applied)
     const failed: Array<{ size: string; reason: string }> = []; // API call failed
 
     for (const [size, qty] of Object.entries(issuedSizes)) {
-      // Idempotent retry: don't re-adjust a size that already succeeded.
-      if (alreadyAdjusted.includes(size)) continue;
-
       const variant = variants.find(v => v.size === size);
       if (!variant?.inventory_item_id) {
         skipped.push(size);
@@ -116,6 +109,29 @@ serve(async (req) => {
         continue;
       }
 
+      // ── Atomic exactly-once claim ──────────────────────────────────────────
+      // claim_batch_size_sync returns TRUE only if THIS call transitioned the
+      // state (issued→applied for 'complete', applied→undone for 'revert').
+      // Any duplicate/concurrent call gets FALSE and must NOT touch Shopify.
+      const { data: claimed, error: claimErr } = await supabase.rpc('claim_batch_size_sync', {
+        p_batch_id: batch_id,
+        p_size: size,
+        p_qty: qty,
+        p_direction: direction,
+      });
+
+      if (claimErr) {
+        failed.push({ size, reason: `claim failed: ${claimErr.message}` });
+        continue;
+      }
+
+      if (!claimed) {
+        // Already in the target state — idempotent no-op. Do NOT call Shopify.
+        adjusted.push(size);
+        continue;
+      }
+
+      // We own the transition — perform the single Shopify adjustment.
       const available_adjustment = direction === 'complete' ? qty : -qty;
 
       const res = await fetch(`${apiBase}/inventory_levels/adjust.json`, {
@@ -127,6 +143,12 @@ serve(async (req) => {
       if (res.ok) {
         adjusted.push(size);
       } else {
+        // Roll back the claim so a retry can re-attempt this size.
+        await supabase.rpc('release_batch_size_sync', {
+          p_batch_id: batch_id,
+          p_size: size,
+          p_direction: direction,
+        });
         const errBody = await res.json();
         const reason = JSON.stringify(errBody.errors ?? errBody);
         failed.push({ size, reason });
