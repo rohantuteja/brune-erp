@@ -6475,6 +6475,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [invBySupplierExpanded, setInvBySupplierExpanded] = useState(false);
   const [wipCuttingsExpanded, setWipCuttingsExpanded] = useState(false);
   const [wipProductionExpanded, setWipProductionExpanded] = useState(false);
+  const [prodByStyleExpanded, setProdByStyleExpanded] = useState(true);
   const [prodByKarigarExpanded, setProdByKarigarExpanded] = useState(true);
   const [expandedProdKarigar, setExpandedProdKarigar] = useState(null);   // karigar id
 
@@ -7909,15 +7910,27 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
           {/* By style */}
           <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-            <div className="p-3 sm:p-4 border-b border-stone-200">
-              <div className="text-sm font-medium text-stone-900">By Style Code</div>
-              <div className="text-xs text-stone-500 mt-0.5">
-                {prodStats.hasRange
-                  ? 'Activity per style in this window — each column counted on its own date'
-                  : 'Cut → Issued → Completed per style · all time'}
+            <button
+              onClick={() => setProdByStyleExpanded(p => !p)}
+              className="w-full p-3 sm:p-4 flex items-start justify-between hover:bg-stone-50 transition-colors text-left"
+            >
+              <div>
+                <div className="text-sm font-medium text-stone-900">
+                  By Style Code
+                  <span className="ml-1.5 text-xs font-normal text-stone-400">
+                    {prodStats.styleRows.length} style{prodStats.styleRows.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div className="text-xs text-stone-500 mt-0.5">
+                  {prodStats.hasRange
+                    ? 'Activity per style in this window — each column counted on its own date'
+                    : 'Cut → Issued → Completed per style · all time'}
+                </div>
               </div>
-            </div>
-            <div className="divide-y divide-stone-100">
+              <span className="text-stone-400 text-xs mt-0.5 ml-2 shrink-0">{prodByStyleExpanded ? '▲' : '▼'}</span>
+            </button>
+            {prodByStyleExpanded && (
+            <div className="divide-y divide-stone-100 border-t border-stone-200">
               {prodStats.styleRows.map(d => {
                 const issuePct = d.cut > 0 ? Math.round(d.issued / d.cut * 100) : 0;
                 const completePct = d.cut > 0 ? Math.round(d.completed / d.cut * 100) : 0;
@@ -7926,8 +7939,12 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     <div className="flex items-center justify-between mb-2 gap-2">
                       <span className="font-mono text-sm font-medium text-stone-900">{d.code}</span>
                       <span className="text-xs text-stone-500 flex-shrink-0">
+                        {/* In range mode the Cut figure has its own box below, so only show it here for all-time */}
+                        {!prodStats.hasRange && (
+                          <><span className="font-medium text-stone-700">{d.cut}</span> cut <span className="text-stone-300">·</span> </>
+                        )}
                         {d.unissued > 0
-                          ? <><span className="text-amber-700 font-medium">{d.unissued}</span> unissued · all time</>
+                          ? <><span className="text-amber-700 font-medium">{d.unissued}</span> unissued{prodStats.hasRange ? ' · all time' : ''}</>
                           : 'fully issued'}
                       </span>
                     </div>
@@ -7972,6 +7989,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 </div>
               )}
             </div>
+            )}
           </div>
 
           {/* By karigar — attributed output */}
