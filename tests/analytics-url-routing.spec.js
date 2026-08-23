@@ -93,6 +93,51 @@ test.describe('Analytics URL routing', () => {
     await expect(page.locator('input[type="date"]').first()).toHaveValue('2026-01-01', { timeout: 8000 });
   });
 
+  test('T9: Production — ?from and ?to pre-fill the range and show the flows note', async ({ page }) => {
+    await page.goto('/analytics/production?from=2026-08-01&to=2026-08-31');
+
+    await expect(page.locator('input[type="date"]').first()).toHaveValue('2026-08-01');
+    await expect(page.locator('input[type="date"]').last()).toHaveValue('2026-08-31');
+
+    // With a range active the three metrics are independent flows, not a funnel
+    await expect(page.getByText(/independent flows, not a funnel/i)).toBeVisible({ timeout: 8000 });
+  });
+
+  test('T10: Production — percentage bars only appear with no range active', async ({ page }) => {
+    // All time: the by-style rows show "N pcs (X%)" because cut ≥ issued ≥ completed holds
+    await page.goto('/analytics/production');
+    await expect(page.getByText(/pcs \(\d+%\)/).first()).toBeVisible({ timeout: 8000 });
+
+    // Range active: percentages are suppressed
+    await page.goto('/analytics/production?from=2026-08-01&to=2026-08-31');
+    await expect(page.getByText(/independent flows, not a funnel/i)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/pcs \(\d+%\)/)).toHaveCount(0);
+  });
+
+  test('T11: Production — By Karigar section is attributed and expandable', async ({ page }) => {
+    await page.goto('/analytics/production?from=2026-07-01&to=2026-07-31');
+
+    await expect(page.getByText('By Karigar — attributed output')).toBeVisible({ timeout: 8000 });
+    // The attribution caveat must always be visible, not buried
+    await expect(page.getByText(/Attributed, not\s+measured/i)).toBeVisible();
+
+    // Expanding a karigar reveals their per-style breakdown
+    const styleToggle = page.getByRole('button', { name: /\d+ styles?/ }).first();
+    await styleToggle.click();
+    await expect(page.locator('.font-mono').filter({ hasText: /-/ }).first()).toBeVisible();
+  });
+
+  test('T12: Production date range does not bleed to other tabs', async ({ page }) => {
+    await page.goto('/analytics/production?from=2026-07-01&to=2026-07-31');
+    await expect(page).toHaveURL(/from=2026-07-01/);
+
+    await page.getByText('Returns', { exact: true }).first().click();
+    await expect(page).toHaveURL(/\/analytics\/returns/);
+    const url = page.url();
+    expect(url).not.toContain('from=');
+    expect(url).not.toContain('to=');
+  });
+
   test('T8: no console errors on analytics pages', async ({ page }) => {
     const errors = [];
     page.on('console', msg => {

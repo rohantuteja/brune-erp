@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
-import { STANDARD_SIZES, orderSizes, localToday, isRunActive, getBatchSyncStatus } from './lib/constants';
+import { STANDARD_SIZES, orderSizes, localToday, isRunActive, getBatchSyncStatus, presetRange, batchTurnaroundDays, attributeBatch } from './lib/constants';
 import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
@@ -630,6 +630,7 @@ export default function FabricCuttingModule() {
             suppliers={suppliers}
             runs={runs}
             productionBatches={productionBatches}
+            karigars={karigars}
             costings={costings}
             getCostingTotal={getCostingTotal}
             activeSection={analyticsSection}
@@ -2844,6 +2845,56 @@ function StatCard({ icon, label, value, sub, accent }) {
     </div>
   );
 }
+// Preset buttons + custom from/to range. Shared by the Analytics tabs so the
+// preset date maths lives in exactly one place (presetRange in lib/constants).
+// onChange(from, to) fires once with both values so a preset lands atomically.
+function DateRangeFilter({ from, to, onChange, presets = ['all', 'mtd', 'lastmonth', '3m'], caption }) {
+  const LABELS = { all: 'All time', mtd: 'This month', lastmonth: 'Last month', '3m': 'Last 3 months' };
+  return (
+    <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        {presets.map(key => {
+          const r = presetRange(key);
+          const isActive = from === r.from && to === r.to;
+          return (
+            <button
+              key={key}
+              onClick={() => onChange(r.from, r.to)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                isActive
+                  ? 'bg-stone-900 text-white border-stone-900'
+                  : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              {LABELS[key] || key}
+            </button>
+          );
+        })}
+
+        <span className="text-stone-300 select-none">|</span>
+
+        <div className="flex items-center gap-1.5 text-xs text-stone-500">
+          <span>From</span>
+          <input
+            type="date"
+            value={from}
+            onChange={e => onChange(e.target.value, to)}
+            className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+          />
+          <span>to</span>
+          <input
+            type="date"
+            value={to}
+            onChange={e => onChange(from, e.target.value)}
+            className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
+          />
+        </div>
+      </div>
+      {caption && <div className="mt-2 text-xs text-stone-400">{caption}</div>}
+    </div>
+  );
+}
+
 function TabBtn({ active, onClick, children }) { return <button onClick={onClick} className={`px-4 py-2.5 text-sm font-medium rounded-md flex items-center gap-2 transition min-h-[40px] ${active ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}>{children}</button>; }
 function SubTabBtn({ active, onClick, children }) { return <button onClick={onClick} className={`px-3 py-2 text-xs font-medium rounded flex items-center gap-1.5 transition min-h-[36px] whitespace-nowrap ${active ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'}`}>{children}</button>; }
 
@@ -5561,39 +5612,33 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
 
   // Karigar performance stats — equal split of completed per karigar
   const perfStats = useMemo(() => {
-    const now = new Date();
-    const todayStr = now.toLocaleDateString('en-CA');
-    let fromStr, toStr;
-    toStr = todayStr;
+    // Preset date maths lives in lib/constants so this screen and the Analytics
+    // Production report resolve "Last month" etc. identically.
+    let { from: fromStr, to: toStr } = presetRange(dashRange);
+    if (dashRange === 'custom') { fromStr = customFrom || ''; toStr = customTo || localToday(); }
 
-    if (dashRange === 'today') fromStr = todayStr;
-    else if (dashRange === '7d') { const d = new Date(); d.setDate(d.getDate() - 6); fromStr = d.toLocaleDateString('en-CA'); }
-    else if (dashRange === '30d') { const d = new Date(); d.setDate(d.getDate() - 29); fromStr = d.toLocaleDateString('en-CA'); }
-    else if (dashRange === 'mtd') fromStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-    else if (dashRange === 'custom') { fromStr = customFrom || '2000-01-01'; toStr = customTo || todayStr; }
-    else fromStr = '2000-01-01';
-
-    // Filter by completed_date — only batches completed in the selected range
+    // Filter by completed_date — only batches completed in the selected range.
+    // Empty bound = unbounded (replaces the old '2000-01-01' sentinel).
     const relevantBatches = batches.filter(b =>
-      b.status === 'completed' && b.completed_date >= fromStr && b.completed_date <= toStr
+      b.status === 'completed' && b.completed_date &&
+      (!fromStr || b.completed_date >= fromStr) &&
+      (!toStr   || b.completed_date <= toStr)
     );
 
     const stats = {};
     karigars.forEach(k => {
-      stats[k.id] = { name: k.name, issued: 0, completed: 0, issueDates: [], completionDates: [], batchList: [], turnarounds: [] };
+      stats[k.id] = { id: k.id, name: k.name, issued: 0, completed: 0, issueDates: [], completionDates: [], batchList: [], turnarounds: [] };
     });
 
     relevantBatches.forEach(b => {
       const count = (b.karigar_ids || []).length || 1;
       const issuedPerKarigar = (b.total_issued || 0) / count;
       const completedPerKarigar = (b.completed_qty || 0) / count;
-      const turnaround = (b.issued_date && b.completed_date)
-        ? Math.max(1, Math.round((new Date(b.completed_date + 'T00:00:00') - new Date(b.issued_date + 'T00:00:00')) / (1000 * 60 * 60 * 24)) + 1)
-        : null;
+      const turnaround = batchTurnaroundDays(b);
 
       (b.karigar_ids || []).forEach((id, i) => {
         const name = b.karigar_names?.[i] || `Karigar ${id}`;
-        if (!stats[id]) stats[id] = { name, issued: 0, completed: 0, issueDates: [], completionDates: [], batchList: [], turnarounds: [] };
+        if (!stats[id]) stats[id] = { id, name, issued: 0, completed: 0, issueDates: [], completionDates: [], batchList: [], turnarounds: [] };
         stats[id].issued += issuedPerKarigar;
         stats[id].completed += completedPerKarigar;
         stats[id].issueDates.push(b.issued_date);
@@ -5604,6 +5649,7 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
           issuedDate: b.issued_date,
           completedDate: b.completed_date,
           pcs: Math.round(completedPerKarigar),
+          pcsRaw: completedPerKarigar,   // unrounded — rounding per batch would compound in the per-style rollup
           turnaround,
         });
         if (turnaround) stats[id].turnarounds.push(turnaround);
@@ -5639,6 +5685,18 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
           ? Math.round(s.turnarounds.reduce((a, b) => a + b, 0) / s.turnarounds.length * 10) / 10
           : null;
 
+        // Per-style rollup from the batches already attributed to this karigar —
+        // same equal-split basis, no extra pass. Sums the unrounded pcsRaw.
+        const styleAgg = {};
+        s.batchList.forEach(b => {
+          const e = (styleAgg[b.styleCode || '—'] ||= { code: b.styleCode || '—', pieces: 0, batches: 0 });
+          e.pieces += b.pcsRaw;
+          e.batches += 1;
+        });
+        const styles = Object.values(styleAgg)
+          .map(x => ({ ...x, pieces: Math.round(x.pieces) }))
+          .sort((a, b) => b.pieces - a.pieces);
+
         return {
           ...s,
           issued: Math.round(s.issued),
@@ -5646,8 +5704,11 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
           workingDays,
           avgPerDay,
           avgTurnaround,
+          styles,
           batchCount: s.batchList.length,
-          outstanding: Math.round(outstandingByKarigar[karigars.find(k => k.name === s.name)?.id] || 0),
+          // Key by id, not by name — a name lookup returns the wrong person's
+          // outstanding when two karigars share a name or one is renamed.
+          outstanding: Math.round(outstandingByKarigar[s.id] || 0),
           batchList: [...s.batchList].sort((a, b) => (b.completedDate || '').localeCompare(a.completedDate || '')),
         };
       })
@@ -5921,7 +5982,7 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
           <div className="bg-white rounded-lg border border-stone-200 p-3">
             <div className="text-xs font-medium text-stone-700 uppercase tracking-wide mb-2">Date range — filtered by completion date</div>
             <div className="flex gap-1.5 flex-wrap">
-              {[['today','Today'],['7d','Last 7d'],['30d','Last 30d'],['mtd','This month'],['all','All time'],['custom','Custom']].map(([v,l]) => (
+              {[['today','Today'],['7d','Last 7d'],['30d','Last 30d'],['mtd','This month'],['lastmonth','Last month'],['3m','Last 3 months'],['all','All time'],['custom','Custom']].map(([v,l]) => (
                 <FilterChip key={v} active={dashRange === v} onClick={() => setDashRange(v)}>{l}</FilterChip>
               ))}
             </div>
@@ -5945,6 +6006,9 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
           ) : (
             <div className="space-y-2">
               <div className="text-xs text-stone-500 px-0.5">
+                Attributed output — batches worked by several karigars are split evenly, so per-karigar
+                figures are estimates, not measured individual output.
+                <br />
                 pcs/day = total completed ÷ calendar days (earliest issue → latest completion) · outstanding = currently with karigar
               </div>
               {perfStats.map((k, idx) => {
@@ -6001,14 +6065,32 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
                         onClick={() => setExpandedKarigar(isExpanded ? null : k.name)}
                         className="w-full flex items-center justify-between text-xs text-stone-500 hover:text-stone-700 py-1 transition-colors"
                       >
-                        <span>{k.batchCount} batch{k.batchCount !== 1 ? 'es' : ''} completed in this period</span>
+                        <span>{k.batchCount} batch{k.batchCount !== 1 ? 'es' : ''} · {k.styles.length} style{k.styles.length !== 1 ? 's' : ''} in this period</span>
                         <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       </button>
                     </div>
 
-                    {/* Collapsible batch list */}
+                    {/* Collapsible detail — styles first (what they worked on), then the batch audit trail */}
                     {isExpanded && (
-                      <div className="border-t border-stone-100 divide-y divide-stone-100">
+                      <div className="border-t border-stone-100">
+                        <div className="px-3 sm:px-4 pt-2.5 pb-1 text-[11px] font-medium text-stone-500 uppercase tracking-wide">
+                          By style — attributed
+                        </div>
+                        <div className="px-3 sm:px-4 pb-2.5 space-y-1">
+                          {k.styles.map(s => (
+                            <div key={s.code} className="flex items-center justify-between text-xs">
+                              <span className="font-mono text-stone-700">{s.code}</span>
+                              <span className="text-stone-500">
+                                <span className="text-stone-400">{s.batches} batch{s.batches !== 1 ? 'es' : ''} · </span>
+                                {s.pieces} pcs
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="px-3 sm:px-4 pt-2 pb-1 text-[11px] font-medium text-stone-500 uppercase tracking-wide border-t border-stone-100">
+                          Batches
+                        </div>
+                        <div className="divide-y divide-stone-100">
                         {k.batchList.map(b => (
                           <div key={b.id} className="px-3 sm:px-4 py-2.5 flex items-center justify-between gap-3">
                             <div className="flex-1 min-w-0">
@@ -6024,6 +6106,7 @@ function ProductionPage({ batches, karigars, onCompleteBatch, onDeleteBatch, onE
                             </div>
                           </div>
                         ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -6357,18 +6440,19 @@ function MarkCompleteModal({ batch, onClose, onSave }) {
 }
 
 // ─── ANALYTICS PAGE ─────────────────────────────────────────────────
-function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
+function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatches, karigars = [], costings, getCostingTotal, activeSection, setActiveSection, showToast, alertSettings = {}, saveAlertSettings }) {
   const { isAdmin, can } = usePermissions();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // ── URL-backed filters ───────────────────────────────────────────────
-  // Inventory Value date range
-  const receivedFrom = searchParams.get('from') ?? '';
-  const receivedTo   = searchParams.get('to')   ?? '';
-  // Single-param setters (used by the individual date inputs)
-  const setReceivedFrom = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('from', v) : n.delete('from'); return n; }, { replace: true });
-  const setReceivedTo   = (v) => setSearchParams(p => { const n = new URLSearchParams(p); v ? n.set('to', v)   : n.delete('to');   return n; }, { replace: true });
-  // Combined setter for preset buttons — one setSearchParams call so both params land together
+  // Shared date range, used by BOTH the Inventory Value tab (filters on
+  // received_date) and the Production tab (filters cut/issued/completed on their
+  // own dates). Safe to share one pair of params because setAnalyticsSection
+  // navigates path-only and drops the whole query string on every tab switch —
+  // that is the app's filter-bleed defence, asserted by test T5.
+  const dateFrom = searchParams.get('from') ?? '';
+  const dateTo   = searchParams.get('to')   ?? '';
+  // Combined setter — one setSearchParams call so both params land together
   const setDateRange = (from, to) => setSearchParams(p => {
     const n = new URLSearchParams(p);
     from ? n.set('from', from) : n.delete('from');
@@ -6391,6 +6475,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [invBySupplierExpanded, setInvBySupplierExpanded] = useState(false);
   const [wipCuttingsExpanded, setWipCuttingsExpanded] = useState(false);
   const [wipProductionExpanded, setWipProductionExpanded] = useState(false);
+  const [prodByKarigarExpanded, setProdByKarigarExpanded] = useState(true);
+  const [expandedProdKarigar, setExpandedProdKarigar] = useState(null);   // karigar id
 
   // ── Shopify Stock Value state ────────────────────────────────────────
   const [shopifyProducts, setShopifyProducts] = useState([]);
@@ -6898,9 +6984,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     // Filter by received date range (if set) + must have remaining stock
     const snap = inventory.filter(i => {
       // When a date filter is active, exclude items with no received_date
-      if ((receivedFrom || receivedTo) && !i.received_date) return false;
-      if (receivedFrom && i.received_date < receivedFrom) return false;
-      if (receivedTo   && i.received_date > receivedTo)   return false;
+      if ((dateFrom || dateTo) && !i.received_date) return false;
+      if (dateFrom && i.received_date < dateFrom) return false;
+      if (dateTo   && i.received_date > dateTo)   return false;
       const remaining = parseFloat(i.format === 'roll' ? i.current_weight_kg : i.current_length_m) || 0;
       return remaining > 0;
     });
@@ -6957,7 +7043,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     });
 
     return { totalKg, totalM, totalValue, rollValue, thanValue, byFabric, bySupplier, totalItems: snap.length, unusedItems };
-  }, [inventory, receivedFrom, receivedTo, fabricTypes, suppliers]);
+  }, [inventory, dateFrom, dateTo, fabricTypes, suppliers]);
 
   // ── SECTION 2: Stock Health ────────────────────────────────────────
   const healthStats = useMemo(() => {
@@ -6997,41 +7083,123 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   }, [inventory, fabricTypes]);
 
   // ── SECTION 3: Production Summary ─────────────────────────────────
+  // Range-filtered production report. The three headline metrics come from
+  // THREE DIFFERENT DATES:
+  //   cut       → run_entries.date  (run.pieces is a DATELESS aggregate, so it can
+  //                                  never be attributed to a range — use entries)
+  //   issued    → production_batches.issued_date
+  //   completed → production_batches.completed_date
+  // Inside a bounded window these are INDEPENDENT FLOWS, not a funnel: a piece cut
+  // in July is often completed in August, so Completed can exceed Cut. Percentages
+  // between them are only meaningful all-time.
   const prodStats = useMemo(() => {
-    const totalCut = runs.reduce((s, r) => s + r.pieces.reduce((ss, p) => ss + p.quantity, 0), 0);
-    const totalIssued = productionBatches.reduce((s, b) => s + (b.total_issued || 0), 0);
-    const totalCompleted = productionBatches.filter(b => b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-    const totalRejected = productionBatches.filter(b => b.status === 'completed').reduce((s, b) => s + Math.max(0, (b.total_issued || 0) - (b.completed_qty || 0)), 0);
-    const rejectionRate = totalIssued > 0 ? Math.round(totalRejected / totalIssued * 100 * 10) / 10 : 0;
+    const hasRange = !!(dateFrom || dateTo);
+    const inRange = (d) => {
+      if (!hasRange) return true;
+      if (!d) return false;
+      if (dateFrom && d < dateFrom) return false;
+      if (dateTo   && d > dateTo)   return false;
+      return true;
+    };
 
-    // By style
     const byStyle = {};
+    const row = (code) => (byStyle[code] ||= { cut: 0, issued: 0, completed: 0 });
+
+    // CUT — from dated cut entries.
+    // FIX: this was previously keyed by style_code but ASSIGNED (=) inside a
+    // per-run loop, so a style with several runs kept only its last run. 12 of 18
+    // styles have multiple runs; the list showed 1,827 of 3,663 cut pieces.
+    let totalCut = 0;
     runs.forEach(r => {
-      const cut = r.pieces.reduce((s, p) => s + p.quantity, 0);
-      const issued = productionBatches.filter(b => b.run_id === r.id).reduce((s, b) => s + (b.total_issued || 0), 0);
-      const completed = productionBatches.filter(b => b.run_id === r.id && b.status === 'completed').reduce((s, b) => s + (b.completed_qty || 0), 0);
-      byStyle[r.style_code] = { cut, issued, completed, pending: cut - issued };
+      const s = row(r.style_code);
+      r.entries.forEach(e => {
+        if (!inRange(e.date)) return;
+        // pieces_added carries zero-qty rows for every standard size — harmless in a sum
+        const qty = e.pieces_added.reduce((sum, p) => sum + (p.qty || 0), 0);
+        s.cut += qty;
+        totalCut += qty;
+      });
     });
 
-    // Avg batch turnaround (days)
-    const completedBatches = productionBatches.filter(b => b.status === 'completed' && b.issued_date && b.completed_date);
-    const avgTurnaround = completedBatches.length > 0
-      ? Math.round(completedBatches.reduce((s, b) => {
-          const days = Math.round((new Date(b.completed_date + 'T00:00:00') - new Date(b.issued_date + 'T00:00:00')) / (1000 * 60 * 60 * 24));
-          return s + Math.max(1, days);
-        }, 0) / completedBatches.length * 10) / 10
+    // ISSUED — by issue date, keyed on the batch's own denormalized style_code
+    let totalIssued = 0;
+    productionBatches.forEach(b => {
+      if (!inRange(b.issued_date)) return;
+      row(b.style_code).issued += b.total_issued || 0;
+      totalIssued += b.total_issued || 0;
+    });
+
+    // COMPLETED — by completion date. Ascending so the newest karigar_names snapshot wins.
+    const completedInRange = productionBatches
+      .filter(b => b.status === 'completed' && inRange(b.completed_date))
+      .sort((a, b) => (a.completed_date || '').localeCompare(b.completed_date || ''));
+
+    let totalCompleted = 0;
+    completedInRange.forEach(b => {
+      row(b.style_code).completed += b.completed_qty || 0;
+      totalCompleted += b.completed_qty || 0;
+    });
+
+    // Unissued backlog is a STOCK, not a flow — always all-time, never range-filtered,
+    // otherwise it goes negative inside a window.
+    const allCut = {}, allIssued = {};
+    runs.forEach(r => { allCut[r.style_code] = (allCut[r.style_code] || 0) + r.pieces.reduce((s, p) => s + p.quantity, 0); });
+    productionBatches.forEach(b => { allIssued[b.style_code] = (allIssued[b.style_code] || 0) + (b.total_issued || 0); });
+
+    const styleRows = Object.entries(byStyle)
+      .map(([code, d]) => ({ code, ...d, unissued: Math.max(0, (allCut[code] || 0) - (allIssued[code] || 0)) }))
+      .filter(d => d.cut || d.issued || d.completed)
+      .sort((a, b) => (hasRange
+        ? Math.max(b.cut, b.issued, b.completed) - Math.max(a.cut, a.issued, a.completed)
+        : b.cut - a.cut));
+
+    // ── By karigar — ATTRIBUTED by equal split. Never call this "produced". ──
+    const byKarigar = {};
+    completedInRange.forEach(b => {
+      const t = batchTurnaroundDays(b);
+      const isShared = (b.karigar_ids || []).length > 1;
+      attributeBatch(b, 'completed_qty').forEach(({ id, name, pieces }) => {
+        const k = (byKarigar[id] ||= { id, name, pieces: 0, batches: 0, shared: 0, styles: {}, turnarounds: [] });
+        // Prefer the live karigar name so a rename doesn't show a stale snapshot
+        k.name = karigars?.find(x => x.id === id)?.name || name || k.name;
+        k.pieces += pieces;
+        k.batches += 1;
+        if (isShared) k.shared += 1;
+        k.styles[b.style_code] = (k.styles[b.style_code] || 0) + pieces;
+        if (t !== null) k.turnarounds.push(t);
+      });
+    });
+
+    const karigarRows = Object.values(byKarigar).map(k => ({
+      ...k,
+      pieces: Math.round(k.pieces),
+      avgTurnaround: k.turnarounds.length
+        ? Math.round(k.turnarounds.reduce((a, b) => a + b, 0) / k.turnarounds.length * 10) / 10
+        : null,
+      styles: Object.entries(k.styles)
+        .map(([code, pcs]) => ({ code, pieces: Math.round(pcs) }))
+        .sort((a, b) => b.pieces - a.pieces),
+    })).sort((a, b) => b.pieces - a.pieces);
+
+    const turnarounds = completedInRange.map(batchTurnaroundDays).filter(t => t !== null);
+    const avgTurnaround = turnarounds.length
+      ? Math.round(turnarounds.reduce((a, b) => a + b, 0) / turnarounds.length * 10) / 10
       : null;
 
-    // Pending batches (issued but not completed)
-    const pendingBatches = productionBatches.filter(b => b.status === 'issued');
+    // Open batches are a LIVE snapshot — never range-filtered; age is measured to today.
     const today = new Date();
-    const pendingWithAge = pendingBatches.map(b => ({
-      ...b,
-      daysOpen: Math.round((today - new Date(b.issued_date + 'T00:00:00')) / (1000 * 60 * 60 * 24)),
-    })).sort((a, b) => b.daysOpen - a.daysOpen);
+    const pendingWithAge = productionBatches
+      .filter(b => b.status === 'issued')
+      .map(b => ({ ...b, daysOpen: Math.round((today - new Date(b.issued_date + 'T00:00:00')) / 86400000) }))
+      .sort((a, b) => b.daysOpen - a.daysOpen);
 
-    return { totalCut, totalIssued, totalCompleted, totalRejected, rejectionRate, byStyle, avgTurnaround, pendingWithAge };
-  }, [runs, productionBatches]);
+    return {
+      hasRange, totalCut, totalIssued, totalCompleted,
+      styleRows, karigarRows, avgTurnaround,
+      completedBatchCount: completedInRange.length,
+      pendingWithAge,
+    };
+  }, [runs, productionBatches, karigars, dateFrom, dateTo]);
 
   // ── SECTION 4: Costing Overview ────────────────────────────────────
   const costingStats = useMemo(() => {
@@ -7295,71 +7463,16 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {activeSection === 'inventory' && (
         <div className="space-y-3">
           {/* Received date range filter */}
-          <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* Presets */}
-              {[
-                { label: 'All time', from: '', to: '' },
-                {
-                  label: 'This month',
-                  from: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; })(),
-                  to: localToday(),
-                },
-                {
-                  label: 'Last month',
-                  from: (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; })(),
-                  to: (() => { const d = new Date(); d.setDate(0); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })(),
-                },
-                {
-                  label: 'Last 3 months',
-                  from: (() => { const d = new Date(); d.setMonth(d.getMonth()-3); d.setDate(1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; })(),
-                  to: localToday(),
-                },
-              ].map(p => {
-                const isActive = receivedFrom === p.from && receivedTo === p.to;
-                return (
-                  <button
-                    key={p.label}
-                    onClick={() => setDateRange(p.from, p.to)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
-                      isActive
-                        ? 'bg-stone-900 text-white border-stone-900'
-                        : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400'
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                );
-              })}
-
-              <span className="text-stone-300 select-none">|</span>
-
-              {/* Custom range */}
-              <div className="flex items-center gap-1.5 text-xs text-stone-500">
-                <span>From</span>
-                <input
-                  type="date"
-                  value={receivedFrom}
-                  onChange={e => setReceivedFrom(e.target.value)}
-                  className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
-                />
-                <span>to</span>
-                <input
-                  type="date"
-                  value={receivedTo}
-                  onChange={e => setReceivedTo(e.target.value)}
-                  className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent"
-                />
-              </div>
-            </div>
-            {(receivedFrom || receivedTo) && (
-              <div className="mt-2 text-xs text-stone-400">
-                Showing fabric received
-                {receivedFrom && receivedTo ? ` between ${receivedFrom} and ${receivedTo}` : receivedFrom ? ` from ${receivedFrom}` : ` up to ${receivedTo}`}
-                {' · '}at current remaining quantities
-              </div>
-            )}
-          </div>
+          <DateRangeFilter
+            from={dateFrom}
+            to={dateTo}
+            onChange={setDateRange}
+            caption={(dateFrom || dateTo)
+              ? <>Showing fabric received
+                  {dateFrom && dateTo ? ` between ${dateFrom} and ${dateTo}` : dateFrom ? ` from ${dateFrom}` : ` up to ${dateTo}`}
+                  {' · '}at current remaining quantities</>
+              : null}
+          />
 
           {/* Top-line totals */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
@@ -7747,12 +7860,33 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {/* ── PRODUCTION SUMMARY ── */}
       {activeSection === 'production' && (
         <div className="space-y-3">
+          {/* Date range filter */}
+          <DateRangeFilter
+            from={dateFrom}
+            to={dateTo}
+            onChange={setDateRange}
+            caption={prodStats.hasRange
+              ? <>Cut by cut-entry date · Issued by issue date · Completed by completion date
+                  {dateFrom && dateTo ? ` — ${dateFrom} to ${dateTo}` : dateFrom ? ` — from ${dateFrom}` : ` — up to ${dateTo}`}</>
+              : <>All time · every cutting run and production batch on record</>}
+          />
+
+          {/* Honesty note — the three metrics are independent flows inside a window */}
+          {prodStats.hasRange && (
+            <div className="text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg p-3">
+              <span className="font-medium text-stone-800">These three numbers are independent flows, not a funnel.</span>{' '}
+              A piece cut in one month is often issued and completed in another, so Completed can exceed
+              Cut inside a window. Percentages between them would be misleading here, so they are hidden
+              while a date range is active.
+            </div>
+          )}
+
           {/* Top stats */}
           <div className="grid grid-cols-3 gap-2">
             {[
-              { label: 'Total Cut', value: prodStats.totalCut, unit: 'pcs' },
-              { label: 'Issued', value: prodStats.totalIssued, unit: 'pcs' },
-              { label: 'Completed', value: prodStats.totalCompleted, unit: 'pcs', color: 'text-emerald-700' },
+              { label: 'Cut', value: prodStats.totalCut, unit: 'pcs · by cut date' },
+              { label: 'Issued', value: prodStats.totalIssued, unit: 'pcs · by issue date' },
+              { label: 'Completed', value: prodStats.totalCompleted, unit: 'pcs · by completion date', color: 'text-emerald-700' },
             ].map(s => (
               <div key={s.label} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
                 <div className="text-xs text-stone-500 uppercase tracking-wide mb-1">{s.label}</div>
@@ -7768,50 +7902,149 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="text-2xl font-bold text-stone-900">
               {prodStats.avgTurnaround !== null ? prodStats.avgTurnaround : '—'}
             </div>
-            <div className="text-[11px] text-stone-400 mt-0.5">days per batch</div>
+            <div className="text-[11px] text-stone-400 mt-0.5">
+              days per batch · {prodStats.completedBatchCount} batch{prodStats.completedBatchCount !== 1 ? 'es' : ''} completed
+            </div>
           </div>
 
           {/* By style */}
           <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
             <div className="p-3 sm:p-4 border-b border-stone-200">
               <div className="text-sm font-medium text-stone-900">By Style Code</div>
-              <div className="text-xs text-stone-500 mt-0.5">Cut → Issued → Completed per style</div>
+              <div className="text-xs text-stone-500 mt-0.5">
+                {prodStats.hasRange
+                  ? 'Activity per style in this window — each column counted on its own date'
+                  : 'Cut → Issued → Completed per style · all time'}
+              </div>
             </div>
             <div className="divide-y divide-stone-100">
-              {Object.entries(prodStats.byStyle).sort((a, b) => b[1].cut - a[1].cut).map(([code, d]) => {
+              {prodStats.styleRows.map(d => {
                 const issuePct = d.cut > 0 ? Math.round(d.issued / d.cut * 100) : 0;
                 const completePct = d.cut > 0 ? Math.round(d.completed / d.cut * 100) : 0;
                 return (
-                  <div key={code} className="p-3 sm:p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-mono text-sm font-medium text-stone-900">{code}</span>
-                      <span className="text-xs text-stone-500">{d.cut} cut</span>
+                  <div key={d.code} className="p-3 sm:p-4">
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <span className="font-mono text-sm font-medium text-stone-900">{d.code}</span>
+                      <span className="text-xs text-stone-500 flex-shrink-0">
+                        {d.unissued > 0
+                          ? <><span className="text-amber-700 font-medium">{d.unissued}</span> unissued · all time</>
+                          : 'fully issued'}
+                      </span>
                     </div>
-                    <div className="space-y-1.5">
-                      <div>
-                        <div className="flex justify-between text-[11px] text-stone-500 mb-0.5">
-                          <span>Issued</span><span>{d.issued} pcs ({issuePct}%)</span>
+                    {prodStats.hasRange ? (
+                      // Range active: three plain figures. issued/cut inside a window
+                      // routinely exceeds 100% and is not a rate — no bars, no percentages.
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {[['Cut', d.cut], ['Issued', d.issued], ['Completed', d.completed]].map(([l, v]) => (
+                          <div key={l} className="bg-stone-50 rounded-md p-2">
+                            <div className="text-base font-semibold text-stone-900">{v}</div>
+                            <div className="text-[11px] text-stone-500">{l}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      // All time: cut ≥ issued ≥ completed holds, so the funnel is real.
+                      <div className="space-y-1.5">
+                        <div>
+                          <div className="flex justify-between text-[11px] text-stone-500 mb-0.5">
+                            <span>Issued</span><span>{d.issued} pcs ({issuePct}%)</span>
+                          </div>
+                          <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-amber-500 rounded-full" style={{ width: `${Math.min(100, issuePct)}%` }} />
+                          </div>
                         </div>
-                        <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-amber-500 rounded-full" style={{ width: `${issuePct}%` }} />
+                        <div>
+                          <div className="flex justify-between text-[11px] text-stone-500 mb-0.5">
+                            <span>Completed</span><span>{d.completed} pcs ({completePct}%)</span>
+                          </div>
+                          <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, completePct)}%` }} />
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <div className="flex justify-between text-[11px] text-stone-500 mb-0.5">
-                          <span>Completed</span><span>{d.completed} pcs ({completePct}%)</span>
-                        </div>
-                        <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${completePct}%` }} />
-                        </div>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}
-              {Object.keys(prodStats.byStyle).length === 0 && (
-                <div className="p-8 text-center text-sm text-stone-400">No cutting runs yet.</div>
+              {prodStats.styleRows.length === 0 && (
+                <div className="p-8 text-center text-sm text-stone-400">
+                  {prodStats.hasRange ? 'No production activity in this range.' : 'No cutting runs yet.'}
+                </div>
               )}
             </div>
+          </div>
+
+          {/* By karigar — attributed output */}
+          <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+            <button
+              onClick={() => setProdByKarigarExpanded(p => !p)}
+              className="w-full p-3 sm:p-4 flex items-start justify-between hover:bg-stone-50 transition-colors text-left"
+            >
+              <div>
+                <div className="text-sm font-medium text-stone-900">By Karigar — attributed output</div>
+                <div className="text-xs text-stone-500 mt-0.5">
+                  Completed pieces split evenly across every karigar on a batch. Attributed, not
+                  measured — the system does not record who stitched what.
+                </div>
+              </div>
+              <span className="text-stone-400 text-xs mt-0.5 ml-2 shrink-0">{prodByKarigarExpanded ? '▲' : '▼'}</span>
+            </button>
+            {prodByKarigarExpanded && (
+              <div className="divide-y divide-stone-100 border-t border-stone-200">
+                {prodStats.karigarRows.map(k => {
+                  const topPieces = prodStats.karigarRows[0]?.pieces || 1;
+                  const isOpen = expandedProdKarigar === k.id;
+                  return (
+                    <div key={k.id} className="p-3 sm:p-4">
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-stone-900 truncate">{k.name}</span>
+                          {k.shared > 0 && (
+                            <span className="text-[10px] text-stone-500 bg-stone-100 border border-stone-200 px-1.5 py-0.5 rounded flex-shrink-0">
+                              {k.shared}/{k.batches} shared
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-stone-500 flex-shrink-0">
+                          <span className="text-sm font-semibold text-stone-900">{k.pieces}</span> pcs
+                          {' · '}{k.batches} batch{k.batches !== 1 ? 'es' : ''}
+                          {k.avgTurnaround !== null && <>{' · '}{k.avgTurnaround}d avg</>}
+                        </div>
+                      </div>
+                      {/* Neutral stone fill — this is an estimate, not an achievement */}
+                      <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-stone-700 rounded-full" style={{ width: `${Math.round(k.pieces / topPieces * 100)}%` }} />
+                      </div>
+                      <button
+                        onClick={() => setExpandedProdKarigar(isOpen ? null : k.id)}
+                        className="mt-2 flex items-center gap-1 text-[11px] text-stone-500 hover:text-stone-800"
+                      >
+                        {k.styles.length} style{k.styles.length !== 1 ? 's' : ''}
+                        <span className="text-stone-400">{isOpen ? '▲' : '▼'}</span>
+                      </button>
+                      {isOpen && (
+                        <div className="mt-2 space-y-1 border-t border-stone-100 pt-2">
+                          {k.styles.map(s => (
+                            <div key={s.code} className="flex items-center justify-between text-xs">
+                              <span className="font-mono text-stone-700">{s.code}</span>
+                              <span className="text-stone-500">{s.pieces} pcs</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {prodStats.karigarRows.length === 0 && (
+                  <div className="p-8 text-center text-sm text-stone-400">No batches completed in this range.</div>
+                )}
+                {prodStats.karigarRows.length > 0 && (
+                  <div className="px-3 sm:px-4 py-2 text-[11px] text-stone-400">
+                    Attributed figures are rounded per karigar, so they may not sum exactly to {prodStats.totalCompleted} completed.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Pending batches (oldest first) */}
@@ -7819,7 +8052,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
               <div className="p-3 sm:p-4 border-b border-stone-200">
                 <div className="text-sm font-medium text-stone-900">Open Batches</div>
-                <div className="text-xs text-stone-500 mt-0.5">Issued but not yet completed — oldest first</div>
+                <div className="text-xs text-stone-500 mt-0.5">Issued but not yet completed, oldest first — live, not affected by the date filter</div>
               </div>
               <div className="divide-y divide-stone-100">
                 {prodStats.pendingWithAge.map(b => (

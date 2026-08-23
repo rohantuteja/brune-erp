@@ -216,8 +216,15 @@ fabric_cost_override: if set, replaces the calculated fabric_cost entirely.
 ### Karigar Payments
 - **Piece-rate** karigars: payment = sum of (pieces × rate) per style code; stored in `breakdown` JSONB.
 - **Salary** karigars: flat amount, no breakdown required.
-- `production_entries` records daily stitching output per karigar (items JSONB).
+- `production_entries` exists in the schema but is **empty and unused** — no UI ever wrote to it. Do not build on it.
 - Payments are manual records — they are not auto-generated from production_entries.
+
+### Production Reporting (Analytics → Production, Karigar Performance)
+Two things here are easy to get wrong:
+
+- **Cut / Issued / Completed key off three different dates** — `run_entries.date`, `production_batches.issued_date`, and `completed_date` respectively. Over a bounded range they are **independent flows, not a funnel**: a piece cut in July is often completed in August, so Completed can exceed Cut. Never render conversion percentages between them while a date range is active.
+- **Per-karigar output is attributed, not measured.** A batch is assigned to a *group* of karigars and the system never records who stitched what, so each batch is split equally across `karigar_ids` (`attributeBatch` in `lib/constants.js`). 55–86% of monthly pieces sit in shared batches, so these are estimates — always label them "attributed", never "produced".
+- To attribute cut pieces to a date you must use `run.entries[].date` + `pieces_added[].qty`; `run.pieces` is a dateless aggregate. Summing per style must **accumulate** — a style commonly has several runs.
 
 ### Permissions / RBAC
 - `PermissionsContext` provides `can(permKey)` — returns true if user is admin OR has the specific permission.
