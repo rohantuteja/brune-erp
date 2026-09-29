@@ -88,6 +88,15 @@ export async function skuExists(admin: SupabaseClient, sku: string): Promise<boo
   return data?.successful === true && !!data.itemTypeDTO;
 }
 
+// A sale order by code (for Shopify orders, the numeric Shopify order ID), or
+// null if Unicommerce doesn't have it. Throws if the lookup itself fails.
+export async function getSaleOrder(admin: SupabaseClient, code: string): Promise<{ status: string } | null> {
+  const data = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code });
+  if (data?.successful && data.saleOrderDTO) return { status: data.saleOrderDTO.status };
+  if ((data?.errors ?? []).some((e: any) => e.message === 'INVALID_SALE_ORDER_CODE')) return null;
+  throw new Error(`Unicommerce order lookup failed: ${ucErrorText(data)}`);
+}
+
 // Sellable stock per SKU: available (inventory) and reserved for open orders
 // (inventoryBlocked). SKUs that never held stock are absent.
 export async function stockSnapshot(admin: SupabaseClient, skus: string[]) {
