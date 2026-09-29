@@ -6504,6 +6504,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // ── Returns state ────────────────────────────────────────────────────
   const [returnRestocks, setReturnRestocks] = useState([]);
   const [returnRestocksLoading, setReturnRestocksLoading] = useState(false);
+  // Stock the ERP put back in Unicommerce from cancelled / RTO Shopify orders
+  const [orderRestocks, setOrderRestocks] = useState([]);
+  const [rtoAttention, setRtoAttention] = useState([]);
   // restockFilterMonth is now URL-backed via useSearchParams (see top of component)
 
   // ── Pending COD state ────────────────────────────────────────────────
@@ -6690,6 +6693,16 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       .order('processed_at', { ascending: false })
       .limit(200);
     setReturnRestocks(data || []);
+    const [{ data: lines }, { data: rto }] = await Promise.all([
+      supabase.from('shopify_order_restocks')
+        .select('order_id, line_item_id, order_name, sku, qty, reason, status, detail, updated_at')
+        .order('updated_at', { ascending: false }).limit(100),
+      supabase.from('shopify_rto_orders')
+        .select('order_id, order_name, cancel_status, credit_status, credit_amount, detail, updated_at')
+        .eq('status', 'needs_attention').order('updated_at', { ascending: false }),
+    ]);
+    setOrderRestocks(lines || []);
+    setRtoAttention(rto || []);
     setReturnRestocksLoading(false);
   };
 
@@ -9326,6 +9339,51 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                   <div className="text-xs text-stone-500 mt-0.5">{label}</div>
                 </div>
               ))}
+            </div>
+
+            {/* Cancelled / RTO Shopify orders → Unicommerce */}
+            {(rtoAttention.length > 0 || orderRestocks.some(l => l.status === 'failed')) && (
+              <div className="bg-amber-50 rounded-lg border border-amber-200 p-3 sm:p-4 space-y-2">
+                <div className="flex items-center gap-1.5 text-sm font-medium text-amber-900">
+                  <AlertCircle className="w-4 h-4" /> Needs attention
+                </div>
+                {rtoAttention.map(r => (
+                  <div key={r.order_id} className="text-xs text-amber-900">
+                    <span className="font-mono font-medium">RTO {r.order_name}</span>
+                    {' · '}cancel: {r.cancel_status || '—'} · store credit: {r.credit_status || '—'}
+                    {r.credit_amount ? ` (₹${parseFloat(r.credit_amount).toLocaleString('en-IN')})` : ''}
+                    {r.detail && <div className="text-amber-800/80 mt-0.5">{r.detail}</div>}
+                  </div>
+                ))}
+                {orderRestocks.filter(l => l.status === 'failed').map(l => (
+                  <div key={`${l.order_id}-${l.line_item_id}`} className="text-xs text-amber-900">
+                    <span className="font-mono font-medium">{l.order_name}</span> · {l.sku} ×{l.qty} not added to Unicommerce: {l.detail}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+              <div className="p-3 sm:p-4 border-b border-stone-200">
+                <div className="text-sm font-medium text-stone-900">Cancelled &amp; RTO orders → Unicommerce</div>
+                <div className="text-xs text-stone-500 mt-0.5">Pieces put back in Unicommerce stock when a Shopify order is cancelled before shipping or comes back as RTO · newest first</div>
+              </div>
+              {orderRestocks.length === 0 ? (
+                <div className="p-6 text-center text-xs text-stone-400">Nothing yet — entries appear as orders are cancelled or come back as RTO.</div>
+              ) : (
+                <div className="divide-y divide-stone-100">
+                  {orderRestocks.map(l => (
+                    <div key={`${l.order_id}-${l.line_item_id}`} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_2fr_1fr] gap-x-3 gap-y-0.5 px-4 py-2.5 text-xs">
+                      <span className="font-mono font-medium text-stone-800">{l.order_name}</span>
+                      <span className="text-stone-500 text-right sm:text-left">{l.reason === 'rto' ? 'RTO' : 'Cancelled'} · {new Date(l.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+                      <span className="col-span-2 sm:col-span-1 text-stone-600 truncate" title={l.detail || ''}>{l.sku} ×{l.qty}</span>
+                      <span className={`text-right font-medium ${l.status === 'restocked' ? 'text-emerald-700' : l.status === 'failed' ? 'text-red-600' : 'text-stone-400'}`}>
+                        {l.status === 'restocked' ? 'Added' : l.status === 'failed' ? 'Failed' : l.status === 'skipped' ? 'Not needed' : 'In progress'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Full log */}
