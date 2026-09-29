@@ -37,6 +37,16 @@ export function getBatchSyncStatus(batch) {
   return 'synced';
 }
 
+/**
+ * Which system a batch's stock sync label should name. Batches synced before the
+ * switch to Unicommerce were pushed to Shopify; anything synced since — and
+ * anything still waiting, since a retry now goes to Unicommerce — is Unicommerce.
+ */
+export function batchSyncSystem(batch) {
+  const adj = batch.shopify_adjustment;
+  return adj && !adj.system && getBatchSyncStatus(batch) === 'synced' ? 'Shopify' : 'Unicommerce';
+}
+
 /** Formats a Date as YYYY-MM-DD in LOCAL time (not UTC). */
 export const localDate = (d) => {
   const yyyy = d.getFullYear();

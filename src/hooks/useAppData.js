@@ -13,7 +13,9 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { STANDARD_SIZES, orderSizes, localToday, getBatchSyncStatus } from '../lib/constants';
 
-// ── Shopify inventory helper ──────────────────────────────────────────────────
+// ── Batch stock sync helper ───────────────────────────────────────────────────
+// Completed batches add stock in Unicommerce (the inventory system of record,
+// which pushes stock on to Shopify and Myntra).
 // Uses env vars directly (supabase client internals are protected at runtime).
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -27,7 +29,7 @@ async function callAdjustInventory(batchId, direction) {
     if (!token) return { networkError: true, error: 'not authenticated' };
 
     const res = await fetch(
-      `${SUPABASE_URL}/functions/v1/shopify-adjust-inventory`,
+      `${SUPABASE_URL}/functions/v1/unicommerce-adjust-inventory`,
       {
         method: 'POST',
         headers: {
@@ -45,54 +47,29 @@ async function callAdjustInventory(batchId, direction) {
   }
 }
 
-// Trigger a full Shopify catalog sync (pulls newly-added products into
-// shopify_inventory). Admin-only on the server. Returns { ok, data, error }.
-async function runShopifySync() {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    if (!token) return { ok: false, error: 'not authenticated' };
-
-    const res = await fetch(
-      `${SUPABASE_URL}/functions/v1/shopify-sync`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'apikey': SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({}),
-      }
-    );
-    const data = await res.json().catch(() => ({}));
-    return { ok: res.ok && !data?.error, data, error: data?.error || (res.ok ? null : `HTTP ${res.status}`) };
-  } catch (err) {
-    return { ok: false, error: err.message || 'network error' };
-  }
-}
-
 // Toasting wrapper used by the completion/revert flow (fire-and-forget).
-async function adjustShopifyInventory(batchId, direction, showToast) {
+async function syncBatchStock(batchId, direction, showToast) {
   const r = await callAdjustInventory(batchId, direction);
   if (r.networkError) {
-    showToast(`Shopify ${direction === 'revert' ? 'revert' : 'sync'}: ${r.error}`);
+    showToast(`Unicommerce ${direction === 'revert' ? 'revert' : 'sync'}: ${r.error}`);
     return r;
   }
   const { httpStatus, data } = r;
   if (httpStatus === 207) {
     // Partial success — some sizes failed
     const failedSizes = (data.failed || []).map(f => f.size).join(', ');
-    showToast(`Shopify: ${data.adjusted} size${data.adjusted !== 1 ? 's' : ''} updated, failed: ${failedSizes}`);
+    showToast(`Unicommerce: ${data.adjusted} size${data.adjusted !== 1 ? 's' : ''} updated, failed: ${failedSizes}`);
   } else if (httpStatus >= 400 || data?.error) {
-    showToast(`Shopify ${direction === 'revert' ? 'revert' : 'sync'} failed: ${data?.error || `HTTP ${httpStatus}`}`);
+    showToast(`Unicommerce ${direction === 'revert' ? 'revert' : 'sync'} failed: ${data?.error || `HTTP ${httpStatus}`}`);
+  } else if (data?.code === 'not_in_unicommerce') {
+    showToast('Not synced: product not in Unicommerce yet — add it there, then retry');
   } else if (direction === 'complete') {
     const n = data.adjusted;
-    const skippedNote = data.skipped?.length ? ` (${data.skipped.length} SKU${data.skipped.length !== 1 ? 's' : ''} not found in Shopify)` : '';
-    showToast(`Shopify: ${n} size${n !== 1 ? 's' : ''} updated${skippedNote}`);
+    const skippedNote = data.skipped?.length ? ` (${data.skipped.length} SKU${data.skipped.length !== 1 ? 's' : ''} not in Unicommerce)` : '';
+    showToast(`Unicommerce: ${n} size${n !== 1 ? 's' : ''} updated${skippedNote}`);
   } else {
     const n = data.adjusted;
-    showToast(`Shopify: ${n} size${n !== 1 ? 's' : ''} reverted`);
+    showToast(`Unicommerce: ${n} size${n !== 1 ? 's' : ''} reverted`);
   }
   return r;
 }
@@ -821,7 +798,7 @@ export function useAppData({ showToast }) {
     };
     // Atomic transition guard: only flip issued→completed, and only once. If the
     // batch is already completed (duplicate click, second tab, refetch race),
-    // this changes 0 rows and we must NOT fire the Shopify sync again. This is
+    // this changes 0 rows and we must NOT fire the stock sync again. This is
     // the client-side half of the exactly-once guarantee; the edge function's
     // atomic claim is the server-side half.
     const { data: changed } = await supabase
@@ -838,8 +815,8 @@ export function useAppData({ showToast }) {
     if (!changed?.length) return;  // already completed — no re-sync
     showToast('Batch marked complete');
 
-    // Push inventory to Shopify (non-blocking — completion is never gated on this)
-    adjustShopifyInventory(batchId, 'complete', showToast);
+    // Add the pieces to Unicommerce stock (non-blocking — completion is never gated on this)
+    syncBatchStock(batchId, 'complete', showToast);
   };
 
   const deleteProductionBatch = async (batchId) => {
@@ -848,7 +825,7 @@ export function useAppData({ showToast }) {
     if (batch.status === 'completed') {
       const revert = { status: 'issued', completed_qty: null, completed_date: null };
       // Atomic transition guard: only flip completed→issued once, so a duplicate
-      // revert never reverses the Shopify adjustment twice.
+      // revert never reverses the stock adjustment twice.
       const { data: changed } = await supabase
         .from('production_batches')
         .update(revert)
@@ -862,8 +839,8 @@ export function useAppData({ showToast }) {
       if (!changed?.length) return;  // already reverted — no re-reverse
       showToast('Batch moved back to In Progress');
 
-      // Reverse the Shopify inventory adjustment (non-blocking)
-      adjustShopifyInventory(batchId, 'revert', showToast);
+      // Take the pieces back out of Unicommerce stock (non-blocking)
+      syncBatchStock(batchId, 'revert', showToast);
     } else {
       await supabase.from('production_batches').delete().eq('id', batchId);
       setProductionBatches(prev => prev.filter(b => b.id !== batchId));
@@ -881,31 +858,20 @@ export function useAppData({ showToast }) {
     }
   };
 
-  // Retry the Shopify sync for one completed batch. If the style isn't in the
-  // local Shopify cache yet (e.g. the product was just created on Shopify),
-  // pull it in via a catalog sync and retry once. The adjust is idempotent, so
-  // a partially-synced batch only gets its outstanding sizes adjusted.
+  // Retry the Unicommerce sync for one completed batch. The adjust is
+  // idempotent, so a partially-synced batch only gets its outstanding sizes
+  // adjusted.
   const retryBatchSync = async (batchId) => {
-    let r = await callAdjustInventory(batchId, 'complete');
-
-    if (r?.data?.code === 'no_shopify_inventory') {
-      showToast('Pulling new products from Shopify…');
-      const sync = await runShopifySync();
-      if (!sync.ok) {
-        showToast(`Couldn't sync from Shopify: ${sync.error || 'failed'}`);
-        return;
-      }
-      r = await callAdjustInventory(batchId, 'complete');
-    }
+    const r = await callAdjustInventory(batchId, 'complete');
 
     await refetchBatchRows([batchId]);
 
     if (r.networkError) { showToast(`Retry failed: ${r.error}`); return; }
     const { httpStatus, data } = r;
     if (httpStatus === 200 && data.status === 'synced') {
-      showToast(`Shopify synced: ${data.adjusted} size${data.adjusted !== 1 ? 's' : ''}`);
-    } else if (data?.code === 'no_shopify_inventory') {
-      showToast('Still not on Shopify — create the product there first');
+      showToast(`Unicommerce synced: ${data.adjusted} size${data.adjusted !== 1 ? 's' : ''}`);
+    } else if (data?.code === 'not_in_unicommerce') {
+      showToast('Not in Unicommerce yet — add the product there first');
     } else if (httpStatus === 207) {
       const failedSizes = (data.failed || []).map(f => f.size).join(', ');
       showToast(`Partial: ${data.adjusted} synced, failed: ${failedSizes}`);
@@ -914,9 +880,8 @@ export function useAppData({ showToast }) {
     }
   };
 
-  // Retry every completed batch whose sync isn't 'synced' (not_synced + partial).
-  // Pull new products in once up front, then adjust each batch sequentially to
-  // stay within Shopify's rate limit.
+  // Retry every completed batch whose sync isn't 'synced' (not_synced + partial),
+  // one batch at a time.
   const retryAllFailedSyncs = async () => {
     const failed = productionBatches.filter(
       b => b.status === 'completed' && getBatchSyncStatus(b) !== 'synced'
@@ -924,11 +889,6 @@ export function useAppData({ showToast }) {
     if (!failed.length) { showToast('No failed syncs to retry'); return; }
 
     showToast(`Retrying ${failed.length} batch${failed.length !== 1 ? 'es' : ''}…`);
-    const sync = await runShopifySync();
-    if (!sync.ok) {
-      // Non-fatal — the cache may already be warm for some styles, so still try.
-      showToast(`Shopify sync warning: ${sync.error || 'failed'} — retrying anyway`);
-    }
 
     let synced = 0, stillFailing = 0;
     for (const b of failed) {

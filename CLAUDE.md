@@ -41,7 +41,8 @@ Brune ERP is an internal garment manufacturing ERP system built for Brune, a gar
 | Analytics | ✅ Done | Charts and summaries (inventory value, WIP, COD, returns, stock health) |
 | Master Data | ✅ Done | Reference data (karigars, fabric types, suppliers, style codes) |
 | Auth / RBAC | ✅ Done | Supabase Auth + role-based permissions (admin/production_incharge/floor_supervisor/manager) |
-| Shopify Inventory | ✅ Done | Read Shopify stock; auto-sync on batch completion via Edge Function |
+| Shopify Inventory | ✅ Done | Read Shopify stock (Unicommerce now pushes stock to Shopify) |
+| Unicommerce stock sync | 🚧 In progress | Batch completion → Unicommerce; RTO, cancellations and Return Prime returns next |
 | Monthly Snapshots | ✅ Done | 4 snapshot types: Inventory, WIP, Shopify Stock, COD Pending — each with its own Edge Function and table |
 | User Management | ✅ Done | Admin UI to create/edit users and assign granular permissions |
 
@@ -73,9 +74,11 @@ supabase/
     001_initial_schema.sql      # All core tables (see Database Schema below)
   functions/
     admin-user-ops/             # Create/update/delete Supabase auth users (admin only)
-    shopify-adjust-inventory/   # Adjust Shopify stock when a batch is completed/reverted
+    _shared/unicommerce.ts      # Unicommerce REST client (OAuth token cache, stock adjust, catalog lookup)
+    unicommerce-adjust-inventory/ # Add/remove Unicommerce stock when a batch is completed/reverted
+    shopify-adjust-inventory/   # Legacy: adjusted Shopify stock directly (replaced by unicommerce-adjust-inventory)
     shopify-inventory-webhook/  # Receive Shopify inventory_level/update webhooks
-    shopify-return-webhook/     # Handle Shopify return events
+    shopify-return-webhook/     # Log Return Prime refunds for the Returns screen (no stock change)
     shopify-sync/               # Full sync of Shopify product inventory into Supabase
     take-cod-snapshot/          # Daily COD analytics snapshot
 
@@ -170,7 +173,7 @@ VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_ANON_PUBLIC_KEY
 ```
 
-The Supabase Edge Functions use server-side secrets (SHOPIFY_ACCESS_TOKEN, SHOPIFY_SHOP_DOMAIN, etc.) configured in the Supabase dashboard — not in .env files.
+The Supabase Edge Functions use server-side secrets configured in the Supabase dashboard — not in .env files. Shopify credentials live in the `private_secrets` table; Unicommerce credentials are the `UNICOMMERCE_USERNAME` / `UNICOMMERCE_PASSWORD` function secrets.
 
 ---
 
@@ -191,7 +194,9 @@ The Supabase Edge Functions use server-side secrets (SHOPIFY_ACCESS_TOKEN, SHOPI
 
 ### Production Batches
 - Pieces are **issued** from a run to one or more karigars as a batch.
-- Completing a batch triggers a Shopify inventory adjustment (non-blocking).
+- Completing a batch adds its pieces to **Unicommerce** stock (non-blocking); Unicommerce pushes stock on to Shopify and Myntra. Never write stock to Shopify directly — Unicommerce overwrites it.
+- SKU = `${style_code}-${size}`. Sizes whose SKU isn't in the Unicommerce catalog are skipped (create the product there, then Retry).
+- The exactly-once ledger `shopify_batch_inventory_sync` keeps its name; rows applied before the switch were pushed to Shopify and are part of the opening stock loaded into Unicommerce (29 Sep 2026), so reverting them removes stock from Unicommerce.
 - "Deleting" a completed batch reverts it to `issued` status and reverses the Shopify adjustment.
 - `issued_sizes` / `karigar_ids` / `karigar_names` are denormalized JSONB for display speed.
 

@@ -1,3 +1,10 @@
+// shopify-return-webhook
+// Logs Return Prime refunds (refunds/create) for the Returns screen and closes
+// the Shopify Return. It no longer changes stock: Unicommerce is the inventory
+// system of record and overwrites Shopify stock, and a returned piece only goes
+// back into stock once it physically reaches the warehouse (driven by Return
+// Prime's shipment status, not by the refund).
+
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -160,59 +167,18 @@ serve(async (req) => {
       return res.json()
     }
 
-    // ── Get order number + primary location (in parallel) ────────────────────
-    const [orderResp, locResp] = await Promise.all([
-      shopifyRest(`orders/${shopifyOrderId}.json?fields=id,name`),
-      shopifyRest('locations.json?active=1&fields=id,name'),
-    ])
-    const orderNumber      = orderResp.order?.name || `#${shopifyOrderId}`
+    // ── Get order number ──────────────────────────────────────────────────────
+    const orderResp   = await shopifyRest(`orders/${shopifyOrderId}.json?fields=id,name`)
+    const orderNumber = orderResp.order?.name || `#${shopifyOrderId}`
 
-    // Return Prime leaves location_id null on refund_line_items — fall back to
-    // the store's primary location (first active location) for inventory adjust.
-    const primaryLocationId = locResp.locations?.[0]?.id?.toString() || null
-
-    // ── Process each line item ────────────────────────────────────────────────
-    const lineItemsData: any[] = []
-
-    for (const item of toRestock) {
-      const variantId  = item.line_item?.variant_id
-      const locationId = item.location_id || item.line_item?.location_id || primaryLocationId
-
-      if (!variantId || !locationId) {
-        console.warn(`Skipping item — missing variantId or locationId`, { variantId, locationId })
-        continue
-      }
-
-      const variantResp     = await shopifyRest(`variants/${variantId}.json?fields=id,inventory_item_id,sku`)
-      const inventoryItemId = variantResp.variant?.inventory_item_id
-      if (!inventoryItemId) {
-        console.warn(`No inventory_item_id for variant ${variantId}`)
-        continue
-      }
-
-      await shopifyRest('inventory_levels/adjust.json', {
-        method: 'POST',
-        body: JSON.stringify({
-          location_id:          locationId,
-          inventory_item_id:    inventoryItemId,
-          available_adjustment: item.quantity,
-        }),
-      })
-
-      lineItemsData.push({
-        sku:               item.line_item?.sku           || '',
-        title:             item.line_item?.title         || '',
-        variant_title:     item.line_item?.variant_title || '',
-        quantity:          item.quantity,
-        refund_amount:     parseFloat(item.subtotal || item.price || '0'),
-        location_id:       locationId,
-        inventory_item_id: inventoryItemId,
-      })
-    }
-
-    if (lineItemsData.length === 0) {
-      return new Response(JSON.stringify({ skipped: true, reason: 'no valid items after variant lookup' }), { status: 200 })
-    }
+    // ── Record each returned line item (no stock change — see header) ─────────
+    const lineItemsData: any[] = toRestock.map((item: any) => ({
+      sku:           item.line_item?.sku           || '',
+      title:         item.line_item?.title         || '',
+      variant_title: item.line_item?.variant_title || '',
+      quantity:      item.quantity,
+      refund_amount: parseFloat(item.subtotal || item.price || '0'),
+    }))
 
     // ── Calculate refund amount from transactions (not line item subtotals) ─────
     // Return Prime puts ₹0 on line item subtotals; actual refund is in transactions.
@@ -233,7 +199,7 @@ serve(async (req) => {
     })
     if (dbErr) throw dbErr
 
-    console.log(`✓ Restocked ${lineItemsData.length} item(s) for order ${orderNumber}`)
+    console.log(`✓ Logged ${lineItemsData.length} returned item(s) for order ${orderNumber}`)
 
     // ── Close the Shopify Return so the "Restock" button is cleared ───────────
     // Reuse the returns already fetched in Gate 2 — no extra API call needed.
@@ -263,7 +229,7 @@ serve(async (req) => {
         }
       }
     } catch (closeErr: unknown) {
-      // Scope or network error — restock already succeeded, just warn
+      // Scope or network error — the return is already logged, just warn
       console.warn(`returnClose failed (non-fatal): ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`)
     }
 
@@ -271,7 +237,7 @@ serve(async (req) => {
       JSON.stringify({
         success:        true,
         order:          orderNumber,
-        restocked:      lineItemsData.map((i: any) => ({ sku: i.sku, qty: i.quantity })),
+        logged:         lineItemsData.map((i: any) => ({ sku: i.sku, qty: i.quantity })),
         returns_closed: closedReturns.length,
       }),
       { status: 200 }
