@@ -253,7 +253,8 @@ async function handleRto(ctx: Ctx, order: any) {
   const credit = planCredit(order);
   let cancel_status: string;
   let credit_status: string;
-  let credit_amount: number | null = null;
+  // Recorded even when not issued, so a person can credit it by hand.
+  const credit_amount = credit.action === 'issue' ? credit.amount! : null;
 
   if (!(await shopifyActionsEnabled(ctx))) {
     cancel_status = order.cancelled_at ? 'already_cancelled' : 'disabled';
@@ -278,7 +279,6 @@ async function handleRto(ctx: Ctx, order: any) {
     } else {
       const r = await issueStoreCredit(ctx, order, credit.amount!);
       credit_status = r.status;
-      credit_amount = credit.amount!;
       if (r.error) notes.push(`credit: ${r.error}`);
     }
   }
