@@ -3,11 +3,13 @@
 // is back at the warehouse: courier status "Returned to warehouse", which is
 // also when Return Prime marks the request "received".
 //
-// Triggers: Return Prime's request/received webhook (fast path) and the sweep
-// action (backup for missed webhooks). Return Prime doesn't sign webhooks, so
-// the URL carries a key derived from RETURN_PRIME_TOKEN and every event is
-// re-read from Return Prime's API before anything changes — a forged call can
-// at most make the ERP look at a real request's real state.
+// Triggers: Return Prime's request/received webhook (fast path), and a
+// scheduled sweep every 15 minutes (pg_cron, header x-cron-key matching
+// private_secrets.erp_stock_cron_key) as backup for missed webhooks. Return
+// Prime doesn't sign webhooks, so the URL carries a key derived from
+// RETURN_PRIME_TOKEN and every event is re-read from Return Prime's API before
+// anything changes — a forged call can at most make the ERP look at a real
+// request's real state.
 //
 // Per returned item, exactly once (returnprime_restocks, migration 005):
 //   • request rejected                       → skipped, needs a person
@@ -71,6 +73,14 @@ serve(async (req) => {
       shopToken: secret('shopify_access_token') ?? '',
     };
     if (!rpToken) return json({ error: 'RETURN_PRIME_TOKEN not set' }, 500);
+
+    // ── Scheduled backup sweep ──────────────────────────────────────────────
+    const cronKey = req.headers.get('x-cron-key');
+    if (cronKey) {
+      if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
+      const result = await sweep(ctx, { dry: false, pages: 5 });
+      return json({ swept: result.requests });
+    }
 
     // ── Return Prime webhook ──────────────────────────────────────────────────
     if (url.searchParams.has('key')) {
@@ -325,6 +335,11 @@ async function register(ctx: Ctx) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function cronKeyValid(admin: SupabaseClient, key: string): Promise<boolean> {
+  const { data } = await admin.from('private_secrets').select('value').eq('key', 'erp_stock_cron_key').maybeSingle();
+  return !!data?.value && data.value === key;
+}
 
 // Shopify REST allows 2 calls/second; wait and retry when it says to slow down.
 async function shopify(ctx: Ctx, path: string) {

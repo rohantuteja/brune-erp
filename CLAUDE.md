@@ -202,6 +202,8 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - Orders tagged `rto_delivered`, and returns back at the warehouse before go-live, are `baseline` rows and are never processed.
 - `shopify-order-webhook` only acts on orders tagged `erp-test` until `app_settings.order_webhook_mode = "live"`. RTO cancel and store credit also need `app_settings.rto_shopify_actions = true`.
 - Failures and anything needing a person show under Analytics → Returns → "Needs attention".
+- Scheduled every 15 min (pg_cron, migration 006; key `private_secrets.erp_stock_cron_key`): `returnprime-sweep` catches returns whose webhook never arrived; `shopify-cancel-recheck` puts back pieces for cancellations skipped because Unicommerce hadn't imported the order yet, if it imports it within 48 h.
+- Go-live state (2026-09-30): `order_webhook_mode = "live"`, `rto_shopify_actions = true`, Shopify `orders/updated` + `orders/cancelled` and Return Prime `request/received` subscribed.
 
 ### Cutting Runs
 - A **Run** groups all cut entries for a single style code batch.
