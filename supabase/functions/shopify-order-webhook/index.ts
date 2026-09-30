@@ -17,6 +17,9 @@
 //     product amount (after discounts, excluding shipping, no expiry) to the
 //     customer's store credit with Shopify's store credit email.
 //
+// Test mode: until app_settings.order_webhook_mode is "live", only orders
+// tagged erp-test are processed; every other order is ignored.
+//
 // Exactly-once: shopify_order_restocks (per order line) and shopify_rto_orders
 // (per RTO order) are claimed before anything is changed — see migration 004.
 // Orders already tagged rto_delivered at go-live are 'baseline' rows and are
@@ -39,6 +42,7 @@ const API_VERSION = '2026-04';
 const WEBHOOK_URL = 'https://nexhqmdplnxqypjydslg.supabase.co/functions/v1/shopify-order-webhook';
 const TOPICS = ['orders/updated', 'orders/cancelled'];
 const RTO_TAG = 'rto_delivered';
+const TEST_TAG = 'erp-test';
 // Shopify snapshot behind the opening Unicommerce stock load (29 Sep 2026, 22:37:59 IST).
 const STOCK_LOAD_CUTOFF = Date.parse('2026-09-29T17:07:59Z');
 
@@ -108,11 +112,17 @@ serve(async (req) => {
 
 // ── Event routing ─────────────────────────────────────────────────────────────
 
-function isRto(order: any): boolean {
-  return String(order.tags ?? '').split(',').some(t => t.trim().toLowerCase() === RTO_TAG);
+const hasTag = (order: any, tag: string) =>
+  String(order.tags ?? '').split(',').some(t => t.trim().toLowerCase() === tag);
+const isRto = (order: any) => hasTag(order, RTO_TAG);
+
+async function isLive(ctx: Ctx): Promise<boolean> {
+  const { data } = await ctx.admin.from('app_settings').select('value').eq('key', 'order_webhook_mode').maybeSingle();
+  return data?.value === 'live';
 }
 
 async function handleOrderEvent(ctx: Ctx, topic: string, order: any) {
+  if (!hasTag(order, TEST_TAG) && !(await isLive(ctx))) return;
   if (isRto(order)) return handleRto(ctx, order);
   if (topic === 'orders/cancelled') return applyLines(ctx, order, 'cancelled', await planCancel(ctx, order));
 }
@@ -349,6 +359,7 @@ async function status(ctx: Ctx) {
     webhooks: (hooks.webhooks ?? []).filter((w: any) => w.address === WEBHOOK_URL).map((w: any) => w.topic),
     scopes: (scopes.data?.currentAppInstallation?.accessScopes ?? []).map((s: any) => s.handle),
     rto_shopify_actions: await shopifyActionsEnabled(ctx),
+    mode: (await isLive(ctx)) ? 'live' : `test (only orders tagged ${TEST_TAG})`,
     restocks: count(restocks.data, r => `${r.reason}:${r.status}`),
     rto_orders: count(rto.data, r => r.status),
   };
