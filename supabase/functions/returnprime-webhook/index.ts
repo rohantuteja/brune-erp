@@ -11,15 +11,15 @@
 //
 // Per returned item, exactly once (returnprime_restocks, migration 005):
 //   • request rejected                       → skipped, needs a person
-//   • restocked at refund time by the old flow (return_restocks before the
-//     switch) → skipped: already in stock
+//   • refunded before the switch → skipped: the old flow already put it back
+//     into stock at refund time (also checked against its return_restocks log)
 //   • order open in Unicommerce, or shipped before the opening stock load → ADD
 //   • otherwise → skipped: Unicommerce never took this piece
 //
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — Return Prime webhook subscriptions and ledger counts
 //   dry_run  — { request: "RET710" } shows what would happen, changing nothing
-//   sweep    — { dry?: true, pages?: 10 } process (or preview) recent returns
+//   sweep    — { dry?: true, pages?: 10, include_waiting? } process (or preview) recent returns
 //   register — baseline every return already back at the warehouse, then
 //              subscribe request/received to this function
 
@@ -93,7 +93,7 @@ serve(async (req) => {
     switch (body.action) {
       case 'status':   return json(await status(ctx));
       case 'dry_run':  return json(await dryRun(ctx, String(body.request ?? '')));
-      case 'sweep':    return json(await sweep(ctx, { dry: body.dry !== false, pages: Number(body.pages ?? 10) }));
+      case 'sweep':    return json(await sweep(ctx, { dry: body.dry !== false, pages: Number(body.pages ?? 10), includeWaiting: !!body.include_waiting }));
       case 'register': return json(await register(ctx));
       default:         return json({ error: 'action must be status, dry_run, sweep or register' }, 400);
     }
@@ -130,6 +130,10 @@ async function webhookKey(token: string): Promise<string> {
 const arrivedAt = (r: any, li: any) =>
   Date.parse(r.received?.created_at ?? (li.shipping ?? [])[0]?.tracking_updated_at ?? '') || 0;
 
+// Until the switch the ERP put a return back into stock the moment it was refunded.
+const refundedBeforeSwitch = (li: any) =>
+  li.refund?.status === 'refunded' && Date.parse(li.refund?.refunded_at ?? '') < Date.parse(REFUND_RESTOCK_CUTOFF);
+
 const backAtWarehouse = (r: any, li: any) =>
   r.received?.status === true ||
   (li.shipping ?? []).some((s: any) => String(s.shipment_status ?? '').toLowerCase() === BACK_AT_WAREHOUSE);
@@ -140,7 +144,8 @@ async function planRequest(ctx: Ctx, r: any): Promise<LinePlan[]> {
   if (!lines.some((li: any) => backAtWarehouse(r, li))) {
     return lines.map((li: any) => ({
       line_item_id: li.id, sku: li.original_product.sku, qty: qtyOf(li), action: 'wait',
-      why: `not back yet (${(li.shipping ?? [])[0]?.shipment_status ?? 'no shipment'})`,
+      why: `not back yet (${(li.shipping ?? [])[0]?.shipment_status ?? 'no shipment'})` +
+        (refundedBeforeSwitch(li) ? ' — already counted when refunded before the switch; will be skipped on arrival' : ''),
     }));
   }
 
@@ -156,8 +161,8 @@ async function planRequest(ctx: Ctx, r: any): Promise<LinePlan[]> {
   );
   // Shipping date only matters when neither of the above decides it.
   let shippedBeforeLoad = false;
-  const undecided = lines.some((li: any) => backAtWarehouse(r, li) && !r.rejected?.status &&
-    !restockedAtRefund.has(li.original_product.sku));
+  const alreadyCounted = (li: any) => refundedBeforeSwitch(li) || restockedAtRefund.has(li.original_product.sku);
+  const undecided = lines.some((li: any) => backAtWarehouse(r, li) && !r.rejected?.status && !alreadyCounted(li));
   if (undecided && !ucOpen) {
     const shopOrder = await shopify(ctx, `orders/${orderId}.json?fields=id,fulfillments`);
     const firstShipped = Math.min(
@@ -171,7 +176,7 @@ async function planRequest(ctx: Ctx, r: any): Promise<LinePlan[]> {
     const base = { line_item_id: li.id, sku, qty: qtyOf(li) };
     if (!backAtWarehouse(r, li)) return { ...base, action: 'wait', why: 'not back yet' };
     if (r.rejected?.status) return { ...base, action: 'skip', why: 'request rejected in Return Prime — check the piece by hand' };
-    if (restockedAtRefund.has(sku)) return { ...base, action: 'skip', why: 'already put back at refund time, before the switch' };
+    if (alreadyCounted(li)) return { ...base, action: 'skip', why: 'already put back at refund time, before the switch' };
     if (ucOpen) return { ...base, action: 'add', why: 'back at warehouse; order open in Unicommerce' };
     if (shippedBeforeLoad) return { ...base, action: 'add', why: 'back at warehouse; shipped before the opening stock load' };
     return { ...base, action: 'skip', why: uc
@@ -223,7 +228,7 @@ async function processRequest(ctx: Ctx, r: any) {
 
 // ── Admin actions ─────────────────────────────────────────────────────────────
 
-async function sweep(ctx: Ctx, { dry, pages }: { dry: boolean; pages: number }) {
+async function sweep(ctx: Ctx, { dry, pages, includeWaiting = false }: { dry: boolean; pages: number; includeWaiting?: boolean }) {
   const { data: done } = await ctx.admin.from('returnprime_restocks').select('request_id, line_item_id, status');
   const handled = new Map((done ?? []).map(d => [`${d.request_id}:${d.line_item_id}`, d.status]));
   const out = [];
@@ -231,7 +236,7 @@ async function sweep(ctx: Ctx, { dry, pages }: { dry: boolean; pages: number }) 
     const data = await listPage(ctx, page);
     for (const r of data?.list ?? []) {
       const open = (r.line_items ?? []).filter((li: any) => li.id && !handled.has(`${r.id}:${li.id}`));
-      if (!open.length || !open.some((li: any) => backAtWarehouse(r, li))) continue;
+      if (!open.length || (!open.some((li: any) => backAtWarehouse(r, li)) && !(dry && includeWaiting))) continue;
       const lines = dry ? await planRequest(ctx, r) : await processRequest(ctx, r);
       out.push({ request: r.request_number, lines });
     }
