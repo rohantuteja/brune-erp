@@ -6693,15 +6693,23 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       .order('processed_at', { ascending: false })
       .limit(200);
     setReturnRestocks(data || []);
-    const [{ data: lines }, { data: rto }] = await Promise.all([
+    const [{ data: lines }, { data: rpLines }, { data: rto }] = await Promise.all([
       supabase.from('shopify_order_restocks')
         .select('order_id, line_item_id, order_name, sku, qty, reason, status, detail, updated_at')
         .order('updated_at', { ascending: false }).limit(100),
+      supabase.from('returnprime_restocks')
+        .select('request_id, line_item_id, request_number, order_name, sku, qty, status, detail, updated_at')
+        .neq('status', 'baseline').order('updated_at', { ascending: false }).limit(100),
       supabase.from('shopify_rto_orders')
         .select('order_id, order_name, cancel_status, credit_status, credit_amount, detail, updated_at')
         .eq('status', 'needs_attention').order('updated_at', { ascending: false }),
     ]);
-    setOrderRestocks(lines || []);
+    // Return Prime rows share the list; they're keyed by request, labelled by request number.
+    const returnRows = (rpLines || []).map(l => ({
+      ...l, order_id: l.request_id, reason: 'return', order_name: `${l.request_number} · ${l.order_name || ''}`,
+    }));
+    setOrderRestocks([...(lines || []), ...returnRows]
+      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 150));
     setRtoAttention(rto || []);
     setReturnRestocksLoading(false);
   };
@@ -9324,7 +9332,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
         return (
           <div className="space-y-3">
             <div className="text-xs text-stone-500 px-0.5">
-              Logged when Return Prime processes a refund · the piece goes back into Unicommerce stock when it reaches the warehouse
+              Logged when Return Prime processes a refund · the piece goes back into Unicommerce stock when the courier marks it “Returned to warehouse”
             </div>
 
             {/* This month summary */}
@@ -9365,17 +9373,17 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
               <div className="p-3 sm:p-4 border-b border-stone-200">
-                <div className="text-sm font-medium text-stone-900">Cancelled &amp; RTO orders → Unicommerce</div>
-                <div className="text-xs text-stone-500 mt-0.5">Pieces put back in Unicommerce stock when a Shopify order is cancelled before shipping or comes back as RTO · newest first</div>
+                <div className="text-sm font-medium text-stone-900">Returns, RTO &amp; cancellations → Unicommerce</div>
+                <div className="text-xs text-stone-500 mt-0.5">Pieces put back in Unicommerce stock when a return reaches the warehouse, an RTO comes back, or an order is cancelled before shipping · newest first</div>
               </div>
               {orderRestocks.length === 0 ? (
-                <div className="p-6 text-center text-xs text-stone-400">Nothing yet — entries appear as orders are cancelled or come back as RTO.</div>
+                <div className="p-6 text-center text-xs text-stone-400">Nothing yet — entries appear as returns reach the warehouse and orders are cancelled or come back as RTO.</div>
               ) : (
                 <div className="divide-y divide-stone-100">
                   {orderRestocks.map(l => (
                     <div key={`${l.order_id}-${l.line_item_id}`} className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_2fr_1fr] gap-x-3 gap-y-0.5 px-4 py-2.5 text-xs">
                       <span className="font-mono font-medium text-stone-800">{l.order_name}</span>
-                      <span className="text-stone-500 text-right sm:text-left">{l.reason === 'rto' ? 'RTO' : 'Cancelled'} · {new Date(l.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+                      <span className="text-stone-500 text-right sm:text-left">{l.reason === 'rto' ? 'RTO' : l.reason === 'return' ? 'Return' : 'Cancelled'} · {new Date(l.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
                       <span className="col-span-2 sm:col-span-1 text-stone-600 truncate" title={l.detail || ''}>{l.sku} ×{l.qty}</span>
                       <span className={`text-right font-medium ${l.status === 'restocked' ? 'text-emerald-700' : l.status === 'failed' ? 'text-red-600' : 'text-stone-400'}`}>
                         {l.status === 'restocked' ? 'Added' : l.status === 'failed' ? 'Failed' : l.status === 'skipped' ? 'Not needed' : 'In progress'}
