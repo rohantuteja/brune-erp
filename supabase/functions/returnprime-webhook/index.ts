@@ -19,6 +19,7 @@
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — Return Prime webhook subscriptions and ledger counts
 //   dry_run  — { request: "RET710" } shows what would happen, changing nothing
+//   process  — { request: "RET511" } handles that one return now (same rules, exactly once)
 //   sweep    — { dry?: true, pages?: 10, include_waiting? } process (or preview) recent returns
 //   register — baseline every return already back at the warehouse, then
 //              subscribe request/received to this function
@@ -93,9 +94,10 @@ serve(async (req) => {
     switch (body.action) {
       case 'status':   return json(await status(ctx));
       case 'dry_run':  return json(await dryRun(ctx, String(body.request ?? '')));
+      case 'process':  return json(await processOne(ctx, String(body.request ?? '')));
       case 'sweep':    return json(await sweep(ctx, { dry: body.dry !== false, pages: Number(body.pages ?? 10), includeWaiting: !!body.include_waiting }));
       case 'register': return json(await register(ctx));
-      default:         return json({ error: 'action must be status, dry_run, sweep or register' }, 400);
+      default:         return json({ error: 'action must be status, dry_run, process, sweep or register' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -245,21 +247,31 @@ async function sweep(ctx: Ctx, { dry, pages, includeWaiting = false }: { dry: bo
   return { dry, requests: out.length, results: out };
 }
 
-async function dryRun(ctx: Ctx, ref: string) {
+async function findRequest(ctx: Ctx, ref: string) {
   const want = ref.toUpperCase();
-  for (let page = 1; page <= 40; page++) {
+  for (let page = 1; page <= 100; page++) {
     const data = await listPage(ctx, page);
     const r = (data?.list ?? []).find((x: any) => x.request_number === want || x.id === ref);
-    if (r) {
-      const { data: done } = await ctx.admin.from('returnprime_restocks')
-        .select('line_item_id, status').eq('request_id', r.id);
-      const lines = await planRequest(ctx, r);
-      return { dry_run: true, request: r.request_number, stage: r.status,
-        lines: lines.map(l => ({ ...l, already: done?.find(d => d.line_item_id === l.line_item_id)?.status ?? null })) };
-    }
+    if (r) return r;
     if (!data?.hasNextPage) break;
   }
-  return { error: `request ${ref} not found` };
+  return null;
+}
+
+async function dryRun(ctx: Ctx, ref: string) {
+  const r = await findRequest(ctx, ref);
+  if (!r) return { error: `request ${ref} not found` };
+  const { data: done } = await ctx.admin.from('returnprime_restocks')
+    .select('line_item_id, status').eq('request_id', r.id);
+  const lines = await planRequest(ctx, r);
+  return { dry_run: true, request: r.request_number, stage: r.status,
+    lines: lines.map(l => ({ ...l, already: done?.find(d => d.line_item_id === l.line_item_id)?.status ?? null })) };
+}
+
+async function processOne(ctx: Ctx, ref: string) {
+  const r = await findRequest(ctx, ref);
+  if (!r) return { error: `request ${ref} not found` };
+  return { request: r.request_number, lines: await processRequest(ctx, r) };
 }
 
 async function status(ctx: Ctx) {
