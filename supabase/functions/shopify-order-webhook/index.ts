@@ -26,6 +26,13 @@
 // never processed. Webhooks are answered at once and processed in the
 // background, inside Shopify's 5-second limit.
 //
+// Scheduled (pg_cron every 15 minutes, header x-cron-key matching
+// private_secrets.erp_stock_cron_key): re-check cancellations from the last
+// 48 hours that were skipped because the order hadn't reached Unicommerce. If
+// Unicommerce imported the order afterwards (it was fetching as the customer
+// cancelled, or it caught up after an outage), it now holds a piece for a
+// cancelled order, so the piece is put back.
+//
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — webhook subscriptions, granted Shopify scopes, ledger counts
 //   register — baseline the currently tagged RTO orders, then subscribe the webhooks
@@ -75,6 +82,14 @@ serve(async (req) => {
       shop: secret('shopify_shop_domain') || 'supply-rethought.myshopify.com',
       token: secret('shopify_access_token') ?? '',
     };
+
+    // ── Scheduled re-check ──────────────────────────────────────────────────
+    const cronKey = req.headers.get('x-cron-key');
+    if (cronKey) {
+      const { data: row } = await admin.from('private_secrets').select('value').eq('key', 'erp_stock_cron_key').maybeSingle();
+      if (!row?.value || row.value !== cronKey) return json({ error: 'bad cron key' }, 401);
+      return json(await recheckEarlyCancellations(ctx));
+    }
 
     // ── Shopify webhook ───────────────────────────────────────────────────────
     if (topic) {
@@ -136,7 +151,7 @@ async function unicommerceState(ctx: Ctx, order: any) {
 
 const notTakenWhy = (inUc: boolean) => inUc
   ? 'order is cancelled in Unicommerce, so its piece was already released'
-  : 'order never reached Unicommerce, so Unicommerce never took this piece';
+  : `${NOT_IN_UC}, so Unicommerce never took this piece`;
 
 // Cancelled before shipping: units not in a successful fulfillment go back.
 async function planCancel(ctx: Ctx, order: any): Promise<LinePlan[]> {
@@ -342,6 +357,38 @@ async function issueStoreCredit(ctx: Ctx, order: any, amount: number): Promise<{
     // No response: the credit may or may not exist — a person must check before retrying.
     return { status: 'unknown', error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// ── Re-check of early cancellations ─────────────────────────────────────────
+
+const NOT_IN_UC = 'order never reached Unicommerce';
+
+async function recheckEarlyCancellations(ctx: Ctx) {
+  const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  const { data: rows } = await ctx.admin.from('shopify_order_restocks').select('*')
+    .eq('reason', 'cancelled').eq('status', 'skipped').like('detail', `${NOT_IN_UC}%`).gte('created_at', since);
+  const byOrder = new Map<number, any[]>();
+  for (const r of rows ?? []) byOrder.set(r.order_id, [...(byOrder.get(r.order_id) ?? []), r]);
+
+  const results = [];
+  for (const [orderId, lines] of byOrder) {
+    const { ucOpen } = await unicommerceState(ctx, { id: orderId });
+    if (!ucOpen) continue;
+    for (const row of lines) {
+      // Re-claim atomically: only one run may move a skipped line to claimed.
+      const { data: reclaimed } = await ctx.admin.from('shopify_order_restocks')
+        .update({ status: 'claimed', updated_at: new Date().toISOString() })
+        .eq('order_id', row.order_id).eq('line_item_id', row.line_item_id).eq('status', 'skipped')
+        .select('order_id');
+      if (!reclaimed?.length) continue;
+      const result = await restockClaimedLine(ctx, row.order_id, row.order_name, 'cancelled', {
+        line_item_id: row.line_item_id, sku: row.sku, qty: row.qty, add: true,
+        why: 'cancelled before shipping; Unicommerce imported the order afterwards',
+      });
+      results.push({ order: row.order_name, sku: row.sku, qty: row.qty, result });
+    }
+  }
+  return { checked: byOrder.size, restocked: results };
 }
 
 // ── Admin actions ─────────────────────────────────────────────────────────────
