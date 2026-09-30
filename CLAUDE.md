@@ -42,7 +42,7 @@ Brune ERP is an internal garment manufacturing ERP system built for Brune, a gar
 | Master Data | ✅ Done | Reference data (karigars, fabric types, suppliers, style codes) |
 | Auth / RBAC | ✅ Done | Supabase Auth + role-based permissions (admin/production_incharge/floor_supervisor/manager) |
 | Shopify Inventory | ✅ Done | Read Shopify stock (Unicommerce now pushes stock to Shopify) |
-| Unicommerce stock sync | 🚧 In progress | Batch completion → Unicommerce; RTO, cancellations and Return Prime returns next |
+| Unicommerce stock sync | 🚧 In progress | Batch completion, Shopify cancellations/RTO and Return Prime returns → Unicommerce (see Stock sync below) |
 | Monthly Snapshots | ✅ Done | 4 snapshot types: Inventory, WIP, Shopify Stock, COD Pending — each with its own Edge Function and table |
 | User Management | ✅ Done | Admin UI to create/edit users and assign granular permissions |
 
@@ -79,6 +79,8 @@ supabase/
     shopify-adjust-inventory/   # Legacy: adjusted Shopify stock directly (replaced by unicommerce-adjust-inventory)
     shopify-inventory-webhook/  # Receive Shopify inventory_level/update webhooks
     shopify-return-webhook/     # Log Return Prime refunds for the Returns screen (no stock change)
+    shopify-order-webhook/      # Cancelled + RTO Shopify orders → Unicommerce stock; RTO cancel + store credit
+    returnprime-webhook/        # Return Prime returns back at warehouse → Unicommerce stock
     shopify-sync/               # Full sync of Shopify product inventory into Supabase
     take-cod-snapshot/          # Daily COD analytics snapshot
 
@@ -185,6 +187,21 @@ The Supabase Edge Functions use server-side secrets configured in the Supabase d
 - Status auto-sets to `'finished'` when current ≤ 0.05 kg (roll) or ≤ 0.1 m (than).
 - Auto-numbering scheme: `ROLL-0001`, `THAN-0001` etc. (sequential within format).
 - Fabric usage is recorded per cut entry; deleting an entry reverses the consumption.
+
+### Stock sync (Unicommerce is the system of record)
+Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify stock. Every Shopify order is imported into Unicommerce and **left open there forever** (Unicommerce only dispatches Myntra), so each order permanently holds one piece per unit. "Available" matches the shelf; on-hand is inflated by these stale reservations, and that is accepted. When a piece comes back, the ERP ADDs it — it never cancels the Unicommerce order.
+
+| Event | Trigger | Rule | Ledger |
+|---|---|---|---|
+| Batch completed / moved back | ERP UI | ADD / REMOVE per size; SKU = `${style_code}-${size}` | `shopify_batch_inventory_sync` |
+| Unshipped Shopify order cancelled | `orders/cancelled` | ADD unshipped units if the order is open in Unicommerce | `shopify_order_restocks` |
+| RTO | tag `rto_delivered` (`orders/updated`) | ADD all units if open in Unicommerce or shipped before the opening load; cancel on Shopify (no refund, email); prepaid → store credit = subtotal after discounts, no shipping, no expiry | `shopify_order_restocks`, `shopify_rto_orders` |
+| Return Prime return | courier status "Returned to warehouse" / request `received` | ADD unless already restocked at refund by the old flow, rejected, or never taken by Unicommerce | `returnprime_restocks` |
+
+- Opening stock load: Shopify snapshot 2026-09-29 17:07:59 UTC. The old refund-time Shopify restock was switched off at 2026-09-29 23:41:24 UTC.
+- Orders tagged `rto_delivered`, and returns back at the warehouse before go-live, are `baseline` rows and are never processed.
+- `shopify-order-webhook` only acts on orders tagged `erp-test` until `app_settings.order_webhook_mode = "live"`. RTO cancel and store credit also need `app_settings.rto_shopify_actions = true`.
+- Failures and anything needing a person show under Analytics → Returns → "Needs attention".
 
 ### Cutting Runs
 - A **Run** groups all cut entries for a single style code batch.
