@@ -42,7 +42,7 @@ Brune ERP is an internal garment manufacturing ERP system built for Brune, a gar
 | Master Data | ✅ Done | Reference data (karigars, fabric types, suppliers, style codes) |
 | Auth / RBAC | ✅ Done | Supabase Auth + role-based permissions (admin/production_incharge/floor_supervisor/manager) |
 | Shopify Inventory | ✅ Done | Read Shopify stock (Unicommerce now pushes stock to Shopify) |
-| Unicommerce stock sync | 🚧 In progress | Batch completion, Shopify cancellations/RTO and Return Prime returns → Unicommerce (see Stock sync below) |
+| Unicommerce stock sync | ✅ Live | Batch completion, RTO and Return Prime returns → Unicommerce (see Stock sync below) |
 | Monthly Snapshots | ✅ Done | 4 snapshot types: Inventory, WIP, Shopify Stock, COD Pending — each with its own Edge Function and table |
 | User Management | ✅ Done | Admin UI to create/edit users and assign granular permissions |
 
@@ -79,7 +79,7 @@ supabase/
     shopify-adjust-inventory/   # Legacy: adjusted Shopify stock directly (replaced by unicommerce-adjust-inventory)
     shopify-inventory-webhook/  # Receive Shopify inventory_level/update webhooks
     shopify-return-webhook/     # Log Return Prime refunds for the Returns screen (no stock change)
-    shopify-order-webhook/      # Cancelled + RTO Shopify orders → Unicommerce stock; RTO cancel + store credit
+    shopify-order-webhook/      # RTO Shopify orders → Unicommerce stock, cancel on Shopify, store credit
     returnprime-webhook/        # Return Prime returns back at warehouse → Unicommerce stock
     shopify-sync/               # Full sync of Shopify product inventory into Supabase
     take-cod-snapshot/          # Daily COD analytics snapshot
@@ -194,7 +194,7 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 | Event | Trigger | Rule | Ledger |
 |---|---|---|---|
 | Batch completed / moved back | ERP UI | ADD / REMOVE per size; SKU = `${style_code}-${size}` | `shopify_batch_inventory_sync` |
-| Unshipped Shopify order cancelled | `orders/cancelled` | ADD unshipped units if the order is open in Unicommerce | `shopify_order_restocks` |
+| Unshipped Shopify order cancelled | — | **Not the ERP's job.** Unicommerce cancels its copy and releases the piece itself; an ERP ADD would double count (#37715, 30 Sep 2026) | — |
 | RTO | tag `rto_delivered` (`orders/updated`) | ADD all units if open in Unicommerce or shipped before the opening load; cancel on Shopify (no refund, email); prepaid → store credit = subtotal after discounts, no shipping, no expiry | `shopify_order_restocks`, `shopify_rto_orders` |
 | Return Prime return | courier status "Returned to warehouse" / request `received` | ADD unless already restocked at refund by the old flow, rejected, or never taken by Unicommerce | `returnprime_restocks` |
 
@@ -202,7 +202,7 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - Orders tagged `rto_delivered`, and returns back at the warehouse before go-live, are `baseline` rows and are never processed.
 - `shopify-order-webhook` only acts on orders tagged `erp-test` until `app_settings.order_webhook_mode = "live"`. RTO cancel and store credit also need `app_settings.rto_shopify_actions = true`.
 - Failures and anything needing a person show under Analytics → Returns → "Needs attention".
-- Scheduled every 15 min (pg_cron, migration 006; key `private_secrets.erp_stock_cron_key`): `returnprime-sweep` catches returns whose webhook never arrived; `shopify-cancel-recheck` puts back pieces for cancellations skipped because Unicommerce hadn't imported the order yet, if it imports it within 48 h.
+- Scheduled every 15 min (pg_cron, migration 006; key `private_secrets.erp_stock_cron_key`): `returnprime-sweep` catches returns whose webhook never arrived. (`shopify-cancel-recheck` was dropped in migration 007 along with cancellation handling.)
 - Go-live state (2026-09-30): `order_webhook_mode = "live"`, `rto_shopify_actions = true`, Shopify `orders/updated` + `orders/cancelled` and Return Prime `request/received` subscribed.
 
 ### Cutting Runs
