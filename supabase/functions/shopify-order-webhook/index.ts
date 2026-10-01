@@ -6,9 +6,9 @@
 // there, where it holds (or will take) one piece per unit. So when a piece comes
 // back the ERP ADDs it to Unicommerce stock and never touches the Unicommerce order.
 //
-//   orders/cancelled (not RTO) → unshipped units go back, but only if the order
-//     is open in Unicommerce (an order that never reached Unicommerce never took
-//     a piece there).
+//   Shopify cancellations before shipping are NOT handled here: Unicommerce
+//     cancels its copy of the order itself and releases the held piece (seen on
+//     #37715, within a second), so adding a piece too would count it twice.
 //   tag rto_delivered (orders/updated) → the parcel is back at the warehouse and
 //     every unit goes back, if the order is open in Unicommerce or shipped before
 //     the opening stock load (whose Shopify snapshot had already deducted it).
@@ -25,13 +25,6 @@
 // Orders already tagged rto_delivered at go-live are 'baseline' rows and are
 // never processed. Webhooks are answered at once and processed in the
 // background, inside Shopify's 5-second limit.
-//
-// Scheduled (pg_cron every 15 minutes, header x-cron-key matching
-// private_secrets.erp_stock_cron_key): re-check cancellations from the last
-// 48 hours that were skipped because the order hadn't reached Unicommerce. If
-// Unicommerce imported the order afterwards (it was fetching as the customer
-// cancelled, or it caught up after an outage), it now holds a piece for a
-// cancelled order, so the piece is put back.
 //
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — webhook subscriptions, granted Shopify scopes, ledger counts
@@ -59,7 +52,7 @@ const CORS = {
 };
 
 type Ctx = { admin: SupabaseClient; shop: string; token: string };
-type Reason = 'cancelled' | 'rto';
+type Reason = 'cancelled' | 'rto';  // 'cancelled' only for rows from before 1 Oct 2026
 type LinePlan = { line_item_id: number; sku: string; qty: number; add: boolean; why: string };
 
 serve(async (req) => {
@@ -82,14 +75,6 @@ serve(async (req) => {
       shop: secret('shopify_shop_domain') || 'supply-rethought.myshopify.com',
       token: secret('shopify_access_token') ?? '',
     };
-
-    // ── Scheduled re-check ──────────────────────────────────────────────────
-    const cronKey = req.headers.get('x-cron-key');
-    if (cronKey) {
-      const { data: row } = await admin.from('private_secrets').select('value').eq('key', 'erp_stock_cron_key').maybeSingle();
-      if (!row?.value || row.value !== cronKey) return json({ error: 'bad cron key' }, 401);
-      return json(await recheckEarlyCancellations(ctx));
-    }
 
     // ── Shopify webhook ───────────────────────────────────────────────────────
     if (topic) {
@@ -136,10 +121,11 @@ async function isLive(ctx: Ctx): Promise<boolean> {
   return data?.value === 'live';
 }
 
-async function handleOrderEvent(ctx: Ctx, topic: string, order: any) {
+// orders/cancelled is still subscribed: for RTO orders it is a second route to
+// handleRto (the claim makes it a no-op). Other cancellations are Unicommerce's.
+async function handleOrderEvent(ctx: Ctx, _topic: string, order: any) {
   if (!hasTag(order, TEST_TAG) && !(await isLive(ctx))) return;
   if (isRto(order)) return handleRto(ctx, order);
-  if (topic === 'orders/cancelled') return applyLines(ctx, order, 'cancelled', await planCancel(ctx, order));
 }
 
 // ── Planning (read-only) ──────────────────────────────────────────────────────
@@ -151,27 +137,7 @@ async function unicommerceState(ctx: Ctx, order: any) {
 
 const notTakenWhy = (inUc: boolean) => inUc
   ? 'order is cancelled in Unicommerce, so its piece was already released'
-  : `${NOT_IN_UC}, so Unicommerce never took this piece`;
-
-// Cancelled before shipping: units not in a successful fulfillment go back.
-async function planCancel(ctx: Ctx, order: any): Promise<LinePlan[]> {
-  const { inUc, ucOpen } = await unicommerceState(ctx, order);
-  const shipped = new Map<number, number>();
-  for (const f of order.fulfillments ?? []) {
-    if (f.status !== 'success') continue;
-    for (const li of f.line_items ?? []) shipped.set(li.id, (shipped.get(li.id) ?? 0) + li.quantity);
-  }
-  return (order.line_items ?? [])
-    .filter((l: any) => l.sku && !l.gift_card)
-    .map((l: any) => ({
-      line_item_id: l.id,
-      sku: l.sku,
-      qty: l.quantity - (shipped.get(l.id) ?? 0),
-      add: ucOpen,
-      why: ucOpen ? 'cancelled before shipping; order open in Unicommerce' : notTakenWhy(inUc),
-    }))
-    .filter((l: LinePlan) => l.qty > 0);
-}
+  : 'order never reached Unicommerce, so Unicommerce never took this piece';
 
 // RTO: the whole parcel came back. Couriers sometimes cancel the fulfillment on
 // RTO, so every unit on the order counts, not just successfully fulfilled ones.
@@ -359,38 +325,6 @@ async function issueStoreCredit(ctx: Ctx, order: any, amount: number): Promise<{
   }
 }
 
-// ── Re-check of early cancellations ─────────────────────────────────────────
-
-const NOT_IN_UC = 'order never reached Unicommerce';
-
-async function recheckEarlyCancellations(ctx: Ctx) {
-  const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
-  const { data: rows } = await ctx.admin.from('shopify_order_restocks').select('*')
-    .eq('reason', 'cancelled').eq('status', 'skipped').like('detail', `${NOT_IN_UC}%`).gte('created_at', since);
-  const byOrder = new Map<number, any[]>();
-  for (const r of rows ?? []) byOrder.set(r.order_id, [...(byOrder.get(r.order_id) ?? []), r]);
-
-  const results = [];
-  for (const [orderId, lines] of byOrder) {
-    const { ucOpen } = await unicommerceState(ctx, { id: orderId });
-    if (!ucOpen) continue;
-    for (const row of lines) {
-      // Re-claim atomically: only one run may move a skipped line to claimed.
-      const { data: reclaimed } = await ctx.admin.from('shopify_order_restocks')
-        .update({ status: 'claimed', updated_at: new Date().toISOString() })
-        .eq('order_id', row.order_id).eq('line_item_id', row.line_item_id).eq('status', 'skipped')
-        .select('order_id');
-      if (!reclaimed?.length) continue;
-      const result = await restockClaimedLine(ctx, row.order_id, row.order_name, 'cancelled', {
-        line_item_id: row.line_item_id, sku: row.sku, qty: row.qty, add: true,
-        why: 'cancelled before shipping; Unicommerce imported the order afterwards',
-      });
-      results.push({ order: row.order_name, sku: row.sku, qty: row.qty, result });
-    }
-  }
-  return { checked: byOrder.size, restocked: results };
-}
-
 // ── Admin actions ─────────────────────────────────────────────────────────────
 
 async function status(ctx: Ctx) {
@@ -457,13 +391,13 @@ async function dryRun(ctx: Ctx, orderRef: string) {
   const { data: rtoRow } = await ctx.admin.from('shopify_rto_orders').select('status').eq('order_id', order.id).maybeSingle();
   const { data: done } = await ctx.admin.from('shopify_order_restocks').select('line_item_id, status').eq('order_id', order.id);
   const rto = isRto(order);
-  const lines = rto ? await planRtoLines(ctx, order) : order.cancelled_at ? await planCancel(ctx, order) : [];
+  const lines = rto ? await planRtoLines(ctx, order) : [];
   return {
     dry_run: true,
     order: order.name,
-    event: rto ? 'rto' : order.cancelled_at ? 'cancelled' : 'none (not cancelled, no RTO tag)',
+    event: rto ? 'rto' : 'none (not tagged rto_delivered; cancellations are handled by Unicommerce)',
     rto_record: rtoRow?.status ?? null,
-    would_process: rto ? !rtoRow : true,
+    would_process: rto ? !rtoRow : false,
     lines: lines.map(l => ({ ...l, already: done?.find(d => d.line_item_id === l.line_item_id)?.status ?? null })),
     ...(rto ? {
       cancel: order.cancelled_at ? 'already cancelled' : 'cancel on Shopify, no refund, customer emailed',
