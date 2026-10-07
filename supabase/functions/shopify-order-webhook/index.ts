@@ -1,10 +1,13 @@
-// shopify-order-webhook v2
+// shopify-order-webhook v4
 // Puts stock back into Unicommerce when pieces come back from Shopify orders,
 // and handles RTO orders end to end.
 //
-// Stock model: every Shopify order is imported into Unicommerce and left open
-// there, where it holds (or will take) one piece per unit. So when a piece comes
-// back the ERP ADDs it to Unicommerce stock and never touches the Unicommerce order.
+// Stock model: every Shopify order is imported into Unicommerce, which holds a
+// piece per unit and takes it out of stock when it marks the order dispatched
+// (a daily batch). So when a piece comes back the ERP ADDs it to Unicommerce
+// stock and never touches the Unicommerce order. After an RTO cancel Unicommerce
+// opens a "Courier Returned" return that waits to be received; receiving it in
+// Unicommerce as well would count the piece twice (seen on #37707, 5 Oct 2026).
 //
 //   Shopify cancellations before shipping are NOT handled here: Unicommerce
 //     cancels its copy of the order itself and releases the held piece (seen on
@@ -12,10 +15,13 @@
 //   tag rto_delivered (orders/updated) → the parcel is back at the warehouse and
 //     every unit goes back, if the order is open in Unicommerce or shipped before
 //     the opening stock load (whose Shopify snapshot had already deducted it).
-//     Then, when app_settings.rto_shopify_actions is true: cancel the order on
-//     Shopify (no refund, customer emailed) and, for prepaid orders, credit the
-//     product amount (after discounts, excluding shipping, no expiry) to the
-//     customer's store credit with Shopify's store credit email.
+//     Then, when app_settings.rto_shopify_actions is true, cancel the order on
+//     Shopify (no restock, customer emailed). If the customer paid anything
+//     (prepaid, a part-payment, store credit), the cancel refunds all of it to
+//     store credit with no expiry; Shopify works out the amount, shipping
+//     included. Shopify won't cancel such an order while its shipment is active,
+//     and Velocity never closes the shipment on RTO, so the ERP cancels the
+//     fulfillment first. Neither step changes Shopify stock.
 //
 // Test mode: until app_settings.order_webhook_mode is "live", only orders
 // tagged erp-test are processed; every other order is ignored.
@@ -33,6 +39,9 @@
 //   retry    — re-attempt order lines whose Unicommerce update failed, and the
 //              stock step of RTO orders that failed before any line was recorded
 //              (e.g. the Unicommerce order lookup failed). { dry: true } only plans.
+//   cancel   — { order: "36840", dry?: true } cancel one RTO order on Shopify the
+//              same way (refund to store credit if paid), for orders whose
+//              automatic cancel failed. Stock is not touched; dry only shows the plan.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -105,7 +114,8 @@ serve(async (req) => {
       case 'register': return json(await register(ctx));
       case 'dry_run':  return json(await dryRun(ctx, String(body.order ?? '')));
       case 'retry':    return json(await retryFailed(ctx, body.dry === true));
-      default:         return json({ error: 'action must be status, register, dry_run or retry' }, 400);
+      case 'cancel':   return json(await cancelRto(ctx, String(body.order ?? ''), body.dry === true));
+      default:         return json({ error: 'action must be status, register, dry_run, retry or cancel' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -164,21 +174,6 @@ async function planRtoLines(ctx: Ctx, order: any): Promise<LinePlan[]> {
       why,
     }))
     .filter((l: LinePlan) => l.qty > 0);
-}
-
-// Store credit for prepaid RTO orders: the product amount after discounts,
-// excluding shipping. Anything unusual goes to a person instead.
-function planCredit(order: any): { action: 'none' | 'issue' | 'review'; amount?: number; why: string } {
-  if (order.financial_status !== 'paid') return { action: 'none', why: `payment status ${order.financial_status}` };
-  if (!order.customer?.id) return { action: 'review', why: 'order has no customer to credit' };
-  const refunded = (order.refunds ?? [])
-    .flatMap((r: any) => r.transactions ?? [])
-    .filter((t: any) => t.kind === 'refund' && t.status === 'success')
-    .reduce((s: number, t: any) => s + Number(t.amount || 0), 0);
-  if (refunded > 0) return { action: 'review', why: `₹${refunded} already refunded on this order` };
-  const amount = Number(order.cancelled_at ? order.subtotal_price : (order.current_subtotal_price ?? order.subtotal_price));
-  if (!(amount > 0)) return { action: 'review', why: 'could not work out the product amount' };
-  return { action: 'issue', amount, why: 'prepaid: products after discounts, excluding shipping' };
 }
 
 // ── Applying ──────────────────────────────────────────────────────────────────
@@ -243,38 +238,15 @@ async function handleRto(ctx: Ctx, order: any) {
     notes.push(`stock: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  const credit = planCredit(order);
-  let cancel_status: string;
-  let credit_status: string;
-  // Recorded even when not issued, so a person can credit it by hand.
-  const credit_amount = credit.action === 'issue' ? credit.amount! : null;
-
-  if (!(await shopifyActionsEnabled(ctx))) {
-    cancel_status = order.cancelled_at ? 'already_cancelled' : 'disabled';
-    credit_status = credit.action === 'none' ? 'not_prepaid' : 'disabled';
-    if (credit.action !== 'none') notes.push('store credit not issued automatically (RTO Shopify actions are off)');
-  } else {
-    if (order.cancelled_at) {
-      cancel_status = 'already_cancelled';
-    } else {
-      const err = await cancelOrder(ctx, order);
-      cancel_status = err ? 'failed' : 'cancelled';
-      if (err) notes.push(`cancel: ${err}`);
-    }
-    if (credit.action === 'none') {
-      credit_status = 'not_prepaid';
-    } else if (credit.action === 'review') {
-      credit_status = 'needs_review';
-      notes.push(`credit: ${credit.why}`);
-    } else if (cancel_status === 'failed') {
-      credit_status = 'needs_review';
-      notes.push('credit: not issued because the cancel failed');
-    } else {
-      const r = await issueStoreCredit(ctx, order, credit.amount!);
-      credit_status = r.status;
-      if (r.error) notes.push(`credit: ${r.error}`);
-    }
+  let outcome: CancelOutcome;
+  try {
+    outcome = await cancelOnShopify(ctx, order.id, await shopifyActionsEnabled(ctx));
+  } catch (e) {
+    outcome = { cancel_status: 'failed', credit_status: 'needs_review', credit_amount: null,
+      notes: [`cancel: ${e instanceof Error ? e.message : String(e)}`] };
   }
+  const { cancel_status, credit_status, credit_amount } = outcome;
+  notes.push(...outcome.notes);
 
   const attention = linesFailed || cancel_status === 'failed' ||
     ['failed', 'unknown', 'needs_review', 'disabled'].includes(credit_status);
@@ -291,40 +263,137 @@ async function shopifyActionsEnabled(ctx: Ctx): Promise<boolean> {
   return data?.value === true;
 }
 
-// Cancel without refund or restock; Shopify emails the customer. Returns an error or null.
-async function cancelOrder(ctx: Ctx, order: any): Promise<string | null> {
+// What's paid and shipped on an order, from Shopify. paid = still held on the
+// order (received minus refunded).
+type PaymentInfo = { cancelled: boolean; customerId: string | null; received: number; paid: number; activeFulfillments: string[] };
+
+async function paymentInfo(ctx: Ctx, orderId: number): Promise<PaymentInfo> {
+  const r = await gql(ctx, `query($id: ID!) {
+    order(id: $id) {
+      cancelledAt
+      customer { id }
+      totalReceivedSet { shopMoney { amount } }
+      totalRefundedSet { shopMoney { amount } }
+      fulfillments(first: 20) { id status }
+    }
+  }`, { id: `gid://shopify/Order/${orderId}` });
+  const o = r.data?.order;
+  if (!o) throw new Error(`Shopify order ${orderId} not found${r.errors ? `: ${JSON.stringify(r.errors)}` : ''}`);
+  const received = Number(o.totalReceivedSet?.shopMoney?.amount ?? 0);
+  const refunded = Number(o.totalRefundedSet?.shopMoney?.amount ?? 0);
+  return {
+    cancelled: !!o.cancelledAt,
+    customerId: o.customer?.id ?? null,
+    received,
+    paid: Math.round((received - refunded) * 100) / 100,
+    activeFulfillments: (o.fulfillments ?? []).filter((f: any) => f.status === 'SUCCESS').map((f: any) => f.id),
+  };
+}
+
+type CancelOutcome = { cancel_status: string; credit_status: string; credit_amount: number | null; notes: string[] };
+
+// Cancel an RTO order on Shopify: no restock, customer emailed, and anything
+// paid refunded to store credit by the cancel itself. Orders with money on
+// them get their active shipments cancelled first, or Shopify refuses
+// ("Cannot cancel an order that has outstanding fulfillments").
+async function cancelOnShopify(ctx: Ctx, orderId: number, enabled: boolean): Promise<CancelOutcome> {
+  const o = await paymentInfo(ctx, orderId);
+  const credit_amount = o.paid > 0 ? o.paid : null;
+  const nothingToRefund = o.received > 0 ? 'already_refunded' : 'not_prepaid';
+
+  if (o.cancelled) {
+    return o.paid > 0
+      ? { cancel_status: 'already_cancelled', credit_status: 'needs_review', credit_amount,
+          notes: [`credit: order was already cancelled with ₹${o.paid} paid and not refunded`] }
+      : { cancel_status: 'already_cancelled', credit_status: nothingToRefund, credit_amount, notes: [] };
+  }
+  if (!enabled) {
+    return { cancel_status: 'disabled', credit_status: o.paid > 0 ? 'disabled' : nothingToRefund, credit_amount,
+      notes: o.paid > 0 ? [`RTO Shopify actions are off: not cancelled, ₹${o.paid} not refunded`] : [] };
+  }
+  if (o.paid <= 0) {
+    const err = await cancelOrder(ctx, orderId, false);
+    return { cancel_status: err ? 'failed' : 'cancelled', credit_status: nothingToRefund, credit_amount,
+      notes: err ? [`cancel: ${err}`] : [] };
+  }
+
+  if (!o.customerId) {
+    return { cancel_status: 'failed', credit_status: 'needs_review', credit_amount,
+      notes: [`cancel: not attempted — ₹${o.paid} was paid but the order has no customer to give store credit to`] };
+  }
+  for (const id of o.activeFulfillments) {
+    const err = await cancelFulfillment(ctx, id);
+    if (err) {
+      return { cancel_status: 'failed', credit_status: 'needs_review', credit_amount,
+        notes: [`cancel: the shipment could not be cancelled: ${err}`] };
+    }
+  }
+  const err = await cancelOrder(ctx, orderId, true);
+  if (err) return { cancel_status: 'failed', credit_status: 'needs_review', credit_amount, notes: [`cancel: ${err}`] };
+
+  // Shopify cancels (and refunds) in a background job: confirm both happened.
+  for (let i = 0; i < 6; i++) {
+    await new Promise(ok => setTimeout(ok, 2000));
+    const after = await paymentInfo(ctx, orderId);
+    if (after.cancelled && after.paid <= 0) {
+      return { cancel_status: 'cancelled', credit_status: 'issued', credit_amount, notes: [] };
+    }
+  }
+  return { cancel_status: 'cancelled', credit_status: 'unknown', credit_amount,
+    notes: [`credit: cancel accepted, but the ₹${o.paid} store credit refund wasn't confirmed within 12 s — check the order`] };
+}
+
+// Cancel without restock; Shopify emails the customer. With refundToStoreCredit
+// everything still paid is refunded to store credit (no expiry); otherwise
+// nothing is refunded. Returns an error or null.
+async function cancelOrder(ctx: Ctx, orderId: number, refundToStoreCredit: boolean): Promise<string | null> {
   try {
-    const r = await gql(ctx, `mutation($id: ID!, $note: String) {
+    const r = await gql(ctx, `mutation($id: ID!, $note: String, $refundMethod: OrderCancelRefundMethodInput!) {
       orderCancel(orderId: $id, reason: OTHER, restock: false, notifyCustomer: true,
-        refundMethod: { originalPaymentMethodsRefund: false }, staffNote: $note) {
-        orderCancelUserErrors { message } userErrors { message }
+        refundMethod: $refundMethod, staffNote: $note) {
+        orderCancelUserErrors { message }
       }
-    }`, { id: `gid://shopify/Order/${order.id}`, note: 'RTO delivered — cancelled by Brune ERP' });
-    const errs = [...(r.data?.orderCancel?.orderCancelUserErrors ?? []), ...(r.data?.orderCancel?.userErrors ?? []), ...(r.errors ?? [])];
+    }`, {
+      id: `gid://shopify/Order/${orderId}`,
+      note: refundToStoreCredit
+        ? 'RTO delivered — paid amount refunded to store credit, cancelled by Brune ERP'
+        : 'RTO delivered — cancelled by Brune ERP',
+      refundMethod: refundToStoreCredit ? { storeCreditRefund: {} } : { originalPaymentMethodsRefund: false },
+    });
+    const errs = [...(r.data?.orderCancel?.orderCancelUserErrors ?? []), ...(r.errors ?? [])];
     return errs.length ? errs.map((e: any) => e.message).join('; ') : null;
   } catch (e) {
     return e instanceof Error ? e.message : String(e);
   }
 }
 
-// No expiry; notify sends Shopify's store credit email.
-async function issueStoreCredit(ctx: Ctx, order: any, amount: number): Promise<{ status: string; error?: string }> {
+// Cancel one shipment (fulfillment). Doesn't change Shopify stock. Returns an error or null.
+async function cancelFulfillment(ctx: Ctx, fulfillmentId: string): Promise<string | null> {
   try {
-    const r = await gql(ctx, `mutation($id: ID!, $input: StoreCreditAccountCreditInput!) {
-      storeCreditAccountCredit(id: $id, creditInput: $input) {
-        storeCreditAccountTransaction { amount { amount } } userErrors { message }
-      }
-    }`, {
-      id: `gid://shopify/Customer/${order.customer.id}`,
-      input: { creditAmount: { amount: amount.toFixed(2), currencyCode: order.currency || 'INR' }, notify: true },
-    });
-    const errs = [...(r.data?.storeCreditAccountCredit?.userErrors ?? []), ...(r.errors ?? [])];
-    if (errs.length) return { status: 'failed', error: errs.map((e: any) => e.message).join('; ') };
-    return { status: 'issued' };
+    const r = await gql(ctx, `mutation($id: ID!) {
+      fulfillmentCancel(id: $id) { fulfillment { id status } userErrors { message } }
+    }`, { id: fulfillmentId });
+    const errs = [...(r.data?.fulfillmentCancel?.userErrors ?? []), ...(r.errors ?? [])];
+    return errs.length ? errs.map((e: any) => e.message).join('; ') : null;
   } catch (e) {
-    // No response: the credit may or may not exist — a person must check before retrying.
-    return { status: 'unknown', error: e instanceof Error ? e.message : String(e) };
+    return e instanceof Error ? e.message : String(e);
   }
+}
+
+// What cancelOnShopify would do, for the dry runs.
+async function describeCancel(ctx: Ctx, orderId: number) {
+  const o = await paymentInfo(ctx, orderId);
+  if (o.cancelled) {
+    return { cancel: 'already cancelled', refund: o.paid > 0 ? `₹${o.paid} paid and not refunded — needs a person` : 'nothing to refund' };
+  }
+  if (o.paid <= 0) {
+    return { cancel: 'cancel the order (no restock, customer emailed)', refund: o.received > 0 ? 'already refunded' : 'nothing paid' };
+  }
+  if (!o.customerId) return { cancel: 'not possible', refund: `₹${o.paid} paid but no customer to give store credit to` };
+  return {
+    cancel: `cancel ${o.activeFulfillments.length} active shipment(s), then cancel the order (no restock, customer emailed)`,
+    refund: `₹${o.paid} to store credit, no expiry`,
+  };
 }
 
 // ── Admin actions ─────────────────────────────────────────────────────────────
@@ -402,8 +471,7 @@ async function dryRun(ctx: Ctx, orderRef: string) {
     would_process: rto ? !rtoRow : false,
     lines: lines.map(l => ({ ...l, already: done?.find(d => d.line_item_id === l.line_item_id)?.status ?? null })),
     ...(rto ? {
-      cancel: order.cancelled_at ? 'already cancelled' : 'cancel on Shopify, no refund, customer emailed',
-      credit: planCredit(order),
+      shopify: await describeCancel(ctx, order.id),
       rto_shopify_actions: await shopifyActionsEnabled(ctx),
     } : {}),
   };
@@ -472,6 +540,33 @@ async function retryRtoStock(ctx: Ctx, dry: boolean) {
     out.push({ order: row.order_name, status: attention ? 'needs_attention' : 'done', lines: results });
   }
   return out;
+}
+
+// Cancel one RTO order on Shopify, the same way as an incoming RTO (refund to
+// store credit if anything was paid). For orders whose automatic cancel failed.
+async function cancelRto(ctx: Ctx, orderRef: string, dry: boolean) {
+  const name = orderRef.replace(/^#/, '');
+  const { data: row } = await ctx.admin.from('shopify_rto_orders')
+    .select('order_id, order_name, status, detail')
+    .eq('order_name', name).maybeSingle();
+  if (!row || row.status === 'baseline') return { error: `${orderRef} is not an RTO order the ERP has processed` };
+  if (dry) return { dry_run: true, order: row.order_name, ...(await describeCancel(ctx, row.order_id)) };
+
+  const outcome = await cancelOnShopify(ctx, row.order_id, true);
+  // Keep the stock note; the cancel and credit notes are replaced.
+  const stockNote = /^stock: .*?(?=; (?:cancel|credit|store credit|RTO Shopify)|$)/.exec(String(row.detail ?? ''))?.[0];
+  const detail = [stockNote ?? '', ...outcome.notes].filter(Boolean).join('; ');
+  const attention = !!stockNote || outcome.cancel_status === 'failed' ||
+    ['failed', 'unknown', 'needs_review', 'disabled'].includes(outcome.credit_status);
+  await ctx.admin.from('shopify_rto_orders').update({
+    status: attention ? 'needs_attention' : 'done',
+    cancel_status: outcome.cancel_status,
+    credit_status: outcome.credit_status,
+    credit_amount: outcome.credit_amount,
+    detail: detail || null,
+    updated_at: new Date().toISOString(),
+  }).eq('order_id', row.order_id);
+  return { order: row.order_name, ...outcome, status: attention ? 'needs_attention' : 'done' };
 }
 
 // ── Shopify + helpers ─────────────────────────────────────────────────────────
