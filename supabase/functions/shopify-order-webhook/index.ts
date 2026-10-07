@@ -1,4 +1,4 @@
-// shopify-order-webhook v7
+// shopify-order-webhook v8
 // Puts stock back into Unicommerce when pieces come back from Shopify orders,
 // and handles RTO orders end to end.
 //
@@ -35,6 +35,10 @@
 //   return the pieces it took out are added back. Unicommerce's own order and
 //   invoice still show the original items.
 //
+// Sold at zero: the 15-min job also follows order items Unicommerce took with
+//   no stock, and takes out pieces that were dispatched before their stock was
+//   added once the SKU has stock again (see ../_shared/backorders.ts).
+//
 // Test mode: until app_settings.order_webhook_mode is "live", only orders
 // tagged erp-test are processed; every other order is ignored.
 //
@@ -66,12 +70,15 @@
 //              re-check edit corrections that are pending or need attention
 //   edits    — { order: "37827", dry?: true } correct (or preview) one edited order
 //   subscribe — create any missing webhook subscriptions (no baselining)
+//   backorders — follow sold-at-zero items now and list them; { apply: true }
+//              also takes owed pieces out of Unicommerce (otherwise only planned)
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { adjustStock, getSaleOrder, getSaleOrderDetail } from '../_shared/unicommerce.ts';
 import { type BackLine, type Settled, settleReturnedLines } from '../_shared/uc-returns.ts';
 import { type EditTarget, editTargets } from '../_shared/order-edits.ts';
+import { settleOwed, trackBackorders } from '../_shared/backorders.ts';
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
@@ -133,7 +140,7 @@ serve(async (req) => {
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
       const job = (raw ? JSON.parse(raw) : {}).job;
       return json(job === 'settle'
-        ? { ...(await settleWaiting(ctx)), edits: await recheckEdits(ctx) }
+        ? { ...(await settleWaiting(ctx)), edits: await recheckEdits(ctx), backorders: await backorderJob(ctx, true) }
         : await sweep(ctx, 3, false));
     }
 
@@ -155,7 +162,8 @@ serve(async (req) => {
       case 'settle':   return json({ ...(await settleWaiting(ctx)), edits: await recheckEdits(ctx) });
       case 'edits':    return json(await editsOne(ctx, String(body.order ?? ''), body.dry === true));
       case 'subscribe': return json({ registered: await subscribeTopics(ctx) });
-      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel, sweep, settle, edits or subscribe' }, 400);
+      case 'backorders': return json(await backorderJob(ctx, body.apply === true));
+      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel, sweep, settle, edits, subscribe or backorders' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -839,6 +847,23 @@ async function editsOne(ctx: Ctx, orderRef: string, dry: boolean) {
   const order = found.find((o: any) => String(o.name).replace(/^#/, '') === name);
   if (!order) return { error: `order ${orderRef} not found` };
   return reconcileEdits(ctx, Number(order.id), dry);
+}
+
+// ── Sold at zero ──────────────────────────────────────────────────────────────
+
+// Follow items Unicommerce took without stock, and (with `apply`) take owed
+// pieces out once their SKU has stock again. See ../_shared/backorders.ts.
+async function backorderJob(ctx: Ctx, apply: boolean) {
+  try {
+    const tracked = await trackBackorders(ctx.admin);
+    const settled = await settleOwed(ctx.admin, { dry: !apply });
+    const { data: open } = await ctx.admin.from('unicommerce_backorders')
+      .select('order_name, sku, status, updated_at').in('status', ['waiting', 'owed']).order('sku');
+    return { ...tracked, settled, open: open ?? [] };
+  } catch (e) {
+    console.error('[backorders]', e instanceof Error ? e.message : e);
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // ── Shopify + helpers ─────────────────────────────────────────────────────────

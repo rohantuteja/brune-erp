@@ -1,9 +1,11 @@
-// unicommerce-adjust-inventory v2
+// unicommerce-adjust-inventory v3
 // Adds a production batch's pieces to Unicommerce stock when the batch is
 // completed, and removes them when it is moved back to In Progress.
 // Unicommerce is the inventory system of record and pushes stock on to Shopify
 // and Myntra. Replaces shopify-adjust-inventory. The work itself (SKU rule,
-// exactly-once ledger, audit trail) is in ../_shared/batch-sync.ts.
+// exactly-once ledger, audit trail) is in ../_shared/batch-sync.ts. On
+// completion, pieces of the SKU that were sold at zero and already shipped are
+// taken out of what the batch added (sold_at_zero in the response).
 //
 // dry_run: true → reports the SKU, ledger state and current Unicommerce stock
 // per size without claiming or changing anything.
@@ -73,7 +75,7 @@ serve(async (req) => {
     }
 
     const result = await syncBatch(supabase, batch, direction);
-    const { status, adjusted, skipped, failed } = result;
+    const { status, adjusted, skipped, failed, soldAtZero } = result;
 
     if (failed.length > 0) {
       return json({
@@ -89,6 +91,7 @@ serve(async (req) => {
       adjusted: adjusted.length,
       skipped,
       status,
+      ...(soldAtZero ? { sold_at_zero: soldAtZero } : {}),
       ...(adjusted.length === 0 && skipped.length > 0 ? { code: 'not_in_unicommerce' } : {}),
     });
 
