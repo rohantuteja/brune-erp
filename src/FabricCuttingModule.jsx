@@ -6508,6 +6508,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   const [orderRestocks, setOrderRestocks] = useState([]);
   const [rtoAttention, setRtoAttention] = useState([]);
   const [editAttention, setEditAttention] = useState([]);
+  // Order items Unicommerce took with no stock (waiting / owed) and recent take-outs.
+  const [soldAtZero, setSoldAtZero] = useState([]);
   // restockFilterMonth is now URL-backed via useSearchParams (see top of component)
 
   // ── Pending COD state ────────────────────────────────────────────────
@@ -6694,7 +6696,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       .order('processed_at', { ascending: false })
       .limit(200);
     setReturnRestocks(data || []);
-    const [{ data: lines }, { data: rpLines }, { data: rto }, { data: edits }] = await Promise.all([
+    const [{ data: lines }, { data: rpLines }, { data: rto }, { data: edits }, { data: zero }] = await Promise.all([
       supabase.from('shopify_order_restocks')
         .select('order_id, line_item_id, order_name, sku, qty, reason, status, detail, updated_at')
         .order('updated_at', { ascending: false }).limit(100),
@@ -6707,6 +6709,10 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       supabase.from('shopify_order_edits')
         .select('order_id, order_name, detail, updated_at')
         .eq('status', 'needs_attention').order('updated_at', { ascending: false }),
+      supabase.from('unicommerce_backorders')
+        .select('sale_order_code, item_code, order_name, sku, status, settled_by, updated_at')
+        .or(`status.in.(waiting,owed),and(status.eq.settled,updated_at.gte.${new Date(Date.now() - 30 * 86400000).toISOString()})`)
+        .order('updated_at', { ascending: false }),
     ]);
     // Return Prime rows share the list; they're keyed by request, labelled by request number.
     const returnRows = (rpLines || []).map(l => ({
@@ -6716,6 +6722,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 150));
     setRtoAttention(rto || []);
     setEditAttention(edits || []);
+    setSoldAtZero(zero || []);
     setReturnRestocksLoading(false);
   };
 
@@ -9382,6 +9389,39 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                 ))}
               </div>
             )}
+
+            {/* Sold at zero: orders Unicommerce took with no stock (its negative stock) */}
+            {soldAtZero.length > 0 && (() => {
+              const bySku = {};
+              for (const r of soldAtZero.filter(x => x.status !== 'settled')) {
+                bySku[r.sku] = bySku[r.sku] || { waiting: [], owed: [] };
+                bySku[r.sku][r.status].push(r.order_name);
+              }
+              const settled = {};
+              for (const r of soldAtZero.filter(x => x.status === 'settled')) {
+                const k = `${r.sku}|${r.settled_by}`;
+                settled[k] = settled[k] || { sku: r.sku, by: r.settled_by, at: r.updated_at, n: 0 };
+                settled[k].n++;
+              }
+              return (
+                <div className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4 space-y-2">
+                  <div className="text-sm font-medium text-stone-900">Sold at zero</div>
+                  <div className="text-xs text-stone-500">Orders taken with no stock in Unicommerce. Waiting orders get the next pieces that come in; owed pieces already shipped and are taken out of the next batch.</div>
+                  {Object.entries(bySku).map(([sku, v]) => (
+                    <div key={sku} className="text-xs text-stone-800">
+                      <span className="font-mono font-medium">{sku}</span>
+                      {v.waiting.length > 0 && <> · <span className="text-amber-800">−{v.waiting.length} waiting</span> ({v.waiting.join(', ')})</>}
+                      {v.owed.length > 0 && <> · <span className="text-red-700">−{v.owed.length} owed</span> ({v.owed.join(', ')})</>}
+                    </div>
+                  ))}
+                  {Object.values(settled).map(t => (
+                    <div key={`${t.sku}|${t.by}`} className="text-xs text-stone-500">
+                      <span className="font-mono">{t.sku}</span> · {t.n} taken out by {t.by} · {new Date(t.at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
 
             <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
               <div className="p-3 sm:p-4 border-b border-stone-200">

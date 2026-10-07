@@ -13,9 +13,14 @@
 // pieces were carried into Unicommerce by the opening stock load, so reverting
 // such a batch correctly removes them from Unicommerce. On a failed call the
 // claim is released so a retry can re-attempt.
+//
+// Sold at zero: pieces of the SKU that were shipped before their stock was in
+// Unicommerce are taken out right after a batch adds it (./backorders.ts), so
+// a batch of 10 against 5 already sold leaves 5.
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { adjustStock, skuExists } from './unicommerce.ts';
+import { settleOwed, trackBackorders } from './backorders.ts';
 
 export type Direction = 'complete' | 'revert';
 export type BatchSyncResult = {
@@ -23,6 +28,7 @@ export type BatchSyncResult = {
   adjusted: string[];                          // applied to Unicommerce (or already applied)
   skipped: string[];                           // SKU not in the Unicommerce catalog
   failed: Array<{ size: string; reason: string }>;
+  soldAtZero?: Array<{ size: string; taken: number } | { size: string; error: string }>;
 };
 
 export const skuFor = (styleCode: string, size: string) => `${styleCode}-${size}`;
@@ -43,6 +49,7 @@ export async function syncBatch(
 
   const skipped: string[] = [];
   const adjusted: string[] = [];
+  const added: string[] = [];
   const failed: Array<{ size: string; reason: string }> = [];
 
   // Which SKUs exist in Unicommerce (one catalog lookup per size). Sequential
@@ -100,6 +107,7 @@ export async function syncBatch(
 
     if (!error) {
       adjusted.push(size);
+      if (direction === 'complete') added.push(size);
     } else {
       // Roll back the claim so a retry can re-attempt this size.
       await admin.rpc('release_batch_size_sync', {
@@ -108,6 +116,22 @@ export async function syncBatch(
         p_direction: direction,
       });
       failed.push({ size, reason: error });
+    }
+  }
+
+  // ── Sold at zero: take out what shipped before this stock was added ─────────
+  // Waiting orders get the new stock first (Unicommerce does that itself); then
+  // owed pieces come out of what's left. A failure here leaves them owed for
+  // the 15-min job; it doesn't fail the batch.
+  const soldAtZero: NonNullable<BatchSyncResult['soldAtZero']> = [];
+  for (const size of added) {
+    const sku = skuFor(batch.style_code, size);
+    try {
+      await trackBackorders(admin, { sku });
+      const [r] = await settleOwed(admin, { sku, by: `batch #${batch.id}` });
+      if (r?.settled) soldAtZero.push({ size, taken: r.settled });
+    } catch (err) {
+      soldAtZero.push({ size, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -129,9 +153,10 @@ export async function syncBatch(
         adjusted,
         skipped,
         failed,
+        ...(soldAtZero.length ? { sold_at_zero: soldAtZero } : {}),
       },
     })
     .eq('id', batch.id);
 
-  return { status, adjusted, skipped, failed };
+  return { status, adjusted, skipped, failed, ...(soldAtZero.length ? { soldAtZero } : {}) };
 }
