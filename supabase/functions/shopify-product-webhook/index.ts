@@ -1,8 +1,11 @@
-// shopify-product-webhook v3
-// When a Shopify product is Active (typically: moved from Draft when it goes
-// live), makes sure each of its size SKUs exists in Unicommerce, then adds any
-// completed ERP batches of that style that were waiting because the product
-// wasn't in Unicommerce yet.
+// shopify-product-webhook v4
+// When a Shopify product is live (Active, or Unlisted: sellable by link),
+// typically moved from Draft when it goes live:
+//   1. makes sure each of its size SKUs exists in Unicommerce,
+//   2. adds any completed ERP batches of that style that were waiting because
+//      the product wasn't in Unicommerce yet,
+//   3. links each of its listings to its SKU in Unicommerce, so Unicommerce
+//      pushes stock to it and maps its orders.
 //
 // Create only: SKUs already in Unicommerce are never edited, so changes made
 // in Unicommerce stay. New SKUs get the same fields as ~/Unicommerce/
@@ -20,19 +23,31 @@
 // Batch catch-up runs when this event creates a SKU or first finds one in
 // Unicommerce, so later edits to a live product don't re-run it.
 //
+// Listings: Unicommerce keys a Shopify listing as '<product id>-<variant id>'
+// and a SKU can have several (the Unlisted lower-price copies of a product
+// share its SKUs; every copy gets the SKU's full stock). A new product's
+// listings weren't linked by Unicommerce itself (Colette Brown, 8 Oct 2026).
+// Each listing is linked once (unicommerce_channel_links, migration 013); a
+// new copy of an existing product gets its own links though its SKUs exist.
+// Listings Unicommerce had already linked are recorded as 'baseline' and
+// never touched, so settings made in Unicommerce stay.
+//
 // Topics: products/create, products/update (HMAC-verified, processed in the
-// background inside Shopify's 5-second limit). Ledger: unicommerce_sku_sync
-// (migration 008).
+// background inside Shopify's 5-second limit). Ledgers: unicommerce_sku_sync
+// (migration 008), unicommerce_channel_links (migration 013).
 //
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — webhook subscriptions, ledger counts, SKUs flagged for review
 //   register — subscribe products/create + products/update
-//   dry_run  — every Active product: SKUs that would be created, flags, and the
-//              batches that would be added. Changes nothing.
+//   dry_run  — every live product: SKUs that would be created, flags, the
+//              batches that would be added, listings that would be linked, and
+//              listings whose Shopify stock differs from Unicommerce's.
+//              Changes nothing.
+//   baseline_links — record every live listing as already linked
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { addOrEditCategory, createOrEditItemType, skuExists } from '../_shared/unicommerce.ts';
+import { addOrEditCategory, createOrEditItemType, linkShopifyListing, skuExists, stockSnapshot } from '../_shared/unicommerce.ts';
 import { syncBatch } from '../_shared/batch-sync.ts';
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
@@ -47,6 +62,7 @@ const gstFor = (price: number) => price > GST_HIGH_ABOVE ? GST_HIGH : GST_LOW;
 // Standard shipping package. Unicommerce takes dimensions in mm and weight in grams.
 const LENGTH_MM = 250, WIDTH_MM = 200, HEIGHT_MM = 50, WEIGHT_G = 500;
 const SKU_RE = /^[A-Za-z0-9._\/-]{3,45}$/;
+const LIVE = ['active', 'unlisted'];  // Shopify statuses whose listings can sell
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -59,7 +75,7 @@ type Product = {
   id: number; title: string; handle: string; vendor: string; productType: string;
   bodyHtml: string; active: boolean; image: string | null;
   sizeOption: number | null;  // 1-based option position named "Size"
-  variants: Array<{ sku: string; price: number; compareAt: number; options: string[]; image: string | null }>;
+  variants: Array<{ id: number; sku: string; price: number; compareAt: number; options: string[]; image: string | null; quantity?: number }>;
 };
 
 serve(async (req) => {
@@ -109,7 +125,8 @@ serve(async (req) => {
       case 'status':   return json(await status(ctx));
       case 'register': return json(await register(ctx));
       case 'dry_run':  return json(await dryRun(ctx));
-      default:         return json({ error: 'action must be status, register or dry_run' }, 400);
+      case 'baseline_links': return json(await baselineLinks(ctx));
+      default:         return json({ error: 'action must be status, register, dry_run or baseline_links' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -123,10 +140,11 @@ function fromRest(p: any): Product {
   const sizeIdx = (p.options ?? []).findIndex((o: any) => String(o.name).toLowerCase() === 'size');
   return {
     id: p.id, title: p.title ?? '', handle: p.handle ?? '', vendor: p.vendor ?? '',
-    productType: p.product_type ?? '', bodyHtml: p.body_html ?? '', active: p.status === 'active',
+    productType: p.product_type ?? '', bodyHtml: p.body_html ?? '', active: LIVE.includes(p.status),
     image: p.image?.src ?? p.images?.[0]?.src ?? null,
     sizeOption: sizeIdx >= 0 ? sizeIdx + 1 : null,
     variants: (p.variants ?? []).map((v: any) => ({
+      id: Number(v.id),
       sku: String(v.sku ?? '').trim(),
       price: Number(v.price ?? 0),
       compareAt: Number(v.compare_at_price ?? 0),
@@ -183,7 +201,7 @@ const styleOf = (sku: string) => sku.replace(/-[^-]+$/, '');
 // ── Handling a product ────────────────────────────────────────────────────────
 
 async function handleProduct(ctx: Ctx, p: Product) {
-  if (!p.active) return { skipped: 'not active' };
+  if (!p.active) return { skipped: 'not live' };
   const skus = buildItems(p, new Map()).map(i => i.skuCode as string);
   if (!skus.length) return { skipped: 'no SKUs' };
 
@@ -191,8 +209,13 @@ async function handleProduct(ctx: Ctx, p: Product) {
     .select('sku').in('sku', skus).in('status', ['created', 'already_in_unicommerce']);
   const knownSet = new Set((known ?? []).map(k => k.sku));
   const unknown = skus.filter(s => !knownSet.has(s));
-  if (!unknown.length) return { skipped: 'all SKUs already handled' };
+  const result = unknown.length ? await ensureSkus(ctx, p, unknown) : { created: [], already: [], failed: [], batches: [] };
+  const inUnicommerce = new Set([...knownSet, ...result.created, ...result.already]);
+  return { ...result, links: await linkListings(ctx, p, inUnicommerce) };
+}
 
+// Create the SKUs Unicommerce doesn't have yet, then add waiting batches.
+async function ensureSkus(ctx: Ctx, p: Product, unknown: string[]) {
   const missing: string[] = [];
   const lookupFailed: string[] = [];
   for (const sku of unknown) {
@@ -248,6 +271,40 @@ async function handleProduct(ctx: Ctx, p: Product) {
   return { created, already, failed: [...lookupFailed, ...missing.filter(s => !created.includes(s))], batches };
 }
 
+const listingId = (productId: number, variantId: number) => `${productId}-${variantId}`;
+
+// Link each listing of this product whose SKU is in Unicommerce and that isn't
+// linked yet. Failed links are retried on the product's next update.
+async function linkListings(ctx: Ctx, p: Product, inUnicommerce: Set<string>) {
+  const listings = p.variants
+    .filter(v => v.id && inUnicommerce.has(v.sku))
+    .map(v => ({ id: listingId(p.id, v.id), sku: v.sku }));
+  if (!listings.length) return [];
+  // Until baseline_links has recorded the listings Unicommerce already linked,
+  // linking would touch them too.
+  const { count: baselined } = await ctx.admin.from('unicommerce_channel_links')
+    .select('channel_product_id', { count: 'exact', head: true }).eq('status', 'baseline');
+  if (!baselined) return [{ result: 'not linked: run baseline_links first' }];
+  const { data: done } = await ctx.admin.from('unicommerce_channel_links')
+    .select('channel_product_id').in('channel_product_id', listings.map(l => l.id)).in('status', ['linked', 'baseline']);
+  const doneSet = new Set((done ?? []).map(d => d.channel_product_id));
+  const results = [];
+  for (const l of listings.filter(x => !doneSet.has(x.id))) {
+    let err: string | null;
+    try {
+      err = await linkShopifyListing(ctx.admin, l.id, l.sku);
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
+    await ctx.admin.from('unicommerce_channel_links').upsert({
+      channel_product_id: l.id, sku: l.sku, shopify_product_id: p.id, product_title: p.title,
+      status: err ? 'failed' : 'linked', detail: err ?? 'linked in Unicommerce', updated_at: new Date().toISOString(),
+    }, { onConflict: 'channel_product_id' });
+    results.push({ listing: l.id, sku: l.sku, result: err ? `failed: ${err}` : 'linked' });
+  }
+  return results;
+}
+
 async function record(ctx: Ctx, p: Product, sku: string, status: string, needsReview: boolean, detail: string) {
   await ctx.admin.from('unicommerce_sku_sync').upsert({
     sku, shopify_product_id: p.id, product_title: p.title, status,
@@ -301,7 +358,7 @@ async function register(ctx: Ctx) {
   return { registered };
 }
 
-// What the webhook would do for every Active product right now. Changes nothing.
+// What the webhook would do for every live product right now. Changes nothing.
 async function dryRun(ctx: Ctx) {
   const products = await activeProducts(ctx);
   const { data: known } = await ctx.admin.from('unicommerce_sku_sync')
@@ -327,21 +384,62 @@ async function dryRun(ctx: Ctx) {
   const batches = styles.length
     ? (await pendingBatches(ctx, styles)).map(b => ({ batch: b.id, style: b.style_code, sizes: b.issued_sizes }))
     : [];
-  return { active_products: products.length, skus_checked: checked, would_create: wouldCreate, batches_that_would_be_added: batches };
+
+  // Listings not linked yet, and listings whose Shopify stock differs from
+  // Unicommerce's (a sign Unicommerce isn't pushing to them).
+  const listings = products.flatMap(p => p.product.variants.filter(v => v.sku && SKU_RE.test(v.sku))
+    .map(v => ({ id: listingId(p.product.id, v.id), sku: v.sku, product: p.product.title, status: p.status, quantity: v.quantity ?? 0 })));
+  const linked = new Set<string>();
+  for (let i = 0; i < listings.length; i += 200) {
+    const { data } = await ctx.admin.from('unicommerce_channel_links').select('channel_product_id')
+      .in('channel_product_id', listings.slice(i, i + 200).map(l => l.id)).in('status', ['linked', 'baseline']);
+    for (const d of data ?? []) linked.add(d.channel_product_id);
+  }
+  const stock: Record<string, { available: number }> = {};
+  const skus = [...new Set(listings.map(l => l.sku))];
+  for (let i = 0; i < skus.length; i += 100) Object.assign(stock, await stockSnapshot(ctx.admin, skus.slice(i, i + 100)));
+  const mismatches = listings
+    .filter(l => (stock[l.sku]?.available ?? 0) !== l.quantity)
+    .map(l => ({ sku: l.sku, product: l.product, status: l.status, listing: l.id, shopify: l.quantity, unicommerce: stock[l.sku]?.available ?? null }));
+
+  return {
+    live_products: products.length, skus_checked: checked, would_create: wouldCreate, batches_that_would_be_added: batches,
+    listings: listings.length, would_link: listings.filter(l => !linked.has(l.id)).length,
+    stock_mismatches: mismatches,
+  };
+}
+
+// Record every live listing as already linked by Unicommerce, so the sync never
+// touches it. Listings already recorded keep their status.
+async function baselineLinks(ctx: Ctx) {
+  const rows = (await activeProducts(ctx)).flatMap(p => p.product.variants
+    .filter(v => v.sku && SKU_RE.test(v.sku))
+    .map(v => ({
+      channel_product_id: listingId(p.product.id, v.id), sku: v.sku, shopify_product_id: p.product.id,
+      product_title: p.product.title, status: 'baseline', detail: 'already linked by Unicommerce before the ERP linked listings',
+    })));
+  let added = 0;
+  for (let i = 0; i < rows.length; i += 200) {
+    const { data, error } = await ctx.admin.from('unicommerce_channel_links')
+      .upsert(rows.slice(i, i + 200), { onConflict: 'channel_product_id', ignoreDuplicates: true }).select('channel_product_id');
+    if (error) throw error;
+    added += data?.length ?? 0;
+  }
+  return { listings: rows.length, baselined: added };
 }
 
 async function activeProducts(ctx: Ctx) {
-  const out: Array<{ product: Product; costs: Map<string, number> }> = [];
+  const out: Array<{ product: Product; costs: Map<string, number>; status: string }> = [];
   let after: string | null = null;
   do {
     const r: any = await gql(ctx, `query($after: String) {
-      products(first: 50, after: $after, query: "status:active") {
+      products(first: 50, after: $after, query: "status:active OR status:unlisted") {
         pageInfo { hasNextPage endCursor }
         nodes {
-          legacyResourceId title handle vendor productType descriptionHtml
+          legacyResourceId title handle vendor productType descriptionHtml status
           options { name position }
           variants(first: 100) { nodes {
-            sku price compareAtPrice selectedOptions { name value }
+            legacyResourceId sku price compareAtPrice inventoryQuantity selectedOptions { name value }
             inventoryItem { unitCost { amount } }
           } }
         }
@@ -354,7 +452,10 @@ async function activeProducts(ctx: Ctx) {
         const sku = String(v.sku ?? '').trim();
         if (v.inventoryItem?.unitCost?.amount != null) costs.set(sku, Number(v.inventoryItem.unitCost.amount));
         const opts = (n.options ?? []).map((o: any) => v.selectedOptions?.find((s: any) => s.name === o.name)?.value ?? null);
-        return { sku, price: Number(v.price ?? 0), compareAt: Number(v.compareAtPrice ?? 0), options: opts, image: null };
+        return {
+          id: Number(v.legacyResourceId), sku, price: Number(v.price ?? 0), compareAt: Number(v.compareAtPrice ?? 0),
+          options: opts, image: null, quantity: Number(v.inventoryQuantity ?? 0),
+        };
       });
       out.push({
         product: {
@@ -363,6 +464,7 @@ async function activeProducts(ctx: Ctx) {
           sizeOption: size ? size.position : null, variants,
         },
         costs,
+        status: String(n.status ?? '').toLowerCase(),
       });
     }
     after = r.data?.products?.pageInfo?.hasNextPage ? r.data.products.pageInfo.endCursor : null;
