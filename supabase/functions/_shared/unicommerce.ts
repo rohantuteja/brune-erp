@@ -129,6 +129,49 @@ export async function getSaleOrder(admin: SupabaseClient, code: string): Promise
   throw new Error(`Unicommerce order lookup failed: ${ucErrorText(data)}`);
 }
 
+// A sale order with its items and returns, or null if Unicommerce doesn't have
+// it. Item codes are the Shopify line item IDs (suffixed per unit when a line
+// has more than one). Throws if the lookup itself fails.
+export type UcOrder = {
+  status: string;
+  items: Array<{ code: string; sku: string; status: string }>;
+  returns: Array<{ code: string; type: string; status: string; received: boolean; items: Array<{ code: string; sku: string }> }>;
+};
+
+export async function getSaleOrderDetail(admin: SupabaseClient, code: string): Promise<UcOrder | null> {
+  const data = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code });
+  const so = data?.successful ? data.saleOrderDTO : null;
+  if (!so) {
+    if ((data?.errors ?? []).some((e: any) => e.message === 'INVALID_SALE_ORDER_CODE')) return null;
+    throw new Error(`Unicommerce order lookup failed: ${ucErrorText(data)}`);
+  }
+  return {
+    status: so.status,
+    items: (so.saleOrderItems ?? []).map((i: any) => ({ code: String(i.code), sku: i.itemSku, status: i.statusCode })),
+    returns: (so.returns ?? []).map((r: any) => ({
+      code: r.code,
+      type: r.type,
+      status: r.statusCode,
+      received: r.statusCode === 'RETURNED' || !!r.inventoryReceivedDate || !!r.returnCompletedDate,
+      items: (r.returnItems ?? []).map((i: any) => ({ code: String(i.saleOrderItemCode), sku: i.itemSku })),
+    })),
+  };
+}
+
+// Receive a return in Unicommerce (as an RTO or customer return would be at
+// the warehouse): every item of the return at once, as good stock on the
+// shelf. Unicommerce completes the putaway itself and issues its return
+// invoice. Returns null on success, or the error text.
+export async function completeReturn(
+  admin: SupabaseClient, saleOrderCode: string, itemCodes: string[], reason: string,
+): Promise<string | null> {
+  const data = await ucPost(admin, '/services/rest/v1/oms/returns/complete', {
+    saleOrderCode,
+    saleOrderItems: itemCodes.map(code => ({ code, status: 'GOOD_INVENTORY', shelfCode: SHELF, reason: reason.slice(0, 100) })),
+  });
+  return data?.successful ? null : ucErrorText(data);
+}
+
 // Sellable stock per SKU: available (inventory) and reserved for open orders
 // (inventoryBlocked). SKUs that never held stock are absent.
 export async function stockSnapshot(admin: SupabaseClient, skus: string[]) {

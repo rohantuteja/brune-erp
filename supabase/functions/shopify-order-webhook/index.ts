@@ -1,13 +1,15 @@
-// shopify-order-webhook v5
+// shopify-order-webhook v6
 // Puts stock back into Unicommerce when pieces come back from Shopify orders,
 // and handles RTO orders end to end.
 //
 // Stock model: every Shopify order is imported into Unicommerce, which holds a
 // piece per unit and takes it out of stock when it marks the order dispatched
-// (a daily batch). So when a piece comes back the ERP ADDs it to Unicommerce
-// stock and never touches the Unicommerce order. After an RTO cancel Unicommerce
-// opens a "Courier Returned" return that waits to be received; receiving it in
-// Unicommerce as well would count the piece twice (seen on #37707, 5 Oct 2026).
+// (once Velocity fulfils it). After an RTO cancel Unicommerce opens a "Courier
+// Returned" return on the order; the ERP receives that return as good stock
+// (no one has to receive it by hand), or adds the piece directly when
+// Unicommerce never shipped it. See ../_shared/uc-returns.ts. Lines wait (status
+// 'waiting') until Unicommerce has opened the return, 6–30 min after the cancel;
+// a 15-min job (pg_cron, migration 011) settles them and retries failed lines.
 //
 //   Shopify cancellations before shipping are NOT handled here: Unicommerce
 //     cancels its copy of the order itself and releases the held piece (seen on
@@ -49,10 +51,12 @@
 //              same way (refund to store credit if paid), for orders whose
 //              automatic cancel failed. Stock is not touched; dry only shows the plan.
 //   sweep    — { days?: 3, dry?: true } run the safety-net sweep now (or preview it)
+//   settle   — run the 15-min job now: settle waiting lines, retry failed ones
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adjustStock, getSaleOrder } from '../_shared/unicommerce.ts';
+import { getSaleOrder } from '../_shared/unicommerce.ts';
+import { type BackLine, type Settled, settleReturnedLines } from '../_shared/uc-returns.ts';
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
@@ -108,11 +112,12 @@ serve(async (req) => {
       return json({ ok: true });
     }
 
-    // ── Daily safety sweep ────────────────────────────────────────────────────
+    // ── Scheduled jobs: daily RTO sweep, 15-min settle ────────────────────────
     const cronKey = req.headers.get('x-cron-key');
     if (cronKey) {
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
-      return json(await sweep(ctx, 3, false));
+      const job = (raw ? JSON.parse(raw) : {}).job;
+      return json(job === 'settle' ? await settleWaiting(ctx) : await sweep(ctx, 3, false));
     }
 
     // ── Admin actions ─────────────────────────────────────────────────────────
@@ -130,7 +135,8 @@ serve(async (req) => {
       case 'retry':    return json(await retryFailed(ctx, body.dry === true));
       case 'cancel':   return json(await cancelRto(ctx, String(body.order ?? ''), body.dry === true));
       case 'sweep':    return json(await sweep(ctx, Number(body.days ?? 3), body.dry !== false));
-      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel or sweep' }, 400);
+      case 'settle':   return json(await settleWaiting(ctx));
+      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel, sweep or settle' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -193,8 +199,12 @@ async function planRtoLines(ctx: Ctx, order: any): Promise<LinePlan[]> {
 
 // ── Applying ──────────────────────────────────────────────────────────────────
 
+// Claim each line exactly once, then settle the claimed ones: lines that should
+// come back go to Unicommerce (../_shared/uc-returns.ts), the rest are skipped.
 async function applyLines(ctx: Ctx, order: any, reason: Reason, lines: LinePlan[]) {
-  const results = [];
+  const results: Array<LinePlan & { result: string }> = [];
+  const back: BackLine[] = [];
+  const now = new Date().toISOString();
   for (const l of lines) {
     // Exactly-once claim for this order line (ON CONFLICT DO NOTHING).
     const { data: claimed, error: claimErr } = await ctx.admin
@@ -206,31 +216,75 @@ async function applyLines(ctx: Ctx, order: any, reason: Reason, lines: LinePlan[
       .select('order_id');
     if (claimErr) throw claimErr;
     if (!claimed?.length) { results.push({ ...l, result: 'already handled' }); continue; }
-    results.push({ ...l, result: await restockClaimedLine(ctx, order.id, order.name, reason, l) });
+    if (l.add) {
+      back.push({ line_item_id: l.line_item_id, sku: l.sku, qty: l.qty, since: now });
+    } else {
+      await recordLine(ctx, order.id, l.line_item_id, 'skipped', l.why);
+      results.push({ ...l, result: 'skipped' });
+    }
+  }
+  if (back.length) {
+    const settled = await settleRows(ctx, order.id, back, remarksFor(order.name, reason));
+    for (const l of lines.filter(x => back.some(b => b.line_item_id === x.line_item_id))) {
+      results.push({ ...l, result: settled.get(l.line_item_id) ?? 'failed' });
+    }
   }
   return results;
 }
 
-async function restockClaimedLine(ctx: Ctx, orderId: number, orderName: string, reason: Reason, l: LinePlan) {
-  let status: 'restocked' | 'skipped' | 'failed' = 'skipped';
-  let detail = l.why;
-  if (l.add) {
-    let err: string | null;
-    try {
-      err = await adjustStock(ctx.admin, l.sku, l.qty, 'ADD',
-        `Shopify ${orderName} ${reason === 'rto' ? 'RTO received' : 'cancelled before shipping'}`);
-    } catch (e) {
-      err = e instanceof Error ? e.message : String(e);
-    }
-    status = err ? 'failed' : 'restocked';
-    if (err) detail = err;
-  }
+const remarksFor = (orderName: string, reason: Reason) =>
+  `Shopify ${orderName} ${reason === 'rto' ? 'RTO received' : 'cancelled before shipping'}`;
+
+async function recordLine(ctx: Ctx, orderId: number, lineItemId: number, status: string, detail: string) {
   await ctx.admin
     .from('shopify_order_restocks')
     .update({ status, detail, updated_at: new Date().toISOString() })
     .eq('order_id', orderId)
-    .eq('line_item_id', l.line_item_id);
-  return status;
+    .eq('line_item_id', lineItemId);
+}
+
+// Put one order's claimed lines into Unicommerce stock and record each outcome
+// (restocked / waiting / skipped / failed). If Unicommerce can't be reached the
+// lines are marked failed; the 15-min job retries them.
+async function settleRows(ctx: Ctx, orderId: number, lines: BackLine[], remarks: string): Promise<Map<number, string>> {
+  let settled: Settled[];
+  try {
+    settled = await settleReturnedLines(ctx.admin, orderId, lines, remarks);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    settled = lines.map(l => ({ line_item_id: l.line_item_id, status: 'failed' as const, detail: msg }));
+  }
+  for (const s of settled) await recordLine(ctx, orderId, s.line_item_id, s.status, s.detail);
+  return new Map(settled.map(s => [s.line_item_id, s.status]));
+}
+
+// Settle ledger rows (already claimed by the caller), one order at a time.
+async function settleClaimedRows(ctx: Ctx, rows: any[]) {
+  const results = [];
+  const byOrder = new Map<number, any[]>();
+  for (const r of rows) byOrder.set(r.order_id, [...(byOrder.get(r.order_id) ?? []), r]);
+  for (const [orderId, group] of byOrder) {
+    const settled = await settleRows(ctx, orderId,
+      group.map(r => ({ line_item_id: r.line_item_id, sku: r.sku, qty: r.qty, since: r.created_at })),
+      remarksFor(group[0].order_name, group[0].reason));
+    for (const r of group) results.push({ order: r.order_name, sku: r.sku, qty: r.qty, result: settled.get(r.line_item_id) });
+  }
+  return results;
+}
+
+// The 15-min job (pg_cron, migration 011): settle lines waiting for Unicommerce
+// to open its return, and retry failed lines at most hourly. Rows are claimed
+// first so a webhook and the job never settle the same line at once; claims
+// older than an hour (a crashed run) are released.
+async function settleWaiting(ctx: Ctx) {
+  const now = new Date().toISOString();
+  const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+  await ctx.admin.from('shopify_order_restocks').update({ status: 'waiting', updated_at: now })
+    .in('status', ['failed', 'claimed']).lt('updated_at', hourAgo);
+  const { data: rows } = await ctx.admin.from('shopify_order_restocks')
+    .update({ status: 'claimed', updated_at: now }).eq('status', 'waiting').select('*');
+  const settled = await settleClaimedRows(ctx, rows ?? []);
+  return { settled: settled.length, results: settled };
 }
 
 async function handleRto(ctx: Ctx, order: any) {
@@ -493,20 +547,16 @@ async function dryRun(ctx: Ctx, orderRef: string) {
 }
 
 async function retryFailed(ctx: Ctx, dry = false) {
-  const { data: failed } = await ctx.admin.from('shopify_order_restocks').select('*').eq('status', 'failed');
-  const results = [];
-  for (const row of failed ?? []) {
-    if (dry) { results.push({ order: row.order_name, sku: row.sku, qty: row.qty, result: 'would retry' }); continue; }
+  let results;
+  if (dry) {
+    const { data: failed } = await ctx.admin.from('shopify_order_restocks').select('*').eq('status', 'failed');
+    results = (failed ?? []).map(row => ({ order: row.order_name, sku: row.sku, qty: row.qty, result: 'would retry' }));
+  } else {
     // Re-claim atomically: only one retry may move a failed row back to claimed.
     const { data: reclaimed } = await ctx.admin.from('shopify_order_restocks')
       .update({ status: 'claimed', updated_at: new Date().toISOString() })
-      .eq('order_id', row.order_id).eq('line_item_id', row.line_item_id).eq('status', 'failed')
-      .select('order_id');
-    if (!reclaimed?.length) continue;
-    const result = await restockClaimedLine(ctx, row.order_id, row.order_name, row.reason, {
-      line_item_id: row.line_item_id, sku: row.sku, qty: row.qty, add: true, why: row.detail,
-    });
-    results.push({ order: row.order_name, sku: row.sku, qty: row.qty, result });
+      .eq('status', 'failed').select('*');
+    results = await settleClaimedRows(ctx, reclaimed ?? []);
   }
   const rto = await retryRtoStock(ctx, dry);
   return { dry, retried: results.length, results, rto_orders: rto.length, rto };

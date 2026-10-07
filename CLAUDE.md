@@ -76,6 +76,7 @@ supabase/
     admin-user-ops/             # Create/update/delete Supabase auth users (admin only)
     _shared/unicommerce.ts      # Unicommerce REST client (OAuth token cache, stock adjust, catalog lookup); calls go out via the DB (uc_post)
     _shared/batch-sync.ts       # Batch → Unicommerce ADD/REMOVE with the exactly-once ledger
+    _shared/uc-returns.ts       # RTO / customer-return pieces → receive Unicommerce's own return (or add directly)
     unicommerce-adjust-inventory/ # Add/remove Unicommerce stock when a batch is completed/reverted
     shopify-adjust-inventory/   # Legacy: adjusted Shopify stock directly (replaced by unicommerce-adjust-inventory)
     shopify-inventory-webhook/  # Receive Shopify inventory_level/update webhooks
@@ -191,7 +192,7 @@ The Supabase Edge Functions use server-side secrets configured in the Supabase d
 - Fabric usage is recorded per cut entry; deleting an entry reverses the consumption.
 
 ### Stock sync (Unicommerce is the system of record)
-Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify stock. Every Shopify order is imported into Unicommerce within seconds, which holds a piece for it and takes it out of stock when Velocity fulfils the order on Shopify (Unicommerce then marks it dispatched). When a piece comes back, the ERP ADDs it — it never touches the Unicommerce order. After an RTO is cancelled on Shopify, Unicommerce opens a "Courier Returned" return that waits to be received: **never receive these in Unicommerce**, or the piece is counted twice (verified on #37707, Oct 2026).
+Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify stock. Every Shopify order is imported into Unicommerce within seconds, which holds a piece for it and takes it out of stock when Velocity fulfils the order on Shopify (Unicommerce then marks it dispatched). After an order is cancelled on Shopify (RTO) or refunded (Return Prime), Unicommerce opens a "Courier Returned" return on it (RETURN_EXPECTED) that waits to be received. When the piece is physically back, the ERP **receives that return itself** through Unicommerce's API (`/oms/returns/complete`, good stock — Unicommerce puts it away and issues its return invoice), so nobody receives returns in Unicommerce by hand. Lines wait as `waiting` until Unicommerce has opened the return (6–30 min); after 6 h without one the piece is added directly. Orders Unicommerce never had, or never shipped, get a direct stock add; lines added to an order after Unicommerce imported it are skipped (Unicommerce never took them). Logic: `supabase/functions/_shared/uc-returns.ts`. Myntra returns are not automated yet.
 
 | Event | Trigger | Rule | Ledger |
 |---|---|---|---|
@@ -206,6 +207,7 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - Failures and anything needing a person show under Analytics → Returns → "Needs attention".
 - **Unicommerce only accepts its API from whitelisted IPs** (since 2 Oct 2026). Edge functions have no fixed egress, so every `/services/*` call goes through the DB function `public.uc_post` (migration 009, `http` extension), which leaves from the database's whitelisted IPv6 address. That address changes if the project is paused/resumed or Postgres is upgraded; re-whitelist it in Unicommerce (`select content from extensions.http_get('https://api64.ipify.org')`). `/oauth/token` is not IP-restricted and stays in the edge functions.
 - Scheduled every 15 min (pg_cron, migration 006; key `private_secrets.erp_stock_cron_key`): `returnprime-sweep` catches returns whose webhook never arrived. (`shopify-cancel-recheck` was dropped in migration 007 along with cancellation handling.)
+- Every 15 min (migration 011, same key): `shopify-returns-settle` settles RTO lines waiting for Unicommerce's return and retries failed lines hourly; `returnprime-sweep` does the same for Return Prime lines and sweeps the newest ~150 requests.
 - Daily at 06:00 IST (migration 010, same key): `shopify-rto-sweep` processes `rto_delivered` orders from the last 3 days that the ERP has no record of, and moves RTOs stuck half-processed to "Needs attention".
 - Go-live state (2026-09-30): `order_webhook_mode = "live"`, `rto_shopify_actions = true`, Shopify `orders/updated` + `orders/cancelled` and Return Prime `request/received` subscribed.
 
