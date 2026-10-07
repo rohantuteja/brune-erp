@@ -1,4 +1,4 @@
-// returnprime-webhook v2
+// returnprime-webhook v3
 // Puts Return Prime returns back into Unicommerce stock once the return parcel
 // is back at the warehouse: courier status "Returned to warehouse", which is
 // also when Return Prime marks the request "received".
@@ -21,6 +21,8 @@
 //     into stock: by receiving the "Courier Returned" return Unicommerce opened
 //     when Return Prime refunded (waiting until it exists), or a direct add when
 //     Unicommerce never shipped the piece — see ../_shared/uc-returns.ts
+//   • added to the order after Unicommerce imported it, and taken out of stock
+//     by the ERP's edit correction (shopify_order_edit_lines) → added back
 //   • otherwise → skipped: Unicommerce never took this piece
 //
 // Admin actions (POST { action } with an admin user's JWT):
@@ -174,11 +176,13 @@ async function planRequest(ctx: Ctx, r: any): Promise<LinePlan[]> {
   }
 
   const orderId = r.order?.id;
-  const [uc, oldRestocks] = await Promise.all([
+  const [uc, oldRestocks, edits] = await Promise.all([
     getSaleOrder(ctx.admin, String(orderId)),
     ctx.admin.from('return_restocks').select('line_items')
       .eq('shopify_order_id', String(orderId)).lt('processed_at', REFUND_RESTOCK_CUTOFF),
+    ctx.admin.from('shopify_order_edit_lines').select('line_item_id, net_removed').eq('order_id', orderId),
   ]);
+  const takenOutForEdit = new Set((edits.data ?? []).filter(e => Number(e.net_removed) > 0).map(e => Number(e.line_item_id)));
   const ucOpen = !!uc && uc.status !== 'CANCELLED';
   const restockedAtRefund = new Set(
     (oldRestocks.data ?? []).flatMap((row: any) => (row.line_items ?? []).map((i: any) => i.sku)),
@@ -203,6 +207,7 @@ async function planRequest(ctx: Ctx, r: any): Promise<LinePlan[]> {
     if (alreadyCounted(li)) return { ...base, action: 'skip', why: 'already put back at refund time, before the switch' };
     if (ucOpen) return { ...base, action: 'add', why: 'back at warehouse; order open in Unicommerce' };
     if (shippedBeforeLoad) return { ...base, action: 'add', why: 'back at warehouse; shipped before the opening stock load' };
+    if (takenOutForEdit.has(Number(li.id))) return { ...base, action: 'add', why: 'back at warehouse; added to the order after Unicommerce imported it' };
     return { ...base, action: 'skip', why: uc
       ? 'order is cancelled in Unicommerce, so its piece was already released'
       : 'order never reached Unicommerce, so Unicommerce never took this piece' };

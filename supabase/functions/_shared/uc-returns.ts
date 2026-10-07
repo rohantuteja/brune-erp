@@ -17,7 +17,9 @@
 //                               job tries again. After WAIT_LIMIT the piece is
 //                               added directly instead.
 // Lines Unicommerce never had (an item added to the order after it was
-// imported) are skipped: Unicommerce never took that piece. Orders Unicommerce
+// imported) are skipped, since Unicommerce never took that piece, unless the
+// ERP took it out when it corrected the edit (shopify_order_edit_lines,
+// migration 012): then it is added back directly. Orders Unicommerce
 // doesn't have, or cancelled, and lines it never shipped, get a direct stock
 // add as before.
 
@@ -28,7 +30,7 @@ export type BackLine = { line_item_id: number; sku: string; qty: number; since: 
 export type Settled = { line_item_id: number; status: 'restocked' | 'waiting' | 'skipped' | 'failed'; detail: string };
 
 const WAIT_LIMIT_MS = 6 * 3_600_000;
-const SHIPPED = new Set(['DISPATCHED', 'DELIVERED', 'REPLACED', 'RESHIPPED']);
+export const SHIPPED = new Set(['DISPATCHED', 'DELIVERED', 'REPLACED', 'RESHIPPED']);
 
 export const WAITING_DETAIL = 'back at the warehouse; waiting for Unicommerce to open its return';
 
@@ -59,8 +61,12 @@ export async function settleReturnedLines(
     const items = uc.items.filter(i => i.code === id || i.code.startsWith(`${id}-`));
     const codes = items.map(i => i.code);
     if (!items.length) {
-      out.push({ line_item_id: l.line_item_id, status: 'skipped',
-        detail: "not in Unicommerce's copy of the order (added after it was imported), so Unicommerce never took this piece" });
+      const { data: edit } = await admin.from('shopify_order_edit_lines').select('net_removed')
+        .eq('order_id', shopifyOrderId).eq('line_item_id', l.line_item_id).maybeSingle();
+      out.push(Number(edit?.net_removed ?? 0) > 0
+        ? await add(l, 'added to the order after Unicommerce imported it; the ERP had taken it out of stock, so added back')
+        : { line_item_id: l.line_item_id, status: 'skipped',
+            detail: "not in Unicommerce's copy of the order (added after it was imported), so Unicommerce never took this piece" });
     } else if (items.some(i => SHIPPED.has(i.status)) || uc.returns.some(r => r.items.some(i => codes.includes(i.code)))) {
       shipped.push({ line: l, codes });
     } else {
