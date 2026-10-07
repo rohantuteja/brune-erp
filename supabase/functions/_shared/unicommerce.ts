@@ -59,6 +59,8 @@ async function getAccessToken(admin: SupabaseClient, forceRenew = false): Promis
 
 // POST to the Uniware REST API. Retries once with a renewed token on 401.
 // Network failures throw; API-level failures come back as { successful: false }.
+// A 403 "Access Denied" page is Uniware refusing this server's IP address (its
+// IP restriction), not a token problem, so it isn't retried.
 export async function ucPost(admin: SupabaseClient, path: string, body: unknown): Promise<any> {
   const call = async (token: string) => {
     const res = await fetch(`${BASE}${path}`, {
@@ -66,12 +68,18 @@ export async function ucPost(admin: SupabaseClient, path: string, body: unknown)
       headers: { 'Content-Type': 'application/json', Authorization: `bearer ${token}`, Facility: FACILITY },
       body: JSON.stringify(body),
     });
-    return { status: res.status, data: await res.json().catch(() => ({})) };
+    const text = await res.text().catch(() => '');
+    let data: any = {};
+    try { data = JSON.parse(text); } catch { /* not JSON */ }
+    return { status: res.status, data, text };
   };
   let r = await call(await getAccessToken(admin));
   if (r.status === 401) r = await call(await getAccessToken(admin, true));
   if (r.status >= 400 && r.data?.successful === undefined) {
-    return { successful: false, errors: [{ description: `HTTP ${r.status}` }] };
+    const why = r.status === 403 && /Access Denied/i.test(r.text)
+      ? 'Unicommerce refused this server (Access Denied) — check the IP restriction in Unicommerce'
+      : (r.data?.error_description || r.data?.error || '').toString().slice(0, 150);
+    return { successful: false, errors: [{ description: `HTTP ${r.status}${why ? `: ${why}` : ''}` }] };
   }
   return r.data;
 }
@@ -83,9 +91,26 @@ export function ucErrorText(data: any): string {
 
 // Whether a SKU exists in the Unicommerce catalog. (The inventory snapshot API
 // can't answer this: it reports SKUs that never held stock as invalid.)
+// Throws if the lookup itself fails, so an outage isn't mistaken for "missing".
 export async function skuExists(admin: SupabaseClient, sku: string): Promise<boolean> {
   const data = await ucPost(admin, '/services/rest/v1/catalog/itemType/get', { skuCode: sku });
-  return data?.successful === true && !!data.itemTypeDTO;
+  if (data?.successful === true && data.itemTypeDTO) return true;
+  if ((data?.errors ?? []).some((e: any) => e.message === 'INVALID_ITEM_TYPE')) return false;
+  throw new Error(`Unicommerce SKU lookup failed: ${ucErrorText(data)}`);
+}
+
+// Create (or edit) a catalog SKU. Returns null on success, or the error text.
+export async function createOrEditItemType(admin: SupabaseClient, itemType: Record<string, unknown>): Promise<string | null> {
+  const data = await ucPost(admin, '/services/rest/v1/catalog/itemType/createOrEdit', { itemType });
+  return data?.successful ? null : ucErrorText(data);
+}
+
+// Create (or edit) a product category. Returns null on success, or the error text.
+export async function addOrEditCategory(
+  admin: SupabaseClient, code: string, name: string, gstTaxTypeCode: string,
+): Promise<string | null> {
+  const data = await ucPost(admin, '/services/rest/v1/product/category/addOrEdit', { category: { code, name, gstTaxTypeCode } });
+  return data?.successful ? null : ucErrorText(data);
 }
 
 // A sale order by code (for Shopify orders, the numeric Shopify order ID), or
