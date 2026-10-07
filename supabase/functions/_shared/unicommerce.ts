@@ -6,12 +6,13 @@
 // renewed with the refresh token when expired, and only replaced by a password
 // login when the refresh fails (refresh tokens last ~30 days).
 //
+// API calls go out from the database, not from here (see ucPost).
+//
 // Stock lives in one facility on one shelf, as set up by the opening stock load.
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const TENANT = Deno.env.get('UNICOMMERCE_TENANT') ?? 'brune';
-const FACILITY = Deno.env.get('UNICOMMERCE_FACILITY') ?? 'brune';
 const SHELF = 'DEFAULT';
 const BASE = `https://${TENANT}.unicommerce.com`;
 const CLIENT_ID = 'my-trusted-client';
@@ -59,25 +60,31 @@ async function getAccessToken(admin: SupabaseClient, forceRenew = false): Promis
 
 // POST to the Uniware REST API. Retries once with a renewed token on 401.
 // Network failures throw; API-level failures come back as { successful: false }.
-// A 403 "Access Denied" page is Uniware refusing this server's IP address (its
+//
+// Uniware only accepts its API from whitelisted IP addresses and edge functions
+// have no fixed one, so the request is made by the database (public.uc_post,
+// migration 009) from its whitelisted address, with the token cached in
+// unicommerce_token. The host and facility are fixed there.
+// A 403 "Access Denied" page is Uniware refusing the caller's IP address (its
 // IP restriction), not a token problem, so it isn't retried.
 export async function ucPost(admin: SupabaseClient, path: string, body: unknown): Promise<any> {
-  const call = async (token: string) => {
-    const res = await fetch(`${BASE}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `bearer ${token}`, Facility: FACILITY },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text().catch(() => '');
-    let data: any = {};
-    try { data = JSON.parse(text); } catch { /* not JSON */ }
-    return { status: res.status, data, text };
+  const call = async () => {
+    const { data, error } = await admin.rpc('uc_post', { p_path: path, p_body: body });
+    if (error) throw new Error(`Unicommerce call failed: ${error.message}`);
+    const text = String(data?.content ?? '');
+    let parsed: any = {};
+    try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+    return { status: Number(data?.status), data: parsed, text };
   };
-  let r = await call(await getAccessToken(admin));
-  if (r.status === 401) r = await call(await getAccessToken(admin, true));
+  await getAccessToken(admin);
+  let r = await call();
+  if (r.status === 401) {
+    await getAccessToken(admin, true);
+    r = await call();
+  }
   if (r.status >= 400 && r.data?.successful === undefined) {
     const why = r.status === 403 && /Access Denied/i.test(r.text)
-      ? 'Unicommerce refused this server (Access Denied) — check the IP restriction in Unicommerce'
+      ? "Unicommerce refused the database's IP address (Access Denied) — check the IP restriction in Unicommerce"
       : (r.data?.error_description || r.data?.error || '').toString().slice(0, 150);
     return { successful: false, errors: [{ description: `HTTP ${r.status}${why ? `: ${why}` : ''}` }] };
   }
