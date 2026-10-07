@@ -1,11 +1,13 @@
-// returnprime-webhook v1
+// returnprime-webhook v2
 // Puts Return Prime returns back into Unicommerce stock once the return parcel
 // is back at the warehouse: courier status "Returned to warehouse", which is
 // also when Return Prime marks the request "received".
 //
 // Triggers: Return Prime's request/received webhook (fast path), and a
-// scheduled sweep every 15 minutes (pg_cron, header x-cron-key matching
-// private_secrets.erp_stock_cron_key) as backup for missed webhooks. Return
+// scheduled job every 15 minutes (pg_cron, header x-cron-key matching
+// private_secrets.erp_stock_cron_key) that settles lines waiting for
+// Unicommerce, retries failed lines at most hourly, and sweeps the newest
+// SWEEP_PAGES pages of requests as backup for missed webhooks. Return
 // Prime doesn't sign webhooks, so the URL carries a key derived from
 // RETURN_PRIME_TOKEN and every event is re-read from Return Prime's API before
 // anything changes — a forged call can at most make the ERP look at a real
@@ -15,7 +17,10 @@
 //   • request rejected                       → skipped, needs a person
 //   • refunded before the switch → skipped: the old flow already put it back
 //     into stock at refund time (also checked against its return_restocks log)
-//   • order open in Unicommerce, or shipped before the opening stock load → ADD
+//   • order open in Unicommerce, or shipped before the opening stock load → back
+//     into stock: by receiving the "Courier Returned" return Unicommerce opened
+//     when Return Prime refunded (waiting until it exists), or a direct add when
+//     Unicommerce never shipped the piece — see ../_shared/uc-returns.ts
 //   • otherwise → skipped: Unicommerce never took this piece
 //
 // Admin actions (POST { action } with an admin user's JWT):
@@ -23,12 +28,14 @@
 //   dry_run  — { request: "RET710" } shows what would happen, changing nothing
 //   process  — { request: "RET511" } handles that one return now (same rules, exactly once)
 //   sweep    — { dry?: true, pages?: 10, include_waiting? } process (or preview) recent returns
+//   settle   — settle lines waiting for Unicommerce now, and retry failed ones
 //   register — baseline every return already back at the warehouse, then
 //              subscribe request/received to this function
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adjustStock, getSaleOrder } from '../_shared/unicommerce.ts';
+import { getSaleOrder } from '../_shared/unicommerce.ts';
+import { type BackLine, type Settled, settleReturnedLines } from '../_shared/uc-returns.ts';
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
@@ -41,6 +48,9 @@ const STOCK_LOAD_CUTOFF = Date.parse('2026-09-29T17:07:59Z');
 // Until shopify-return-webhook v18 (deployed 29 Sep 2026 23:41 UTC) the ERP put
 // Return Prime returns back into stock at refund time.
 const REFUND_RESTOCK_CUTOFF = '2026-09-29T23:41:24Z';
+// The scheduled sweep looks at the newest ~150 requests (about a month), so a
+// return that takes weeks to arrive is still caught if its webhook goes missing.
+const SWEEP_PAGES = 15;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -74,12 +84,13 @@ serve(async (req) => {
     };
     if (!rpToken) return json({ error: 'RETURN_PRIME_TOKEN not set' }, 500);
 
-    // ── Scheduled backup sweep ──────────────────────────────────────────────
+    // ── Scheduled job: settle waiting items, retry failed ones, sweep ─────────
     const cronKey = req.headers.get('x-cron-key');
     if (cronKey) {
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
-      const result = await sweep(ctx, { dry: false, pages: 5 });
-      return json({ swept: result.requests });
+      const settled = await settleWaiting(ctx);
+      const result = await sweep(ctx, { dry: false, pages: SWEEP_PAGES });
+      return json({ settled: settled.settled, swept: result.requests });
     }
 
     // ── Return Prime webhook ──────────────────────────────────────────────────
@@ -107,7 +118,8 @@ serve(async (req) => {
       case 'process':  return json(await processOne(ctx, String(body.request ?? '')));
       case 'sweep':    return json(await sweep(ctx, { dry: body.dry !== false, pages: Number(body.pages ?? 10), includeWaiting: !!body.include_waiting }));
       case 'register': return json(await register(ctx));
-      default:         return json({ error: 'action must be status, dry_run, process, sweep or register' }, 400);
+      case 'settle':   return json(await settleWaiting(ctx));
+      default:         return json({ error: 'action must be status, dry_run, process, sweep, register or settle' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -206,9 +218,11 @@ async function processRequestId(ctx: Ctx, id: string) {
 
 async function processRequest(ctx: Ctx, r: any) {
   const plans = await planRequest(ctx, r);
-  const results = [];
+  const results: Array<LinePlan & { result: string }> = [];
+  const back: BackLine[] = [];
+  const now = new Date().toISOString();
   for (const l of plans) {
-    if (l.action === 'wait') { results.push({ ...l, result: 'waiting' }); continue; }
+    if (l.action === 'wait') { results.push({ ...l, result: 'not back yet' }); continue; }
     // Exactly-once claim for this returned item (ON CONFLICT DO NOTHING).
     const { data: claimed, error } = await ctx.admin.from('returnprime_restocks').upsert({
       request_id: r.id, line_item_id: l.line_item_id, request_number: r.request_number,
@@ -217,25 +231,63 @@ async function processRequest(ctx: Ctx, r: any) {
     }, { onConflict: 'request_id,line_item_id', ignoreDuplicates: true }).select('request_id');
     if (error) throw error;
     if (!claimed?.length) { results.push({ ...l, result: 'already handled' }); continue; }
-
-    let status: 'restocked' | 'skipped' | 'failed' = 'skipped';
-    let detail = l.why;
     if (l.action === 'add') {
-      let err: string | null;
-      try {
-        err = await adjustStock(ctx.admin, l.sku, l.qty, 'ADD', `Return Prime ${r.request_number} back at warehouse`);
-      } catch (e) {
-        err = e instanceof Error ? e.message : String(e);
-      }
-      status = err ? 'failed' : 'restocked';
-      if (err) detail = err;
+      back.push({ line_item_id: l.line_item_id, sku: l.sku, qty: l.qty, since: now });
+    } else {
+      await recordLine(ctx, r.id, l.line_item_id, 'skipped', l.why);
+      results.push({ ...l, result: 'skipped' });
     }
-    await ctx.admin.from('returnprime_restocks')
-      .update({ status, detail, updated_at: new Date().toISOString() })
-      .eq('request_id', r.id).eq('line_item_id', l.line_item_id);
-    results.push({ ...l, result: status });
+  }
+  if (back.length) {
+    const settled = await settleRows(ctx, r.id, Number(r.order?.id), back, `Return Prime ${r.request_number} back at warehouse`);
+    for (const l of plans.filter(x => back.some(b => b.line_item_id === x.line_item_id))) {
+      results.push({ ...l, result: settled.get(l.line_item_id) ?? 'failed' });
+    }
   }
   return results;
+}
+
+async function recordLine(ctx: Ctx, requestId: string, lineItemId: number, status: string, detail: string) {
+  await ctx.admin.from('returnprime_restocks')
+    .update({ status, detail, updated_at: new Date().toISOString() })
+    .eq('request_id', requestId).eq('line_item_id', lineItemId);
+}
+
+// Put one request's claimed items into Unicommerce stock and record each
+// outcome (restocked / waiting / skipped / failed). If Unicommerce can't be
+// reached the items are marked failed; the 15-min job retries them.
+async function settleRows(ctx: Ctx, requestId: string, orderId: number, lines: BackLine[], remarks: string) {
+  let settled: Settled[];
+  try {
+    settled = await settleReturnedLines(ctx.admin, orderId, lines, remarks);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    settled = lines.map(l => ({ line_item_id: l.line_item_id, status: 'failed' as const, detail: msg }));
+  }
+  for (const s of settled) await recordLine(ctx, requestId, s.line_item_id, s.status, s.detail);
+  return new Map(settled.map(s => [s.line_item_id, s.status]));
+}
+
+// Settle items waiting for Unicommerce to open its return, and retry failed
+// items at most hourly. Rows are claimed first so the webhook and this job
+// never settle the same item at once; claims older than an hour are released.
+async function settleWaiting(ctx: Ctx) {
+  const now = new Date().toISOString();
+  const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+  await ctx.admin.from('returnprime_restocks').update({ status: 'waiting', updated_at: now })
+    .in('status', ['failed', 'claimed']).lt('updated_at', hourAgo);
+  const { data: rows } = await ctx.admin.from('returnprime_restocks')
+    .update({ status: 'claimed', updated_at: now }).eq('status', 'waiting').select('*');
+  const byRequest = new Map<string, any[]>();
+  for (const r of rows ?? []) byRequest.set(r.request_id, [...(byRequest.get(r.request_id) ?? []), r]);
+  const results = [];
+  for (const [requestId, group] of byRequest) {
+    const settled = await settleRows(ctx, requestId, Number(group[0].order_id),
+      group.map(r => ({ line_item_id: r.line_item_id, sku: r.sku, qty: r.qty, since: r.created_at })),
+      `Return Prime ${group[0].request_number} back at warehouse`);
+    for (const r of group) results.push({ request: r.request_number, sku: r.sku, result: settled.get(r.line_item_id) });
+  }
+  return { settled: results.length, results };
 }
 
 // ── Admin actions ─────────────────────────────────────────────────────────────
