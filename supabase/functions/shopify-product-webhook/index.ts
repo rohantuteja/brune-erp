@@ -1,4 +1,4 @@
-// shopify-product-webhook v1
+// shopify-product-webhook v3
 // When a Shopify product is Active (typically: moved from Draft when it goes
 // live), makes sure each of its size SKUs exists in Unicommerce, then adds any
 // completed ERP batches of that style that were waiting because the product
@@ -8,10 +8,14 @@
 // in Unicommerce stay. New SKUs get the same fields as ~/Unicommerce/
 // shopify_to_uc.py (the 29 Sep 2026 catalog upload): name, category from the
 // product type, brand, colour from "… In <Colour>", size, MRP / selling price,
-// cost from Shopify's cost per item, GST code 5, a 25×20×5 cm / 500 g box,
-// image and product page link. Variants without a SKU (the Sets) are skipped.
-// Prices above ₹2,500 are created with GST code 5 like every other SKU and
-// flagged (needs_review) so a person sets the right tax code in Unicommerce.
+// cost from Shopify's cost per item, GST, a 25×20×5 cm / 500 g box, image and
+// product page link. Variants without a SKU (the Sets) are skipped.
+//
+// GST follows the apparel slabs on each variant's selling price (Shopify's
+// price, not its compare-at price): up to ₹2,500 → code 5, above → code 18.
+// Unicommerce has no API to list its tax codes; if it rejects 18, the SKU is
+// created with 5 and flagged (needs_review) so a person sets it by hand. A
+// later price change across ₹2,500 doesn't change the code of an existing SKU.
 //
 // Batch catch-up runs when this event creates a SKU or first finds one in
 // Unicommerce, so later edits to a live product don't re-run it.
@@ -37,8 +41,9 @@ const API_VERSION = '2026-04';
 const WEBHOOK_URL = 'https://nexhqmdplnxqypjydslg.supabase.co/functions/v1/shopify-product-webhook';
 const TOPICS = ['products/create', 'products/update'];
 const STORE = 'https://brune.in';
-const GST_TAX_TYPE = '5';
-const GST_REVIEW_ABOVE = 2500;
+const GST_LOW = '5', GST_HIGH = '18';
+const GST_HIGH_ABOVE = 2500;  // ₹, selling price per piece
+const gstFor = (price: number) => price > GST_HIGH_ABOVE ? GST_HIGH : GST_LOW;
 // Standard shipping package. Unicommerce takes dimensions in mm and weight in grams.
 const LENGTH_MM = 250, WIDTH_MM = 200, HEIGHT_MM = 50, WEIGHT_G = 500;
 const SKU_RE = /^[A-Za-z0-9._\/-]{3,45}$/;
@@ -162,7 +167,7 @@ function buildItems(p: Product, costs: Map<string, number>) {
       maxRetailPrice: Math.max(v.price, v.compareAt),
       basePrice: v.price,
       costPrice: costs.get(v.sku),
-      gstTaxTypeCode: GST_TAX_TYPE,
+      gstTaxTypeCode: gstFor(v.price),
       length: LENGTH_MM, width: WIDTH_MM, height: HEIGHT_MM, weight: WEIGHT_G,
       imageUrl: img && img.length <= 255 ? img : null,
       productPageUrl: `${STORE}/products/${p.handle}`,
@@ -212,14 +217,22 @@ async function handleProduct(ctx: Ctx, p: Product) {
       let err = await createOrEditItemType(ctx.admin, item);
       if (err && /categor/i.test(err)) {
         // New product type: create its category (as the upload script did), then retry once.
-        const catErr = await addOrEditCategory(ctx.admin, item.categoryCode as string, p.productType || 'Default', GST_TAX_TYPE);
+        const catErr = await addOrEditCategory(ctx.admin, item.categoryCode as string, p.productType || 'Default', GST_LOW);
         err = catErr ? `category: ${catErr}` : await createOrEditItemType(ctx.admin, item);
       }
+      let review = false;
+      if (err && item.gstTaxTypeCode === GST_HIGH && /tax/i.test(err)) {
+        // Unicommerce has no 18% code under that name: create it at 5% and flag it.
+        const rejected = err;
+        err = await createOrEditItemType(ctx.admin, { ...item, gstTaxTypeCode: GST_LOW });
+        review = !err;
+        if (review) err = null;
+        else err = `${rejected}; with code ${GST_LOW}: ${err}`;
+      }
       const price = item.basePrice as number;
-      const review = !err && price > GST_REVIEW_ABOVE;
       const notes = [
-        err ?? 'created in Unicommerce',
-        review ? `price ₹${price} is above ₹${GST_REVIEW_ABOVE} — check the GST tax code in Unicommerce (created with code ${GST_TAX_TYPE})` : '',
+        err ?? `created in Unicommerce (GST code ${review ? GST_LOW : item.gstTaxTypeCode})`,
+        review ? `price ₹${price} is above ₹${GST_HIGH_ABOVE} but Unicommerce rejected GST code ${GST_HIGH} — set the 18% tax code in Unicommerce by hand` : '',
         !err && item.costPrice === undefined ? 'no cost per item on Shopify' : '',
       ].filter(Boolean).join('; ');
       await record(ctx, p, sku, err ? 'failed' : 'created', review, notes);
@@ -306,7 +319,7 @@ async function dryRun(ctx: Ctx) {
       const price = item.basePrice as number;
       wouldCreate.push({
         sku, product: p.product.title, price, category: item.categoryCode,
-        cost: item.costPrice ?? null, flag_gst_review: price > GST_REVIEW_ABOVE,
+        cost: item.costPrice ?? null, gst: item.gstTaxTypeCode,
       });
     }
   }

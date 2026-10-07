@@ -84,7 +84,7 @@ supabase/
     shopify-return-webhook/     # Log Return Prime refunds for the Returns screen (no stock change)
     shopify-order-webhook/      # RTO Shopify orders → Unicommerce stock, cancel on Shopify, store credit
     returnprime-webhook/        # Return Prime returns back at warehouse → Unicommerce stock
-    shopify-product-webhook/    # Product goes Active → create its SKUs in Unicommerce, add waiting batches (not subscribed yet)
+    shopify-product-webhook/    # Product goes Active → create its SKUs in Unicommerce (GST 5, or 18 above ₹2,500 selling price), add waiting batches
     shopify-sync/               # Full sync of Shopify product inventory into Supabase
     take-cod-snapshot/          # Daily COD analytics snapshot
 
@@ -212,6 +212,7 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - Every 15 min (migration 011, same key): `shopify-returns-settle` settles RTO lines waiting for Unicommerce's return and retries failed lines hourly, and re-checks edit corrections that are pending or need attention; `returnprime-sweep` does the same for Return Prime lines and sweeps the newest ~150 requests.
 - Daily at 06:00 IST (migration 010, same key): `shopify-rto-sweep` processes `rto_delivered` orders from the last 3 days that the ERP has no record of, moves RTOs stuck half-processed to "Needs attention", and re-checks every order edited in those 3 days.
 - **Shopify marks an order `edited` whenever a refund removes an item**, so every Return Prime return also reaches the edit logic; the "+ returned" term makes those come out as no change. Return Prime refunds of orders shipped before go-live had their Unicommerce copies cancelled (#37654), hence the pre-load and cancelled-copy rules.
+- New products (`shopify-product-webhook`, subscribed 8 Oct 2026 to `products/create` + `products/update`): when a Shopify product is Active, each size SKU missing from Unicommerce is created (fields as `~/Unicommerce/shopify_to_uc.py`; existing SKUs are never edited), then completed ERP batches of that style not yet synced are added. GST by each variant's selling price (not compare-at): ≤ ₹2,500 → code `5`, above → `18`; if Unicommerce rejects `18` the SKU is created at `5` and flagged `needs_review` in `unicommerce_sku_sync`.
 - Go-live state (2026-09-30): `order_webhook_mode = "live"`, `rto_shopify_actions = true`, Shopify `orders/updated` + `orders/cancelled` and Return Prime `request/received` subscribed. `orders/edited` subscribed 8 Oct 2026.
 
 ### Cutting Runs
