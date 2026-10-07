@@ -74,13 +74,15 @@ supabase/
     001_initial_schema.sql      # All core tables (see Database Schema below)
   functions/
     admin-user-ops/             # Create/update/delete Supabase auth users (admin only)
-    _shared/unicommerce.ts      # Unicommerce REST client (OAuth token cache, stock adjust, catalog lookup)
+    _shared/unicommerce.ts      # Unicommerce REST client (OAuth token cache, stock adjust, catalog lookup); calls go out via the DB (uc_post)
+    _shared/batch-sync.ts       # Batch → Unicommerce ADD/REMOVE with the exactly-once ledger
     unicommerce-adjust-inventory/ # Add/remove Unicommerce stock when a batch is completed/reverted
     shopify-adjust-inventory/   # Legacy: adjusted Shopify stock directly (replaced by unicommerce-adjust-inventory)
     shopify-inventory-webhook/  # Receive Shopify inventory_level/update webhooks
     shopify-return-webhook/     # Log Return Prime refunds for the Returns screen (no stock change)
     shopify-order-webhook/      # RTO Shopify orders → Unicommerce stock, cancel on Shopify, store credit
     returnprime-webhook/        # Return Prime returns back at warehouse → Unicommerce stock
+    shopify-product-webhook/    # Product goes Active → create its SKUs in Unicommerce, add waiting batches (not subscribed yet)
     shopify-sync/               # Full sync of Shopify product inventory into Supabase
     take-cod-snapshot/          # Daily COD analytics snapshot
 
@@ -202,6 +204,7 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - Orders tagged `rto_delivered`, and returns back at the warehouse before go-live, are `baseline` rows and are never processed.
 - `shopify-order-webhook` only acts on orders tagged `erp-test` until `app_settings.order_webhook_mode = "live"`. RTO cancel and store credit also need `app_settings.rto_shopify_actions = true`.
 - Failures and anything needing a person show under Analytics → Returns → "Needs attention".
+- **Unicommerce only accepts its API from whitelisted IPs** (since 2 Oct 2026). Edge functions have no fixed egress, so every `/services/*` call goes through the DB function `public.uc_post` (migration 009, `http` extension), which leaves from the database's whitelisted IPv6 address. That address changes if the project is paused/resumed or Postgres is upgraded; re-whitelist it in Unicommerce (`select content from extensions.http_get('https://api64.ipify.org')`). `/oauth/token` is not IP-restricted and stays in the edge functions.
 - Scheduled every 15 min (pg_cron, migration 006; key `private_secrets.erp_stock_cron_key`): `returnprime-sweep` catches returns whose webhook never arrived. (`shopify-cancel-recheck` was dropped in migration 007 along with cancellation handling.)
 - Go-live state (2026-09-30): `order_webhook_mode = "live"`, `rto_shopify_actions = true`, Shopify `orders/updated` + `orders/cancelled` and Return Prime `request/received` subscribed.
 

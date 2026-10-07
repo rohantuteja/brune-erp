@@ -1,4 +1,4 @@
-// shopify-order-webhook v1
+// shopify-order-webhook v2
 // Puts stock back into Unicommerce when pieces come back from Shopify orders,
 // and handles RTO orders end to end.
 //
@@ -30,7 +30,9 @@
 //   status   — webhook subscriptions, granted Shopify scopes, ledger counts
 //   register — baseline the currently tagged RTO orders, then subscribe the webhooks
 //   dry_run  — { order: "37506" } shows what would happen, changing nothing
-//   retry    — re-attempt order lines whose Unicommerce update failed
+//   retry    — re-attempt order lines whose Unicommerce update failed, and the
+//              stock step of RTO orders that failed before any line was recorded
+//              (e.g. the Unicommerce order lookup failed). { dry: true } only plans.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -102,7 +104,7 @@ serve(async (req) => {
       case 'status':   return json(await status(ctx));
       case 'register': return json(await register(ctx));
       case 'dry_run':  return json(await dryRun(ctx, String(body.order ?? '')));
-      case 'retry':    return json(await retryFailed(ctx));
+      case 'retry':    return json(await retryFailed(ctx, body.dry === true));
       default:         return json({ error: 'action must be status, register, dry_run or retry' }, 400);
     }
   } catch (err) {
@@ -407,10 +409,11 @@ async function dryRun(ctx: Ctx, orderRef: string) {
   };
 }
 
-async function retryFailed(ctx: Ctx) {
+async function retryFailed(ctx: Ctx, dry = false) {
   const { data: failed } = await ctx.admin.from('shopify_order_restocks').select('*').eq('status', 'failed');
   const results = [];
   for (const row of failed ?? []) {
+    if (dry) { results.push({ order: row.order_name, sku: row.sku, qty: row.qty, result: 'would retry' }); continue; }
     // Re-claim atomically: only one retry may move a failed row back to claimed.
     const { data: reclaimed } = await ctx.admin.from('shopify_order_restocks')
       .update({ status: 'claimed', updated_at: new Date().toISOString() })
@@ -422,7 +425,53 @@ async function retryFailed(ctx: Ctx) {
     });
     results.push({ order: row.order_name, sku: row.sku, qty: row.qty, result });
   }
-  return { retried: results.length, results };
+  const rto = await retryRtoStock(ctx, dry);
+  return { dry, retried: results.length, results, rto_orders: rto.length, rto };
+}
+
+// RTO orders whose stock step failed before any line was recorded: plan the
+// lines again from the order as it is now and apply them (each line exactly
+// once). The Shopify cancel and store credit aren't repeated; they keep their
+// recorded outcome, so a failed cancel still needs a person.
+async function retryRtoStock(ctx: Ctx, dry: boolean) {
+  const { data: rows } = await ctx.admin.from('shopify_rto_orders')
+    .select('order_id, order_name, cancel_status, credit_status, detail')
+    .eq('status', 'needs_attention').like('detail', 'stock: %');
+  const out = [];
+  for (const row of rows ?? []) {
+    const { count } = await ctx.admin.from('shopify_order_restocks')
+      .select('line_item_id', { count: 'exact', head: true }).eq('order_id', row.order_id);
+    if (count) continue;  // its lines exist; failed ones are retried above
+
+    let order: any;
+    let lines: LinePlan[];
+    try {
+      order = (await rest(ctx, `orders/${row.order_id}.json`)).order;
+      lines = await planRtoLines(ctx, order);
+    } catch (e) {
+      out.push({ order: row.order_name, error: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+    if (dry) {
+      out.push({ order: row.order_name, cancel: row.cancel_status, credit: row.credit_status, lines });
+      continue;
+    }
+
+    const results = await applyLines(ctx, order, 'rto', lines);
+    const linesFailed = results.some(r => r.result === 'failed');
+    // The stock note always comes first; keep the cancel / credit notes after it.
+    const otherNotes = String(row.detail ?? '').replace(/^stock: .*?(?=; (?:cancel|credit|store credit)|$)(?:; )?/, '');
+    const detail = [linesFailed ? 'stock: some lines failed — retry again' : '', otherNotes].filter(Boolean).join('; ');
+    const attention = linesFailed || row.cancel_status === 'failed' ||
+      ['failed', 'unknown', 'needs_review', 'disabled'].includes(row.credit_status);
+    await ctx.admin.from('shopify_rto_orders').update({
+      status: attention ? 'needs_attention' : 'done',
+      detail: detail || null,
+      updated_at: new Date().toISOString(),
+    }).eq('order_id', row.order_id);
+    out.push({ order: row.order_name, status: attention ? 'needs_attention' : 'done', lines: results });
+  }
+  return out;
 }
 
 // ── Shopify + helpers ─────────────────────────────────────────────────────────
