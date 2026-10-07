@@ -1,4 +1,4 @@
-// shopify-order-webhook v6
+// shopify-order-webhook v7
 // Puts stock back into Unicommerce when pieces come back from Shopify orders,
 // and handles RTO orders end to end.
 //
@@ -25,6 +25,16 @@
 //     and Velocity never closes the shipment on RTO, so the ERP cancels the
 //     fulfillment first. Neither step changes Shopify stock.
 //
+// Order edits (orders/edited): Unicommerce imports an order once and never
+//   sees later edits, so when Velocity ships an edited order it dispatches its
+//   own stale copy (#37827: the XS swapped out by email was dispatched instead
+//   of the M that shipped). The ERP corrects Unicommerce's stock per line —
+//   takes out pieces added by the edit, puts back pieces removed — and records
+//   it (shopify_order_edit_lines, migration 012). If the order is then
+//   cancelled before shipping the corrections are reversed; on an RTO or a
+//   return the pieces it took out are added back. Unicommerce's own order and
+//   invoice still show the original items.
+//
 // Test mode: until app_settings.order_webhook_mode is "live", only orders
 // tagged erp-test are processed; every other order is ignored.
 //
@@ -37,8 +47,9 @@
 // Safety net: a daily sweep (pg_cron, migration 010, header x-cron-key matching
 // private_secrets.erp_stock_cron_key) processes any order tagged rto_delivered
 // in the last 3 days that the ERP never heard about, e.g. because Shopify gave
-// up on the webhook or deleted the subscription. RTOs claimed but never finished
-// (stuck 'processing' for over an hour) are moved to Needs attention.
+// up on the webhook or deleted the subscription, and re-checks orders edited
+// in that time. RTOs claimed but never finished (stuck 'processing' for over
+// an hour) are moved to Needs attention.
 //
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — webhook subscriptions, granted Shopify scopes, ledger counts
@@ -51,18 +62,22 @@
 //              same way (refund to store credit if paid), for orders whose
 //              automatic cancel failed. Stock is not touched; dry only shows the plan.
 //   sweep    — { days?: 3, dry?: true } run the safety-net sweep now (or preview it)
-//   settle   — run the 15-min job now: settle waiting lines, retry failed ones
+//   settle   — run the 15-min job now: settle waiting lines, retry failed ones,
+//              re-check edit corrections that are pending or need attention
+//   edits    — { order: "37827", dry?: true } correct (or preview) one edited order
+//   subscribe — create any missing webhook subscriptions (no baselining)
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getSaleOrder } from '../_shared/unicommerce.ts';
+import { adjustStock, getSaleOrder, getSaleOrderDetail } from '../_shared/unicommerce.ts';
 import { type BackLine, type Settled, settleReturnedLines } from '../_shared/uc-returns.ts';
+import { type EditTarget, editTargets } from '../_shared/order-edits.ts';
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
 const API_VERSION = '2026-04';
 const WEBHOOK_URL = 'https://nexhqmdplnxqypjydslg.supabase.co/functions/v1/shopify-order-webhook';
-const TOPICS = ['orders/updated', 'orders/cancelled'];
+const TOPICS = ['orders/updated', 'orders/cancelled', 'orders/edited'];
 const RTO_TAG = 'rto_delivered';
 const TEST_TAG = 'erp-test';
 // Shopify snapshot behind the opening Unicommerce stock load (29 Sep 2026, 22:37:59 IST).
@@ -117,7 +132,9 @@ serve(async (req) => {
     if (cronKey) {
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
       const job = (raw ? JSON.parse(raw) : {}).job;
-      return json(job === 'settle' ? await settleWaiting(ctx) : await sweep(ctx, 3, false));
+      return json(job === 'settle'
+        ? { ...(await settleWaiting(ctx)), edits: await recheckEdits(ctx) }
+        : await sweep(ctx, 3, false));
     }
 
     // ── Admin actions ─────────────────────────────────────────────────────────
@@ -135,8 +152,10 @@ serve(async (req) => {
       case 'retry':    return json(await retryFailed(ctx, body.dry === true));
       case 'cancel':   return json(await cancelRto(ctx, String(body.order ?? ''), body.dry === true));
       case 'sweep':    return json(await sweep(ctx, Number(body.days ?? 3), body.dry !== false));
-      case 'settle':   return json(await settleWaiting(ctx));
-      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel, sweep or settle' }, 400);
+      case 'settle':   return json({ ...(await settleWaiting(ctx)), edits: await recheckEdits(ctx) });
+      case 'edits':    return json(await editsOne(ctx, String(body.order ?? ''), body.dry === true));
+      case 'subscribe': return json({ registered: await subscribeTopics(ctx) });
+      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel, sweep, settle, edits or subscribe' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -155,9 +174,18 @@ async function isLive(ctx: Ctx): Promise<boolean> {
 }
 
 // orders/cancelled is still subscribed: for RTO orders it is a second route to
-// handleRto (the claim makes it a no-op). Other cancellations are Unicommerce's.
-async function handleOrderEvent(ctx: Ctx, _topic: string, order: any) {
+// handleRto (the claim makes it a no-op), and it re-checks edited orders so
+// their corrections are reversed if Unicommerce cancels its copy. Other
+// cancellations are Unicommerce's. orders/edited carries an order_edit, not
+// the order.
+async function handleOrderEvent(ctx: Ctx, topic: string, payload: any) {
+  if (topic === 'orders/edited') {
+    if (await isLive(ctx)) await reconcileEdits(ctx, Number(payload.order_edit?.order_id));
+    return;
+  }
+  const order = payload;
   if (!hasTag(order, TEST_TAG) && !(await isLive(ctx))) return;
+  if (topic === 'orders/cancelled' && await hasEditCorrections(ctx, order.id)) await reconcileEdits(ctx, order.id);
   if (isRto(order)) return handleRto(ctx, order);
 }
 
@@ -176,6 +204,7 @@ const notTakenWhy = (inUc: boolean) => inUc
 // RTO, so every unit on the order counts, not just successfully fulfilled ones.
 async function planRtoLines(ctx: Ctx, order: any): Promise<LinePlan[]> {
   const { inUc, ucOpen } = await unicommerceState(ctx, order);
+  const edits = await editCorrections(ctx, order.id);
   const firstShipped = Math.min(
     ...(order.fulfillments ?? []).map((f: any) => Date.parse(f.created_at)).filter(Number.isFinite),
   );
@@ -186,14 +215,18 @@ async function planRtoLines(ctx: Ctx, order: any): Promise<LinePlan[]> {
     : notTakenWhy(inUc);
   return (order.line_items ?? [])
     .filter((l: any) => l.sku && !l.gift_card)
-    .map((l: any) => ({
-      line_item_id: l.id,
-      sku: l.sku,
-      // Before cancellation current_quantity reflects order edits; cancelling zeroes it.
-      qty: order.cancelled_at ? l.quantity : (l.current_quantity ?? l.quantity),
-      add,
-      why,
-    }))
+    .map((l: any) => {
+      const edited = edits.get(Number(l.id)) ?? 0;  // pieces the ERP took out (+) or put back (−) for an edit
+      return {
+        line_item_id: l.id,
+        sku: l.sku,
+        // Before cancellation current_quantity reflects order edits; cancelling
+        // zeroes it, so then take the original quantity less what edits removed.
+        qty: order.cancelled_at ? l.quantity - Math.max(0, -edited) : (l.current_quantity ?? l.quantity),
+        add: add || edited > 0,
+        why: !add && edited > 0 ? 'RTO received; added to the order after Unicommerce imported it' : why,
+      };
+    })
     .filter((l: LinePlan) => l.qty > 0);
 }
 
@@ -509,6 +542,11 @@ async function register(ctx: Ctx) {
     after = r.data?.orders?.pageInfo?.hasNextPage ? r.data.orders.pageInfo.endCursor : null;
   } while (after);
 
+  return { baselined, registered: await subscribeTopics(ctx) };
+}
+
+// Create any missing webhook subscriptions for TOPICS.
+async function subscribeTopics(ctx: Ctx) {
   const existing = (await rest(ctx, 'webhooks.json?limit=250')).webhooks ?? [];
   const registered = [];
   for (const topic of TOPICS) {
@@ -519,7 +557,7 @@ async function register(ctx: Ctx) {
     const r = await rest(ctx, 'webhooks.json', { webhook: { topic, address: WEBHOOK_URL, format: 'json' } });
     registered.push({ topic, result: r.webhook?.id ? 'registered' : JSON.stringify(r.errors ?? r) });
   }
-  return { baselined, registered };
+  return registered;
 }
 
 async function dryRun(ctx: Ctx, orderRef: string) {
@@ -680,13 +718,127 @@ async function sweep(ctx: Ctx, days: number, dry: boolean) {
       }).eq('order_id', row.order_id).eq('status', 'processing');
     }
   }
-  if (missed.length || stuck?.length) console.warn('[rto sweep]', JSON.stringify({ missed, stuck }));
-  return { dry, since, rto_orders_checked: ids.length, missed, stuck: (stuck ?? []).map(r => r.order_name) };
+
+  // Orders edited in the same window, in case an orders/edited webhook was missed.
+  const edited: number[] = [];
+  after = null;
+  do {
+    const r: any = await gql(ctx, `query($after: String, $q: String) {
+      orders(first: 100, after: $after, query: $q) {
+        pageInfo { hasNextPage endCursor } nodes { legacyResourceId edited }
+      }
+    }`, { after, q: `updated_at:>=${since}` });
+    if (r.errors) throw new Error(`Shopify order search failed: ${JSON.stringify(r.errors)}`);
+    edited.push(...(r.data?.orders?.nodes ?? []).filter((n: any) => n.edited).map((n: any) => Number(n.legacyResourceId)));
+    after = r.data?.orders?.pageInfo?.hasNextPage ? r.data.orders.pageInfo.endCursor : null;
+  } while (after);
+  const edits = [];
+  for (const id of edited) {
+    const r = await reconcileEdits(ctx, id, dry);
+    const res = r as { status?: string; plan?: Array<{ change: number }> };
+    if ((res.status && res.status !== 'ok') || res.plan?.some(p => p.change)) edits.push(r);
+  }
+
+  if (missed.length || stuck?.length || edits.length) console.warn('[rto sweep]', JSON.stringify({ missed, stuck, edits }));
+  return { dry, since, rto_orders_checked: ids.length, missed, stuck: (stuck ?? []).map(r => r.order_name), edited_orders_checked: edited.length, edits };
 }
 
 async function cronKeyValid(admin: SupabaseClient, key: string): Promise<boolean> {
   const { data } = await admin.from('private_secrets').select('value').eq('key', 'erp_stock_cron_key').maybeSingle();
   return !!data?.value && data.value === key;
+}
+
+// ── Order edits ───────────────────────────────────────────────────────────────
+
+// Net pieces the ERP has taken out of Unicommerce per Shopify line for edits
+// (negative: put back).
+async function editCorrections(ctx: Ctx, orderId: number): Promise<Map<number, number>> {
+  const { data } = await ctx.admin.from('shopify_order_edit_lines').select('line_item_id, net_removed').eq('order_id', orderId);
+  return new Map((data ?? []).map(r => [Number(r.line_item_id), Number(r.net_removed)]));
+}
+
+async function hasEditCorrections(ctx: Ctx, orderId: number): Promise<boolean> {
+  const { count } = await ctx.admin.from('shopify_order_edit_lines')
+    .select('line_item_id', { count: 'exact', head: true }).eq('order_id', orderId).neq('net_removed', 0);
+  return !!count;
+}
+
+// Bring Unicommerce's stock in line with an edited order, applying only the
+// difference from what the ERP has already corrected. One run per order at a
+// time (shopify_order_edits.locked_until).
+async function reconcileEdits(ctx: Ctx, orderId: number, dry = false) {
+  if (!orderId) return { error: 'no order id' };
+  const now = new Date();
+  if (!dry) {
+    await ctx.admin.from('shopify_order_edits').upsert({ order_id: orderId }, { onConflict: 'order_id', ignoreDuplicates: true });
+    const { data: locked } = await ctx.admin.from('shopify_order_edits')
+      .update({ locked_until: new Date(now.getTime() + 120_000).toISOString() })
+      .eq('order_id', orderId).or(`locked_until.is.null,locked_until.lt.${now.toISOString()}`).select('order_id');
+    if (!locked?.length) return { order_id: orderId, result: 'busy' };
+  }
+
+  let name: string | undefined;
+  let status = 'ok';
+  let detail: string | undefined;
+  const changes: string[] = [];
+  const failures: string[] = [];
+  const plan: Array<EditTarget & { applied: number; change: number }> = [];
+  try {
+    const order = (await rest(ctx, `orders/${orderId}.json`)).order;
+    name = order.name;
+    const ledger = await editCorrections(ctx, orderId);
+    const skus = new Map<number, string>();
+    const { data: rows } = await ctx.admin.from('shopify_order_edit_lines').select('line_item_id, sku').eq('order_id', orderId);
+    for (const r of rows ?? []) skus.set(Number(r.line_item_id), r.sku);
+    const targets = editTargets(order, await getSaleOrderDetail(ctx.admin, String(orderId)), ledger);
+    if (targets.pending) { status = 'pending'; detail = targets.pending; }
+    if (targets.note) { detail = targets.note; if (targets.note.startsWith('none of')) status = 'needs_attention'; }
+    for (const t of targets.lines) {
+      const sku = t.sku || skus.get(t.line_item_id) || '';
+      const applied = ledger.get(t.line_item_id) ?? 0;
+      const change = t.required - applied;
+      plan.push({ ...t, sku, applied, change });
+      if (dry || change === 0) continue;
+      const err = await adjustStock(ctx.admin, sku, Math.abs(change), change > 0 ? 'REMOVE' : 'ADD',
+        `Shopify ${order.name} edited: ${t.why}`);
+      if (err) { failures.push(`${sku}: ${err}`); continue; }
+      await ctx.admin.from('shopify_order_edit_lines').upsert({
+        order_id: orderId, line_item_id: t.line_item_id, sku, net_removed: t.required, detail: t.why, updated_at: now.toISOString(),
+      }, { onConflict: 'order_id,line_item_id' });
+      changes.push(`${sku} ${change > 0 ? `−${change}` : `+${-change}`}`);
+    }
+    if (failures.length) { status = 'needs_attention'; detail = `couldn't correct Unicommerce stock: ${failures.join('; ')}`; }
+    else if (changes.length) detail = `Unicommerce stock corrected: ${changes.join(', ')}`;
+  } catch (e) {
+    status = 'needs_attention';
+    detail = e instanceof Error ? e.message : String(e);
+  }
+  if (!dry) {
+    await ctx.admin.from('shopify_order_edits').update({
+      ...(name ? { order_name: name } : {}), status, ...(detail ? { detail } : {}),
+      checked_at: now.toISOString(), locked_until: null, updated_at: now.toISOString(),
+    }).eq('order_id', orderId);
+  }
+  return { order: name, status, detail, dry, plan: plan.map(p => ({ sku: p.sku, required: p.required, applied: p.applied, change: p.change, why: p.why })) };
+}
+
+// The 15-min job: orders waiting for Unicommerce to cancel its copy, and (at
+// most hourly) corrections that failed.
+async function recheckEdits(ctx: Ctx) {
+  const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+  const { data } = await ctx.admin.from('shopify_order_edits').select('order_id')
+    .or(`status.eq.pending,and(status.eq.needs_attention,updated_at.lt.${hourAgo})`);
+  const results = [];
+  for (const r of data ?? []) results.push(await reconcileEdits(ctx, Number(r.order_id)));
+  return results;
+}
+
+async function editsOne(ctx: Ctx, orderRef: string, dry: boolean) {
+  const name = orderRef.replace(/^#/, '');
+  const found = (await rest(ctx, `orders.json?status=any&name=${encodeURIComponent(name)}&fields=id,name`)).orders ?? [];
+  const order = found.find((o: any) => String(o.name).replace(/^#/, '') === name);
+  if (!order) return { error: `order ${orderRef} not found` };
+  return reconcileEdits(ctx, Number(order.id), dry);
 }
 
 // ── Shopify + helpers ─────────────────────────────────────────────────────────

@@ -6507,6 +6507,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
   // Stock the ERP put back in Unicommerce from cancelled / RTO Shopify orders
   const [orderRestocks, setOrderRestocks] = useState([]);
   const [rtoAttention, setRtoAttention] = useState([]);
+  const [editAttention, setEditAttention] = useState([]);
   // restockFilterMonth is now URL-backed via useSearchParams (see top of component)
 
   // ── Pending COD state ────────────────────────────────────────────────
@@ -6693,7 +6694,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       .order('processed_at', { ascending: false })
       .limit(200);
     setReturnRestocks(data || []);
-    const [{ data: lines }, { data: rpLines }, { data: rto }] = await Promise.all([
+    const [{ data: lines }, { data: rpLines }, { data: rto }, { data: edits }] = await Promise.all([
       supabase.from('shopify_order_restocks')
         .select('order_id, line_item_id, order_name, sku, qty, reason, status, detail, updated_at')
         .order('updated_at', { ascending: false }).limit(100),
@@ -6703,6 +6704,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       supabase.from('shopify_rto_orders')
         .select('order_id, order_name, cancel_status, credit_status, credit_amount, detail, updated_at')
         .eq('status', 'needs_attention').order('updated_at', { ascending: false }),
+      supabase.from('shopify_order_edits')
+        .select('order_id, order_name, detail, updated_at')
+        .eq('status', 'needs_attention').order('updated_at', { ascending: false }),
     ]);
     // Return Prime rows share the list; they're keyed by request, labelled by request number.
     const returnRows = (rpLines || []).map(l => ({
@@ -6711,6 +6715,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     setOrderRestocks([...(lines || []), ...returnRows]
       .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 150));
     setRtoAttention(rto || []);
+    setEditAttention(edits || []);
     setReturnRestocksLoading(false);
   };
 
@@ -9350,7 +9355,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
             </div>
 
             {/* Cancelled / RTO Shopify orders → Unicommerce */}
-            {(rtoAttention.length > 0 || orderRestocks.some(l => l.status === 'failed')) && (
+            {(rtoAttention.length > 0 || editAttention.length > 0 || orderRestocks.some(l => l.status === 'failed')) && (
               <div className="bg-amber-50 rounded-lg border border-amber-200 p-3 sm:p-4 space-y-2">
                 <div className="flex items-center gap-1.5 text-sm font-medium text-amber-900">
                   <AlertCircle className="w-4 h-4" /> Needs attention
@@ -9361,6 +9366,13 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
                     {' · '}cancel: {r.cancel_status || '—'} · store credit: {r.credit_status || '—'}
                     {r.credit_amount ? ` (₹${parseFloat(r.credit_amount).toLocaleString('en-IN')})` : ''}
                     {r.detail && <div className="text-amber-800/80 mt-0.5">{r.detail}</div>}
+                  </div>
+                ))}
+                {editAttention.map(e => (
+                  <div key={e.order_id} className="text-xs text-amber-900">
+                    <span className="font-mono font-medium">Edited order {e.order_name}</span>
+                    {' · '}Unicommerce stock not corrected for the edit
+                    {e.detail && <div className="text-amber-800/80 mt-0.5">{e.detail}</div>}
                   </div>
                 ))}
                 {orderRestocks.filter(l => l.status === 'failed').map(l => (
