@@ -191,13 +191,13 @@ The Supabase Edge Functions use server-side secrets configured in the Supabase d
 - Fabric usage is recorded per cut entry; deleting an entry reverses the consumption.
 
 ### Stock sync (Unicommerce is the system of record)
-Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify stock. Every Shopify order is imported into Unicommerce and **left open there forever** (Unicommerce only dispatches Myntra), so each order permanently holds one piece per unit. "Available" matches the shelf; on-hand is inflated by these stale reservations, and that is accepted. When a piece comes back, the ERP ADDs it — it never cancels the Unicommerce order.
+Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify stock. Every Shopify order is imported into Unicommerce within seconds, which holds a piece for it and takes it out of stock when Velocity fulfils the order on Shopify (Unicommerce then marks it dispatched). When a piece comes back, the ERP ADDs it — it never touches the Unicommerce order. After an RTO is cancelled on Shopify, Unicommerce opens a "Courier Returned" return that waits to be received: **never receive these in Unicommerce**, or the piece is counted twice (verified on #37707, Oct 2026).
 
 | Event | Trigger | Rule | Ledger |
 |---|---|---|---|
 | Batch completed / moved back | ERP UI | ADD / REMOVE per size; SKU = `${style_code}-${size}` | `shopify_batch_inventory_sync` |
 | Unshipped Shopify order cancelled | — | **Not the ERP's job.** Unicommerce cancels its copy and releases the piece itself; an ERP ADD would double count (#37715, 30 Sep 2026) | — |
-| RTO | tag `rto_delivered` (`orders/updated`) | ADD all units if open in Unicommerce or shipped before the opening load; cancel on Shopify (no refund, email); prepaid → store credit = subtotal after discounts, no shipping, no expiry | `shopify_order_restocks`, `shopify_rto_orders` |
+| RTO | tag `rto_delivered` (`orders/updated`) | ADD all units if in Unicommerce or shipped before the opening load; cancel on Shopify (no restock, email). Anything paid (prepaid, part-payment, store credit) is refunded to store credit by the cancel — all of it, shipping included, no expiry — after the ERP cancels the active shipment (Shopify refuses otherwise). Don't cancel RTO shipments by hand: Unicommerce re-imports the order as new | `shopify_order_restocks`, `shopify_rto_orders` |
 | Return Prime return | courier status "Returned to warehouse" / request `received` | ADD unless already restocked at refund by the old flow, rejected, or never taken by Unicommerce | `returnprime_restocks` |
 
 - Opening stock load: Shopify snapshot 2026-09-29 17:07:59 UTC. The old refund-time Shopify restock was switched off at 2026-09-29 23:41:24 UTC.
@@ -206,6 +206,7 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - Failures and anything needing a person show under Analytics → Returns → "Needs attention".
 - **Unicommerce only accepts its API from whitelisted IPs** (since 2 Oct 2026). Edge functions have no fixed egress, so every `/services/*` call goes through the DB function `public.uc_post` (migration 009, `http` extension), which leaves from the database's whitelisted IPv6 address. That address changes if the project is paused/resumed or Postgres is upgraded; re-whitelist it in Unicommerce (`select content from extensions.http_get('https://api64.ipify.org')`). `/oauth/token` is not IP-restricted and stays in the edge functions.
 - Scheduled every 15 min (pg_cron, migration 006; key `private_secrets.erp_stock_cron_key`): `returnprime-sweep` catches returns whose webhook never arrived. (`shopify-cancel-recheck` was dropped in migration 007 along with cancellation handling.)
+- Daily at 06:00 IST (migration 010, same key): `shopify-rto-sweep` processes `rto_delivered` orders from the last 3 days that the ERP has no record of, and moves RTOs stuck half-processed to "Needs attention".
 - Go-live state (2026-09-30): `order_webhook_mode = "live"`, `rto_shopify_actions = true`, Shopify `orders/updated` + `orders/cancelled` and Return Prime `request/received` subscribed.
 
 ### Cutting Runs

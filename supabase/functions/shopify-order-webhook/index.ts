@@ -1,4 +1,4 @@
-// shopify-order-webhook v4
+// shopify-order-webhook v5
 // Puts stock back into Unicommerce when pieces come back from Shopify orders,
 // and handles RTO orders end to end.
 //
@@ -32,6 +32,12 @@
 // never processed. Webhooks are answered at once and processed in the
 // background, inside Shopify's 5-second limit.
 //
+// Safety net: a daily sweep (pg_cron, migration 010, header x-cron-key matching
+// private_secrets.erp_stock_cron_key) processes any order tagged rto_delivered
+// in the last 3 days that the ERP never heard about, e.g. because Shopify gave
+// up on the webhook or deleted the subscription. RTOs claimed but never finished
+// (stuck 'processing' for over an hour) are moved to Needs attention.
+//
 // Admin actions (POST { action } with an admin user's JWT):
 //   status   — webhook subscriptions, granted Shopify scopes, ledger counts
 //   register — baseline the currently tagged RTO orders, then subscribe the webhooks
@@ -42,6 +48,7 @@
 //   cancel   — { order: "36840", dry?: true } cancel one RTO order on Shopify the
 //              same way (refund to store credit if paid), for orders whose
 //              automatic cancel failed. Stock is not touched; dry only shows the plan.
+//   sweep    — { days?: 3, dry?: true } run the safety-net sweep now (or preview it)
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -101,6 +108,13 @@ serve(async (req) => {
       return json({ ok: true });
     }
 
+    // ── Daily safety sweep ────────────────────────────────────────────────────
+    const cronKey = req.headers.get('x-cron-key');
+    if (cronKey) {
+      if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
+      return json(await sweep(ctx, 3, false));
+    }
+
     // ── Admin actions ─────────────────────────────────────────────────────────
     const jwt = (req.headers.get('Authorization') ?? '').replace('Bearer ', '');
     const { data: { user } } = await admin.auth.getUser(jwt);
@@ -115,7 +129,8 @@ serve(async (req) => {
       case 'dry_run':  return json(await dryRun(ctx, String(body.order ?? '')));
       case 'retry':    return json(await retryFailed(ctx, body.dry === true));
       case 'cancel':   return json(await cancelRto(ctx, String(body.order ?? ''), body.dry === true));
-      default:         return json({ error: 'action must be status, register, dry_run, retry or cancel' }, 400);
+      case 'sweep':    return json(await sweep(ctx, Number(body.days ?? 3), body.dry !== false));
+      default:         return json({ error: 'action must be status, register, dry_run, retry, cancel or sweep' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -567,6 +582,61 @@ async function cancelRto(ctx: Ctx, orderRef: string, dry: boolean) {
     updated_at: new Date().toISOString(),
   }).eq('order_id', row.order_id);
   return { order: row.order_name, ...outcome, status: attention ? 'needs_attention' : 'done' };
+}
+
+// Safety net for missed webhooks: process every order tagged rto_delivered in
+// the last `days` days that has no ERP record, exactly as the webhook would
+// have (the claim keeps it exactly-once if the webhook arrives too). Then move
+// RTOs stuck in 'processing' for over an hour to Needs attention: their stock
+// lines and Shopify cancel may be half done, so a person checks them.
+async function sweep(ctx: Ctx, days: number, dry: boolean) {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const ids: number[] = [];
+  let after: string | null = null;
+  do {
+    const r: any = await gql(ctx, `query($after: String, $q: String) {
+      orders(first: 100, after: $after, query: $q) {
+        pageInfo { hasNextPage endCursor } nodes { legacyResourceId }
+      }
+    }`, { after, q: `tag:${RTO_TAG} updated_at:>=${since}` });
+    if (r.errors) throw new Error(`Shopify order search failed: ${JSON.stringify(r.errors)}`);
+    ids.push(...(r.data?.orders?.nodes ?? []).map((n: any) => Number(n.legacyResourceId)));
+    after = r.data?.orders?.pageInfo?.hasNextPage ? r.data.orders.pageInfo.endCursor : null;
+  } while (after);
+
+  const { data: known } = ids.length
+    ? await ctx.admin.from('shopify_rto_orders').select('order_id').in('order_id', ids)
+    : { data: [] as Array<{ order_id: number }> };
+  const knownIds = new Set((known ?? []).map(k => Number(k.order_id)));
+  const missed = [];
+  for (const id of ids.filter(i => !knownIds.has(i))) {
+    const order = (await rest(ctx, `orders/${id}.json`)).order;
+    if (!order || !isRto(order)) continue;
+    if (dry) { missed.push({ order: order.name, result: 'would process as an RTO' }); continue; }
+    await handleOrderEvent(ctx, 'sweep', order);
+    const { data: row } = await ctx.admin.from('shopify_rto_orders').select('status').eq('order_id', id).maybeSingle();
+    missed.push({ order: order.name, result: row?.status ?? 'not processed (test mode)' });
+  }
+
+  const { data: stuck } = await ctx.admin.from('shopify_rto_orders')
+    .select('order_id, order_name').eq('status', 'processing')
+    .lt('updated_at', new Date(Date.now() - 3_600_000).toISOString());
+  if (!dry) {
+    for (const row of stuck ?? []) {
+      await ctx.admin.from('shopify_rto_orders').update({
+        status: 'needs_attention',
+        detail: 'processing never finished — check its stock and its cancel on Shopify',
+        updated_at: new Date().toISOString(),
+      }).eq('order_id', row.order_id).eq('status', 'processing');
+    }
+  }
+  if (missed.length || stuck?.length) console.warn('[rto sweep]', JSON.stringify({ missed, stuck }));
+  return { dry, since, rto_orders_checked: ids.length, missed, stuck: (stuck ?? []).map(r => r.order_name) };
+}
+
+async function cronKeyValid(admin: SupabaseClient, key: string): Promise<boolean> {
+  const { data } = await admin.from('private_secrets').select('value').eq('key', 'erp_stock_cron_key').maybeSingle();
+  return !!data?.value && data.value === key;
 }
 
 // ── Shopify + helpers ─────────────────────────────────────────────────────────
