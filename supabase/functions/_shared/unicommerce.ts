@@ -120,6 +120,21 @@ export async function addOrEditCategory(
   return data?.successful ? null : ucErrorText(data);
 }
 
+// Link a Shopify listing to a catalog SKU, so Unicommerce pushes the SKU's
+// stock to it and maps its orders to the SKU. Unicommerce keys a Shopify
+// listing as '<product id>-<variant id>' (as on its imported orders); several
+// listings may share one SKU, and each gets the SKU's full stock. Creates the
+// link or updates an existing one. Returns null on success, or the error text.
+export async function linkShopifyListing(admin: SupabaseClient, channelProductId: string, sku: string): Promise<string | null> {
+  const data = await ucPost(admin, '/services/rest/v1/channel/createChannelItemType', {
+    channelItemType: {
+      channelCode: 'SHOPIFY', channelProductId, sellerSkuCode: sku, skuCode: sku,
+      blockedInventory: 0, live: true, verified: true, disabled: false,
+    },
+  });
+  return data?.successful ? null : ucErrorText(data);
+}
+
 // A sale order by code (for Shopify orders, the numeric Shopify order ID), or
 // null if Unicommerce doesn't have it. Throws if the lookup itself fails.
 export async function getSaleOrder(admin: SupabaseClient, code: string): Promise<{ status: string } | null> {
