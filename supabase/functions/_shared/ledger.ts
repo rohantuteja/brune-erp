@@ -67,6 +67,7 @@ export type OrderLedger = {
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+const sumOf = (xs?: Array<{ amount: number }>) => (xs ?? []).reduce((a, x) => a + x.amount, 0);
 const split = (amount: number, rate: number) => { const taxable = r2(amount / (1 + rate)); return { taxable, tax: r2(amount - taxable) }; };
 
 export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string }): OrderLedger {
@@ -175,6 +176,21 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     }
     if (ret.cashRefund) {
       voucher(ret.cashRefund.date, 'refund', 'gateway', undefined, `${tag}: cash refund`, [[CUSTOMER, ret.cashRefund.amount, 0], ['Bank', 0, ret.cashRefund.amount]]);
+    }
+    // A parcel returned to origin pays back everything the customer paid (prepaid money, a part-payment,
+    // store credit spent). A person rounds a manual credit, so a difference under a rupee goes to Round off.
+    if (ret.kind === 'rto' && (ret.storeCredit?.length || ret.cashRefund)) {
+      const entitled = r2(sumOf(f.payments) + sumOf(f.storeCreditUsed));
+      const got = r2(issued + (ret.cashRefund?.amount ?? 0));
+      const diff = r2(got - entitled);
+      if (Math.abs(diff) > 1.005) {
+        exceptions.push({ type: 'store_credit_differs', amount: diff,
+          reason: `${got.toFixed(2)} was credited or refunded but the customer paid ${entitled.toFixed(2)}, ${Math.abs(diff).toFixed(2)} ${diff > 0 ? 'more' : 'less'}` });
+      } else if (Math.abs(diff) > 0.005) {
+        const when = ret.storeCredit?.[ret.storeCredit.length - 1]?.date ?? ret.date;
+        voucher(when, 'round_off', 'erp', undefined, `${tag}: store credit differs from what was paid by ${Math.abs(diff).toFixed(2)}`,
+          diff > 0 ? [['Round off', diff, 0], [CUSTOMER, 0, diff]] : [[CUSTOMER, -diff, 0], ['Round off', 0, -diff]]);
+      }
     }
     // A customer return pays back what was paid for the goods, less the return fee.
     if (ret.kind === 'customer' && (ret.storeCredit?.length || ret.cashRefund)) {

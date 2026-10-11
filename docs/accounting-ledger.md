@@ -161,7 +161,17 @@ How the facts are read:
   `store_credit_reversals` (a customer spending the credit looks the same). The credit note is due when the
   parcel is back (Unicommerce's return invoice, else Return Prime's receipt); before that the return is `pending`
   and shows as `awaiting_return` with how long the customer has been refunded.
-- **RTO:** orders tagged `rto_delivered`; the whole sale comes back.
+- **RTO:** orders tagged `rto_delivered`; the whole sale comes back, dated by the courier's order note
+  ("RTO Delivered on 2026-10-03 16:04:38") when there is no Unicommerce return invoice. The customer is owed
+  everything they paid (prepaid money, a part-payment such as the ₹199 PPCOD advance, and store credit spent);
+  the ERP's own RTO process refunds all of it to store credit. For parcels returned before that process existed
+  there is no Shopify refund, so the ledger looks for a credit a person gave by hand on the customer's store credit
+  account after the parcel came back: the credit closest to what the customer paid, within ₹250, is booked as the
+  refund. A difference of under ₹1 goes to the `Round off` account (a person rounds the credit); a bigger
+  difference is `store_credit_differs`; no credit at all is `refund_due`. Checked on 11 Oct: 37370 (₹1,260 credited
+  for ₹1,259.10 paid), 37535 (₹1,300 for ₹1,300) balance; 37586 (₹1,599 for ₹1,499) shows a ₹100 difference;
+  37560 (nothing credited for ₹1,629.10) is `refund_due`. Limit: if one customer has several returned orders
+  of similar value, one credit can be matched to more than one of them.
 - **Not a sale:** cancelled before dispatch with no money moved (skipped and counted as `not_a_sale`).
 - `report` with `budget_s` (up to 100) keeps paging inside one call and reads Return Prime once; 352 orders take about 100 s.
 

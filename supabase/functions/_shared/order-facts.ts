@@ -28,6 +28,9 @@ const succeeded = (t: any) => t.status === 'SUCCESS' && (t.kind === 'SALE' || t.
 // (GoKwik's second credit lands 5–7 seconds later).
 const CREDIT_BEFORE_MS = 30_000;
 const CREDIT_AFTER_MS = 10 * 60_000;
+// A manual store credit for an RTO is accepted when it is within this much of what the customer paid
+// (a person rounds it, or adds a little); further away it is still shown, as a difference to look at.
+const MANUAL_CREDIT_RANGE = 250;
 // Shopify's refund record lands within seconds of Return Prime's refund.
 const REFUND_BEFORE_MS = 2 * 60_000;
 const REFUND_AFTER_MS = 10 * 60_000;
@@ -186,7 +189,9 @@ export function buildFacts(inp: RawInputs): Built {
     const uc = ucOrder ? ucReturnInvoice() : undefined;
     const cancelledAt: string | undefined = o.cancelledAt ?? undefined;
     const pending = ucOrder ? !uc : false;
-    const date = uc?.date ?? (cancelledAt ? istDate(cancelledAt) : inp.today);
+    // The courier's note on the order says when the parcel got back ("RTO Delivered on 2026-10-03 16:04:38").
+    const rtoDay: string | undefined = /RTO Delivered on (\d{4}-\d{2}-\d{2})/i.exec(String(o.note ?? ''))?.[1];
+    const date = uc?.date ?? rtoDay ?? (cancelledAt ? istDate(cancelledAt) : inp.today);
     // Paid orders are refunded to store credit when the ERP cancels the RTO.
     const rf = refunds[0];
     const storeCredit: Array<{ date: string; amount: number; ref: string }> = [];
@@ -197,6 +202,21 @@ export function buildFacts(inp: RawInputs): Built {
         if (t.__typename === 'StoreCreditAccountCreditTransaction' && when >= at - CREDIT_BEFORE_MS && when <= at + CREDIT_AFTER_MS) {
           storeCredit.push({ date: istDate(t.createdAt), amount: Number(t.amount?.amount ?? 0), ref: `credit ${t.createdAt}` });
         }
+      }
+    }
+    // No refund on the order (parcels returned before the ERP handled RTOs): look for a credit a person
+    // gave by hand after the parcel came back. The closest to what the customer paid is taken.
+    const paidTotal = sum([...payments.map(p => p.amount), ...storeCreditUsed.map(s => s.amount)]);
+    if (!storeCredit.length && paidTotal > 0) {
+      const since = rtoDay ? Date.parse(`${rtoDay}T00:00:00+05:30`) : Date.parse(o.createdAt);
+      const candidates = acctTx
+        .filter(t => t.__typename === 'StoreCreditAccountCreditTransaction' && Date.parse(t.createdAt) >= since
+          && Math.abs(Number(t.amount?.amount ?? 0) - paidTotal) <= MANUAL_CREDIT_RANGE)
+        .sort((a, b) => Math.abs(Number(a.amount.amount) - paidTotal) - Math.abs(Number(b.amount.amount) - paidTotal) || Date.parse(a.createdAt) - Date.parse(b.createdAt));
+      const t = candidates[0];
+      if (t) {
+        storeCredit.push({ date: istDate(t.createdAt), amount: Number(t.amount.amount), ref: `manual credit ${t.createdAt}` });
+        notes.push(`store credit of ${Number(t.amount.amount).toFixed(2)} was given by hand on ${istDate(t.createdAt)}`);
       }
     }
     returns.push({ kind: 'rto', date, goodsReturned: goods, pending, uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee } : undefined, storeCredit });

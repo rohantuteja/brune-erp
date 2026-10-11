@@ -23,6 +23,9 @@
 //            orders updated since `from`. One page of `limit` orders, or with `budget_s` as many
 //            pages as fit in that many seconds (Return Prime is read once per call). Pass `next`
 //            back as `after` for more; `next` is null at the end.
+//   credit — { order: "37586" } read-only look at what Shopify says about the customer's money for
+//            an order: refunds, every store credit transaction on the customer's account, the
+//            order's timeline entries about credit / refunds / returns, and its note. No names.
 //   sync   — { kind?: "full" | "incremental", budget_s?: 100 } start a run (or continue the one
 //            that is running) and save orders for up to budget_s seconds. A run holds the queue
 //            of Shopify order ids: a full run is every order updated since the start date, an
@@ -62,9 +65,10 @@ serve(async (req) => {
     switch (body.action) {
       case 'order':  return json(await oneOrder(ctx, String(body.order ?? '').replace(/^#/, '')));
       case 'report': return json(await report(ctx, body));
+      case 'credit': return json(await creditHistory(ctx, String(body.order ?? '').replace(/^#/, '')));
       case 'sync':   return json(await sync(ctx, body));
       case 'tick':   return json(await tick(ctx, body));
-      default:       return json({ error: 'action must be order, report, sync or tick' }, 400);
+      default:       return json({ error: 'action must be order, report, credit, sync or tick' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -81,6 +85,36 @@ async function oneOrder(ctx: Ctx, name: string) {
   if (!exact.length) return { error: `order ${name} not found on Shopify` };
   const [res] = await process(ctx, exact);
   return { ...res, entries: res.ledger.entries };
+}
+
+// What Shopify says about the customer's money on one order: used to find out whether a customer
+// was given store credit (or a refund) by hand. Returns no names or contact details.
+async function creditHistory(ctx: Ctx, name: string) {
+  if (!name) return { error: 'order is required' };
+  const res = await gql(ctx, `query CreditHistory($q: String!) {
+    orders(first: 5, query: $q) { nodes {
+      name displayFinancialStatus cancelledAt tags note createdAt
+      totalPriceSet { shopMoney { amount } }
+      refunds { createdAt totalRefundedSet { shopMoney { amount } } }
+      events(first: 50, reverse: true) { nodes { message createdAt } }
+      customer { id storeCreditAccounts(first: 5) { nodes { id balance { amount }
+        transactions(first: 50, reverse: true) { nodes { __typename amount { amount } balanceAfterTransaction { amount } createdAt event } } } } }
+    } }
+  }`, { q: `name:${name}` });
+  const o = (res.data.orders.nodes as any[]).find(n => String(n.name).replace(/^#/, '') === name);
+  if (!o) return { error: `order ${name} not found on Shopify` };
+  const relevant = /credit|refund|return|rto|cancel|payment|captured/i;
+  return {
+    order: name, financialStatus: o.displayFinancialStatus, cancelledAt: o.cancelledAt, createdAt: o.createdAt, tags: o.tags,
+    note: o.note ? String(o.note).slice(0, 300) : null, total: o.totalPriceSet?.shopMoney?.amount,
+    refunds: o.refunds.map((r: any) => ({ at: r.createdAt, amount: r.totalRefundedSet?.shopMoney?.amount })),
+    customerFound: !!o.customer,
+    accounts: (o.customer?.storeCreditAccounts?.nodes ?? []).map((a: any) => ({
+      balance: a.balance?.amount,
+      transactions: (a.transactions?.nodes ?? []).map((t: any) => ({ type: String(t.__typename).replace('StoreCreditAccount', ''), amount: t.amount?.amount, balanceAfter: t.balanceAfterTransaction?.amount, at: t.createdAt, event: t.event })),
+    })),
+    events: (o.events?.nodes ?? []).filter((e: any) => relevant.test(e.message)).map((e: any) => ({ at: e.createdAt, message: String(e.message).replace(/<[^>]+>/g, '').slice(0, 200) })),
+  };
 }
 
 async function report(ctx: Ctx, body: any) {
@@ -277,7 +311,7 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
   const res = await gql(ctx, `query LedgerOrders($q: String!, $first: Int!, $after: String) {
     orders(first: $first, after: $after, query: $q, sortKey: UPDATED_AT) {
       pageInfo { hasNextPage endCursor }
-      nodes { id legacyResourceId name createdAt cancelledAt tags paymentGatewayNames
+      nodes { id legacyResourceId name createdAt cancelledAt tags note paymentGatewayNames
         subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode }
         transactions(first: 20) { id kind status gateway amountSet { shopMoney { amount } } processedAt }
         refunds { createdAt refundLineItems(first: 10) { nodes { subtotalSet { shopMoney { amount } } } }

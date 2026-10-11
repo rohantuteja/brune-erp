@@ -181,3 +181,78 @@ test('37740: cancelled by the customer before it shipped → never a sale', () =
   assert.equal(b.skip, 'cancelled before dispatch');
   assert.equal(ledger(b).balanced, true);
 });
+
+// ── Returns to origin before the ERP handled RTOs: credit a person gave by hand ──────────────
+const credit = (amount: number, createdAt: string) => ({ __typename: 'StoreCreditAccountCreditTransaction', amount: { amount: String(amount) }, createdAt });
+const debit = (amount: number, createdAt: string) => ({ __typename: 'StoreCreditAccountDebitTransaction', amount: { amount: String(-amount) }, createdAt });
+const account = (...txs: any[]) => ({ storeCreditAccounts: { nodes: [{ transactions: { nodes: txs } }] } });
+const rtoOrder = (name: string, o: any): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-11', uc: null, rpRequests: [],
+  shopify: { name, tags: ['rto_delivered'], refunds: [], cancelledAt: null, totalShippingPriceSet: m(0), shippingAddress: { provinceCode: 'KA' }, ...o },
+});
+
+test('37370: prepaid by UPI, returned, customer given ₹1,260 by hand → balanced, the ₹0.90 goes to Round off', () => {
+  const b = buildFacts(rtoOrder('37370', {
+    createdAt: '2026-09-14T13:32:05Z', note: 'RTO Delivered on 2026-10-03 16:04:38', paymentGatewayNames: ['Gokwik Upi'], subtotalPriceSet: m(1259.1),
+    transactions: [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik Upi', amountSet: m(1259.1), processedAt: '2026-09-14T13:32:06Z' }],
+    customer: account(credit(1260, '2026-10-09T11:52:12Z')),
+  }));
+  const l = ledger(b);
+  assert.equal(l.status, 'complete'); assert.equal(l.net, 0);
+  assert.equal(b.facts.returns![0].date, '2026-10-03');                        // dated by the courier's note, not today
+  assert.ok(b.notes.some(n => /given by hand on 2026-10-09/.test(n)));
+  const ro = l.entries.filter(e => e.voucher === 'round_off');
+  assert.deepEqual(ro.map(e => [e.account, e.debit, e.credit]), [['Round off', 0.9, 0], ['Customer (order control)', 0, 0.9]].map(([a, d, c]) => [a, d, c]));
+});
+
+test('37535: ₹1,300 store credit spent on a COD order, returned, ₹1,300 credited by hand → balanced; an older credit is not mistaken for it', () => {
+  const b = buildFacts(rtoOrder('37535', {
+    createdAt: '2026-09-21T15:00:32Z', note: 'RTO Delivered on 2026-10-03 16:04:14', paymentGatewayNames: ['cash_on_delivery', 'shopify_store_credit'],
+    subtotalPriceSet: m(1599), totalShippingPriceSet: m(100),
+    transactions: [
+      { id: 'sc', kind: 'SALE', status: 'SUCCESS', gateway: 'shopify_store_credit', amountSet: m(1300), processedAt: '2026-09-21T15:00:33Z' },
+      { id: 'cod', kind: 'SALE', status: 'PENDING', gateway: 'cash_on_delivery', amountSet: m(399), processedAt: '2026-09-21T15:00:33Z' }],
+    customer: account(credit(1300, '2026-10-09T15:02:52Z'), debit(1300, '2026-09-21T15:00:34Z'), credit(1300, '2026-09-18T09:16:21Z')),
+  }));
+  const l = ledger(b);
+  assert.equal(l.status, 'complete'); assert.equal(l.net, 0);
+  assert.equal(b.facts.returns![0].storeCredit![0].date, '2026-10-09');
+  assert.equal(l.entries.filter(e => e.voucher === 'round_off').length, 0);
+});
+
+test('37586: paid ₹1,499, given ₹1,599 by hand → ₹100 more than paid, needs a look', () => {
+  const b = buildFacts(rtoOrder('37586', {
+    createdAt: '2026-09-24T02:56:47Z', note: 'RTO Delivered on 2026-10-03 11:36:35', paymentGatewayNames: ['Gokwik Cards'], subtotalPriceSet: m(1499),
+    transactions: [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik Cards', amountSet: m(1499), processedAt: '2026-09-24T02:56:48Z' }],
+    customer: account(credit(1599, '2026-10-09T12:10:13Z')),
+  }));
+  const l = ledger(b);
+  assert.equal(l.status, 'attention');
+  assert.equal(l.exceptions[0].type, 'store_credit_differs');
+  assert.equal(l.exceptions[0].amount, 100);
+  assert.match(l.exceptions[0].reason, /1599\.00 was credited .* paid 1499\.00, 100\.00 more/);
+});
+
+test('37560: part-paid (₹199 UPI + ₹1,430.10 store credit), returned, nothing credited since → refund due for all of it', () => {
+  const b = buildFacts(rtoOrder('37560', {
+    createdAt: '2026-09-22T21:12:12Z', note: 'RTO Delivered on 2026-10-06 15:57:05', paymentGatewayNames: ['Gokwik Ppcod', 'shopify_store_credit'],
+    subtotalPriceSet: m(4097), totalShippingPriceSet: m(100),
+    transactions: [
+      { id: 'adv', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik Ppcod', amountSet: m(199), processedAt: '2026-09-22T21:12:13Z' },
+      { id: 'sc', kind: 'SALE', status: 'SUCCESS', gateway: 'shopify_store_credit', amountSet: m(1430.1), processedAt: '2026-09-22T21:12:13Z' }],
+    customer: account(debit(1430.1, '2026-09-22T21:12:14Z'), credit(1430.1, '2026-09-17T03:56:59Z')),   // all before the parcel came back
+  }));
+  const l = ledger(b);
+  assert.equal(l.status, 'attention');
+  assert.equal(l.exceptions[0].type, 'refund_due');
+  assert.equal(l.exceptions[0].amount, -1629.1);
+});
+
+test('a credit given by hand BEFORE the parcel came back is not counted for the return', () => {
+  const b = buildFacts(rtoOrder('X9', {
+    createdAt: '2026-09-14T13:32:05Z', note: 'RTO Delivered on 2026-10-03 16:04:38', paymentGatewayNames: ['Gokwik Upi'], subtotalPriceSet: m(1259.1),
+    transactions: [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik Upi', amountSet: m(1259.1), processedAt: '2026-09-14T13:32:06Z' }],
+    customer: account(credit(1259.1, '2026-09-30T10:00:00Z')),
+  }));
+  assert.equal(ledger(b).exceptions[0].type, 'refund_due');
+});
