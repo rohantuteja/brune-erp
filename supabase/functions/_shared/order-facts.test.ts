@@ -256,3 +256,38 @@ test('a credit given by hand BEFORE the parcel came back is not counted for the 
   }));
   assert.equal(ledger(b).exceptions[0].type, 'refund_due');
 });
+
+// ── A person approved an extra credit (ledger_adjustments) ───────────────────────────────────
+const order37586 = (adjustments?: any[]): RawInputs => ({
+  ...rtoOrder('37586', {
+    createdAt: '2026-09-24T02:56:47Z', note: 'RTO Delivered on 2026-10-03 11:36:35', paymentGatewayNames: ['Gokwik Cards'], subtotalPriceSet: m(1499),
+    transactions: [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik Cards', amountSet: m(1499), processedAt: '2026-09-24T02:56:48Z' }],
+    customer: account(credit(1599, '2026-10-09T12:10:13Z')),
+  }),
+  adjustments,
+});
+const goodwill = (amount: number) => [{ kind: 'goodwill_credit' as const, amount, reason: 'deliberate extra credit', approved_by: 'owner, chat 11 Oct 2026' }];
+
+test('37586: the extra ₹100 was approved → booked to Goodwill credits, the order is complete', () => {
+  const l = ledger(buildFacts(order37586(goodwill(100))));
+  assert.equal(l.status, 'complete'); assert.equal(l.net, 0); assert.deepEqual(l.exceptions, []);
+  const g = l.entries.filter(e => e.voucher === 'goodwill');
+  assert.deepEqual(g.map(e => [e.account, e.debit, e.credit]), [['Goodwill credits', 100, 0], ['Customer (order control)', 0, 100]]);
+  assert.equal(g[0].date, '2026-10-09');
+  assert.match(g[0].memo, /approved by owner, chat 11 Oct 2026/);
+});
+
+test('an approval for a different amount does not clear the difference', () => {
+  const l = ledger(buildFacts(order37586(goodwill(50))));
+  assert.equal(l.status, 'attention'); assert.equal(l.exceptions[0].type, 'store_credit_differs');
+});
+
+test('without an approval the same difference is flagged', () => {
+  assert.equal(ledger(buildFacts(order37586())).exceptions[0].type, 'store_credit_differs');
+});
+
+test('an approval never covers a shortfall: credited less than paid is still flagged', () => {
+  const raw = order37586(goodwill(100));
+  (raw.shopify.customer as any) = account(credit(1399, '2026-10-09T12:10:13Z'));
+  assert.equal(ledger(buildFacts(raw)).exceptions[0].type, 'store_credit_differs');
+});

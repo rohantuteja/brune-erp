@@ -33,6 +33,7 @@ export type Facts = {
   delivered?: { date: string; amount: number };            // courier collected this COD amount
   payments?: Array<{ date: string; amount: number; ref: string }>;   // prepaid money settled by the gateway
   storeCreditUsed?: Array<{ date: string; amount: number }>;         // store credit spent at checkout
+  approved?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; by: string }>;   // decisions a person made (ledger_adjustments)
   returns?: Array<{
     kind: 'rto' | 'customer';
     date: string;                 // when the return invoice / credit note is dated
@@ -93,6 +94,11 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     return [put('Output CGST', half), put('Output SGST', r2(tax - half))];
   };
   const parts = (goods: number, cod: number) => ({ g: split(goods, f.rate), c: split(cod, f.rate) });
+  // The customer got more than they were due and a person approved exactly that extra (a goodwill credit).
+  const approvedExtra = (extra: number) => (f.approved ?? []).find(a => a.kind === 'goodwill_credit' && Math.abs(a.amount - extra) <= 0.01);
+  const bookGoodwill = (date: string, tag: string, extra: number, a: { reason: string; by: string }) =>
+    voucher(date, 'goodwill', 'erp', undefined, `${tag}: extra store credit of ${extra.toFixed(2)} approved by ${a.by}: ${a.reason}`,
+      [['Goodwill credits', extra, 0], [CUSTOMER, 0, extra]]);
 
   if (f.goods < 0 || f.codFee < 0 || !(f.rate >= 0)) {
     return { entries, exportable: [], balancing, exceptions: [{ type: 'bad_facts', amount: 0, reason: 'negative amounts or rate' }], net: 0, opening: 0, balanced: false, status: 'attention' };
@@ -183,7 +189,10 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       const entitled = r2(sumOf(f.payments) + sumOf(f.storeCreditUsed));
       const got = r2(issued + (ret.cashRefund?.amount ?? 0));
       const diff = r2(got - entitled);
-      if (Math.abs(diff) > 1.005) {
+      const ok = diff > 1.005 ? approvedExtra(diff) : undefined;
+      if (ok) {
+        bookGoodwill(ret.storeCredit?.[ret.storeCredit.length - 1]?.date ?? ret.date, tag, diff, ok);
+      } else if (Math.abs(diff) > 1.005) {
         exceptions.push({ type: 'store_credit_differs', amount: diff,
           reason: `${got.toFixed(2)} was credited or refunded but the customer paid ${entitled.toFixed(2)}, ${Math.abs(diff).toFixed(2)} ${diff > 0 ? 'more' : 'less'}` });
       } else if (Math.abs(diff) > 0.005) {
@@ -196,7 +205,11 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     if (ret.kind === 'customer' && (ret.storeCredit?.length || ret.cashRefund)) {
       const entitled = r2(ret.goodsReturned - (ret.returnFee ?? 0));
       const got = r2(issued + (ret.cashRefund?.amount ?? 0));
-      if (Math.abs(got - entitled) > 0.01) {
+      const extra = r2(got - entitled);
+      const ok = extra > 0.01 ? approvedExtra(extra) : undefined;
+      if (ok) {
+        bookGoodwill(ret.storeCredit?.[ret.storeCredit.length - 1]?.date ?? ret.date, tag, extra, ok);
+      } else if (Math.abs(got - entitled) > 0.01) {
         exceptions.push({ type: 'store_credit_differs', amount: r2(got - entitled),
           reason: `${got.toFixed(2)} was credited or refunded but the customer is entitled to ${entitled.toFixed(2)} (goods ${ret.goodsReturned.toFixed(2)} less fee ${(ret.returnFee ?? 0).toFixed(2)})` });
       }

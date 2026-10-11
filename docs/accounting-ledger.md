@@ -170,7 +170,7 @@ How the facts are read:
   refund. A difference of under ₹1 goes to the `Round off` account (a person rounds the credit); a bigger
   difference is `store_credit_differs`; no credit at all is `refund_due`. Checked on 11 Oct: 37370 (₹1,260 credited
   for ₹1,259.10 paid), 37535 (₹1,300 for ₹1,300) balance; 37586 (₹1,599 for ₹1,499) shows a ₹100 difference;
-  37560 (nothing credited for ₹1,629.10) is `refund_due`. Limit: if one customer has several returned orders
+  37560 (nothing credited for ₹1,629.10) was `refund_due` until the ERP's RTO flow was run on it (below). Limit: if one customer has several returned orders
   of similar value, one credit can be matched to more than one of them.
 - **Not a sale:** cancelled before dispatch with no money moved (skipped and counted as `not_a_sale`).
 - `report` with `budget_s` (up to 100) keeps paging inside one call and reads Return Prime once; 352 orders take about 100 s.
@@ -237,6 +237,24 @@ carried in. The status counts match the read-only report (279 / 7 / 50 / 12 / 4)
 **Screen.** Analytics → Ledger (`/analytics/ledger`, `src/pages/LedgerSection.jsx`): status cards, the Needs
 attention list, the documents the ERP issues (by type, with order numbers), and a filterable order table
 (`?lstatus=`, `?lq=`) whose rows open to the order's double-entry lines.
+
+**Why four RTO orders were stuck (found 11 Oct).** The ERP's RTO flow ran on 37370, 37535, 37560 and 37586 on
+7 Oct: the pieces went back into Unicommerce stock, but the Shopify cancel failed ("Cannot cancel an order that has
+outstanding fulfillments") and no credit was issued. They stayed `needs_attention` on `shopify_rto_orders`.
+The webhook now cancels the shipment before the order (v15), but a failed row is not retried by itself. The
+`cancel` admin action retries one, and needs an admin login, so `rto-cancel` (same code, in
+`_shared/rto-cancel.ts`, also accepting the cron key) can do it from the database. It refuses when the customer's
+store credit account already holds a credit close to what the order still holds, so it can never credit twice.
+Run on 37560 on 11 Oct: shipment cancelled, order cancelled, ₹1,629.10 (₹199 PPCOD advance + ₹1,430.10 store
+credit spent) refunded to store credit, cancellation email sent, row `done`. 37370, 37535 and 37586 were credited
+by hand on 9 Oct and the guard refuses them; their rows stay `needs_attention` and the orders stay uncancelled on
+Shopify (still `PAID` and fulfilled there).
+
+**Approved decisions** (`ledger_adjustments`, migration 018). A person's decision the other systems cannot show.
+One kind so far, `goodwill_credit`: the customer was deliberately given more store credit than they paid. When the
+amount equals the difference the ledger found, it books it to `Goodwill credits` (debit) instead of flagging the
+order. It never covers a shortfall and never a different amount. 37586: ₹1,599 credited for ₹1,499 paid, the extra
+₹100 approved by the owner in chat on 11 Oct 2026. The GST treatment of a goodwill credit is for the CA.
 
 ## Still to build
 

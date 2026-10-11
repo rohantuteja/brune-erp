@@ -48,6 +48,7 @@ export type RawInputs = {
   reversalIds?: string[];                      // store credit debits the ERP made to take back a double credit
   codDeliveredOn?: string | null;              // cod_deliveries.delivered_on
   velocityDeliveredOn?: string | null;         // Velocity cod-remittance delivery_date
+  adjustments?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; approved_by: string }>;   // ledger_adjustments for this order
 };
 
 export type Built = { facts: Facts; notes: string[]; skip?: string };
@@ -223,7 +224,10 @@ export function buildFacts(inp: RawInputs): Built {
   }
 
   return {
-    facts: { order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, delivered, payments, storeCreditUsed, returns },
+    facts: {
+      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, delivered, payments, storeCreditUsed, returns,
+      approved: (inp.adjustments ?? []).map(a => ({ kind: a.kind, amount: Number(a.amount), reason: a.reason, by: a.approved_by })),
+    },
     notes,
   };
 }

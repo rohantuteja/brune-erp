@@ -103,7 +103,7 @@ async function creditHistory(ctx: Ctx, name: string) {
   }`, { q: `name:${name}` });
   const o = (res.data.orders.nodes as any[]).find(n => String(n.name).replace(/^#/, '') === name);
   if (!o) return { error: `order ${name} not found on Shopify` };
-  const relevant = /credit|refund|return|rto|cancel|payment|captured/i;
+  const relevant = /credit|refund|return|rto|cancel|payment|captured/i;   // timeline lines about money; notification lines name the customer, so they are left out
   return {
     order: name, financialStatus: o.displayFinancialStatus, cancelledAt: o.cancelledAt, createdAt: o.createdAt, tags: o.tags,
     note: o.note ? String(o.note).slice(0, 300) : null, total: o.totalPriceSet?.shopMoney?.amount,
@@ -113,7 +113,7 @@ async function creditHistory(ctx: Ctx, name: string) {
       balance: a.balance?.amount,
       transactions: (a.transactions?.nodes ?? []).map((t: any) => ({ type: String(t.__typename).replace('StoreCreditAccount', ''), amount: t.amount?.amount, balanceAfter: t.balanceAfterTransaction?.amount, at: t.createdAt, event: t.event })),
     })),
-    events: (o.events?.nodes ?? []).filter((e: any) => relevant.test(e.message)).map((e: any) => ({ at: e.createdAt, message: String(e.message).replace(/<[^>]+>/g, '').slice(0, 200) })),
+    events: (o.events?.nodes ?? []).filter((e: any) => relevant.test(e.message) && !/email|@/i.test(e.message)).map((e: any) => ({ at: e.createdAt, message: String(e.message).replace(/<[^>]+>/g, '').slice(0, 200) })),
   };
 }
 
@@ -274,11 +274,15 @@ async function sharedInputs(ctx: Ctx) {
   // The debits the ERP made to take back double store credit (store-credit-guard).
   const { data: rev } = await ctx.admin.from('store_credit_reversals').select('debit_transaction_id').eq('status', 'reversed');
   const reversalIds = (rev ?? []).map(r => String(r.debit_transaction_id)).filter(Boolean);
-  return { cutoff, sellerState, today, rp, reversalIds };
+  // Decisions a person made about an order (migration 018).
+  const { data: adj } = await ctx.admin.from('ledger_adjustments').select('order_name, kind, amount, reason, approved_by');
+  const adjustments = new Map<string, any[]>();
+  for (const a of adj ?? []) adjustments.set(String(a.order_name), [...(adjustments.get(String(a.order_name)) ?? []), a]);
+  return { cutoff, sellerState, today, rp, reversalIds, adjustments };
 }
 
 async function process(ctx: Ctx, orders: any[], shared?: Shared) {
-  const { cutoff, sellerState, today, rp, reversalIds } = shared ?? await sharedInputs(ctx);
+  const { cutoff, sellerState, today, rp, reversalIds, adjustments } = shared ?? await sharedInputs(ctx);
   const ids = orders.map(o => Number(o.legacyResourceId));
   const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on').in('order_id', ids);
   const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r.delivered_on as string | null]));
@@ -299,6 +303,7 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
     const built = buildFacts({
       sellerState, today, shopify: o, uc: ucBy.get(id) ?? null,
       rpRequests: rp.get(String(o.name).replace(/^#/, '')) ?? [], reversalIds,
+      adjustments: adjustments.get(String(o.name).replace(/^#/, '')) ?? [],
       codDeliveredOn: codBy.get(id) ?? null,
       velocityDeliveredOn: awb ? velocity.get(awb) ?? null : null,
     });
