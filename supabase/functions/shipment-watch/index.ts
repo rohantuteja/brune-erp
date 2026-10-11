@@ -1,9 +1,11 @@
-// shipment-watch v3
+// shipment-watch v5
 // Follows every parcel the business is waiting on and stores it in `shipments` (migration 020):
 //   forward parcels not delivered, parcels coming back to origin (RTO), and customer returns on their way.
 // Sources: Shopify (Velocity writes its tracking on the fulfilment and its promise and RTO state in the order
-// note) and Return Prime (the reverse pickup). Rules and their tests: _shared/shipments.ts.
-// Read-only towards Shopify and Return Prime; writes only the `shipments` table.
+// note) and Return Prime (the reverse pickup) say which parcels MAY be pending; Velocity's own order-tracking and
+// shipping-charges APIs then decide, because the other two lag the courier (29 of the first 133 "pending" parcels were
+// already resolved). Rules and their tests: _shared/shipments.ts.
+// Read-only towards Shopify, Return Prime and Velocity; writes only the `shipments` table.
 //
 // Actions (POST { action } with an admin user's JWT, or the x-cron-key header):
 //   scan   — { dry?: true } read everything, save it (dry: only report what it would save and what looks wrong)
@@ -12,12 +14,14 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting } from '../_shared/shopify-admin.ts';
-import { DEFAULTS, type Settings, type Shipment, parseNote, shipmentsOfOrder, shipmentsOfReturn } from '../_shared/shipments.ts';
+import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
+import { DEFAULTS, NO_AWB, type Settings, type Shipment, type VelocityMoney, type VelocityTrack, applyVelocity, parseCharges, parseNote, parseTracking, shipmentsOfOrder, shipmentsOfReturn } from '../_shared/shipments.ts';
 
 const RP_API = 'https://api.returnprime.co';
 const RP_PAGES = 40;
 const PAGE = 25;                    // orders per Shopify query (keeps the query cost well under the limit)
+const VELOCITY = 'https://shazam.velocity.in/custom/api/v1';
+const VEL_BATCH = 50;               // parcels per Velocity call
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -127,6 +131,16 @@ async function scan(ctx: Ctx, dry: boolean) {
     }
   }
 
+  // 4. Velocity decides. Every parcel still thought pending is asked of Velocity's own tracking, and its wallet ledger says
+  //    what it charged and whether it has credited anything back.
+  const asked = [...rows.values()].filter(r => r.state === 'pending' && !r.awb.startsWith(NO_AWB)).map(r => r.awb);
+  const vel = await askVelocity(ctx, asked);
+  const checkedAt = new Date().toISOString();
+  for (const r of [...rows.values()]) {
+    if (r.state !== 'pending') continue;
+    rows.set(r.awb, applyVelocity(r, vel.tracking.get(r.awb), vel.money.get(r.awb), inp, checkedAt));
+  }
+
   // Keep what is pending, and anything we already knew about (so it can close). Closed history is not invented.
   const keep = [...rows.values()].filter(r => r.state === 'pending' || known.has(r.awb));
   // Old orders whose AWB was only typed in carry no courier tracking: nothing can be said about them.
@@ -136,6 +150,10 @@ async function scan(ctx: Ctx, dry: boolean) {
     scanned_at: new Date().toISOString(), seconds: 0, today,
     shopify_orders_read: seenOrders.size + gone.length, return_requests_read: returnRequests,
     saved: keep.length, pending: pending.length, closed_now: keep.length - pending.length, untracked_not_followed: untracked.length,
+    velocity: { asked: asked.length, tracking_answered: vel.tracking.size, charges_answered: vel.money.size, failed_calls: vel.failed, no_record: pending.filter(r => r.attention === 'unverified' && r.velocity_status == null).length },
+    closed_by_velocity: keep.filter(r => r.state === 'closed' && known.get(r.awb)?.state === 'pending').length,
+    flagged: count(pending.filter(r => r.attention), r => r.attention!),
+    credit_received_parcels: pending.filter(r => (r.credit_received ?? 0) > 0).length,
     by_kind: count(pending, r => r.kind),
     escalate_now: pending.filter(r => r.escalation === 'now').length,
     consider_escalating: pending.filter(r => r.escalation === 'consider').length,
@@ -146,12 +164,44 @@ async function scan(ctx: Ctx, dry: boolean) {
 
   const now = new Date().toISOString();
   for (let i = 0; i < keep.length; i += 200) {
-    const { error } = await ctx.admin.from('shipments').upsert(keep.slice(i, i + 200).map(r => ({ ...r, updated_at: now })), { onConflict: 'awb' });
+    const { error } = await ctx.admin.from('shipments').upsert(keep.slice(i, i + 200).map(({ base_note, ...r }) => ({ ...r, updated_at: now })), { onConflict: 'awb' });
     if (error) throw new Error(`saving shipments: ${error.message}`);
   }
   summary.seconds = Math.round((Date.now() - started) / 1000);
   await ctx.admin.from('app_settings').upsert({ key: 'shipment_watch_last_run', value: summary }, { onConflict: 'key' });
   return summary;
+}
+
+// Velocity's order-tracking (status, delivery scans) and shipping-charges (wallet ledger) for a list of tracking numbers.
+// A parcel missing from a successful answer has no record at Velocity (null); a failed call leaves its parcels out of
+// the maps altogether, which applyVelocity reports as "did not answer".
+async function askVelocity(ctx: Ctx, awbs: string[]) {
+  const tracking = new Map<string, VelocityTrack | null>();
+  const money = new Map<string, VelocityMoney>();
+  let failed = 0;
+  const token = (await secrets(ctx.admin, ['velocity_api_token'])).velocity_api_token;
+  if (!token || !awbs.length) return { tracking, money, failed: token ? 0 : 1 };
+  const call = async (path: string, batch: string[]) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`${VELOCITY}/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: batch }) });
+        if (res.status === 429 && attempt === 0) { await sleep(20_000); continue; }
+        if (!res.ok) return null;
+        return await res.json();
+      } catch { return null; }
+    }
+    return null;
+  };
+  for (let i = 0; i < awbs.length; i += VEL_BATCH) {
+    const batch = awbs.slice(i, i + VEL_BATCH);
+    const t = await call('order-tracking', batch);
+    if (t?.result && typeof t.result === 'object') for (const awb of batch) tracking.set(awb, parseTracking(t.result[awb])); else failed++;
+    await sleep(1000);
+    const c = await call('shipping-charges', batch);
+    if (Array.isArray(c?.data)) for (const d of c.data) { if (d?.tracking_number && !d.error) money.set(String(d.tracking_number), parseCharges(d)); } else failed++;
+    await sleep(1000);
+  }
+  return { tracking, money, failed };
 }
 
 // Where Velocity's note and tags disagree: the note is what the ERP trusts, this shows when a tag is missing.

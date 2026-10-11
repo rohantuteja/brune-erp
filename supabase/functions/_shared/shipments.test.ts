@@ -2,7 +2,7 @@
 // Shapes are the real Shopify and Return Prime responses for orders 37874, 37875, 37852, 36354 (Oct 2026).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, parseNote, paymentOf, shipmentsOfOrder, shipmentsOfReturn } from './shipments.ts';
+import { DEFAULTS, applyVelocity, istText, parseCharges, parseNote, parseTracking, paymentOf, shipmentsOfOrder, shipmentsOfReturn } from './shipments.ts';
 
 const m = (amount: number) => ({ shopMoney: { amount: String(amount) } });
 const ev = (...xs: Array<[string, string]>) => ({ nodes: xs.map(([status, happenedAt]) => ({ status, happenedAt })) });   // newest first
@@ -166,4 +166,132 @@ test('a cancelled fulfilment is not turned into an RTO just because the order is
     { createdAt: '2026-10-05T05:40:30Z', displayStatus: 'CANCELED', trackingInfo: [{ company: 'delhivery', number: 'C1' }], events: ev() },
     { createdAt: '2026-10-06T05:40:30Z', displayStatus: 'IN_TRANSIT', trackingInfo: [{ company: 'delhivery', number: 'C2' }], events: ev(['IN_TRANSIT', '2026-10-07T05:00:00Z']) }] });
   assert.deepEqual(shipmentsOfOrder(o, inp('2026-10-12')).map(r => [r.awb, r.status]), [['C1', 'cancelled'], ['C2', 'rto_in_transit']]);
+});
+
+// ── Velocity's own answer decides (applyVelocity) ──
+// Shapes and values below are from Velocity's order-tracking and shipping-charges answers on 11 Oct 2026.
+const vt = (status: string, over: any = {}) => parseTracking({ tracking_data: {
+  shipment_status: status, estimated_delivery_date: null, original_edd: null,
+  shipment_track: [{ delivered_date: null, current_status: status }],
+  shipment_track_activities: [{ date: '2026-10-11 14:30:38', activity: 'Item OFD at BOM_WagleEstate' }, { date: '2026-10-10 09:00:00', activity: 'In transit' }],
+  ...over,
+} })!;
+const NOW = '2026-10-12T04:00:00Z';
+const fwd = (over: any = {}) => shipmentsOfOrder(order(over), inp('2026-10-12'))[0];
+const ret = () => shipmentsOfReturn(rp(), inp('2026-10-12'))[0];
+
+test('34838: Return Prime says the pickup is on its way, Velocity says "Closed Reverse Pickup" → the return is cancelled and closed', () => {
+  const t = vt('return_cancelled', { shipment_track_activities: [{ date: '2026-07-20 00:08:53', activity: 'Closed Reverse Pickup' }] });
+  const s = applyVelocity(ret(), t, undefined, inp('2026-10-12'), NOW);
+  assert.equal(s.state, 'closed'); assert.equal(s.outcome, 'cancelled'); assert.equal(s.closed_on, '2026-07-20');
+  assert.equal(s.attention, null); assert.equal(s.verified, true); assert.equal(s.claim_eligible, false);
+});
+
+test('34629: a return Velocity delivered back on 4 Sep is closed as returned to us', () => {
+  const t = vt('return_delivered', { shipment_track_activities: [{ date: '2026-09-04 11:32:49', activity: 'Item Return To Origin Delivered at NOI_Noida_FM' }] });
+  const s = applyVelocity(ret(), t, undefined, inp('2026-10-12'), NOW);
+  assert.equal(s.state, 'closed'); assert.equal(s.outcome, 'returned_to_us'); assert.equal(s.closed_on, '2026-09-04');
+});
+
+test('35868: a forward parcel with a delivery date is closed as delivered, on that date', () => {
+  const t = vt('delivered', { shipment_track: [{ delivered_date: '2026-07-31 14:02:57' }] });
+  const s = applyVelocity(fwd(), t, undefined, inp('2026-10-12'), NOW);
+  assert.equal(s.state, 'closed'); assert.equal(s.outcome, 'delivered'); assert.equal(s.closed_on, '2026-07-31'); assert.equal(s.escalation, null);
+});
+
+test('33966: Velocity says "delivered" but shows no delivery scan and no tracking → not closed, flagged to be checked', () => {
+  const t = vt('delivered', { shipment_track_activities: [] });
+  const s = applyVelocity(fwd(), t, undefined, inp('2026-10-12'), NOW);
+  assert.equal(s.state, 'pending'); assert.equal(s.attention, 'unverified'); assert.equal(s.verified, false);
+  assert.match(s.attention_reason!, /no delivery scan/);
+});
+
+test('36354: Velocity marks the RTO lost → it stays on the list, flagged as lost, not hidden', () => {
+  const o = order({ name: '36354', note: 'RTO In Transit on 2026-08-31 10:00:00', createdAt: '2026-08-10T08:00:00Z', fulfillments: [{ ...order().fulfillments[0], createdAt: '2026-08-10T10:00:00Z' }] });
+  const [row] = shipmentsOfOrder(o, inp('2026-10-12'));
+  const t = vt('lost', { shipment_track_activities: [{ date: '2026-09-07 19:16:07', activity: 'Shipment LOST' }] });
+  const s = applyVelocity(row, t, { freightDebit: 60.89, creditReceived: 0 }, inp('2026-10-12'), NOW);
+  assert.equal(row.kind, 'rto'); assert.equal(s.state, 'pending'); assert.equal(s.attention, 'lost'); assert.equal(s.status, 'lost'); assert.equal(s.verified, true);
+  assert.match(s.attention_reason!, /2026-09-07/); assert.equal(s.claim_eligible, true); assert.equal(s.credit_received, 0);
+});
+
+test('a failed delivery (NDR) and a failed pickup are flagged as needing action, not as "in transit"', () => {
+  const f = applyVelocity(fwd(), vt('ndr_raised'), undefined, inp('2026-10-12'), NOW);
+  assert.equal(f.attention, 'ndr'); assert.equal(f.state, 'pending'); assert.equal(f.status, 'ndr_raised');
+  const r = applyVelocity(ret(), vt('return_ndr_raised'), undefined, inp('2026-10-12'), NOW);
+  assert.equal(r.attention, 'pickup_failed');
+  assert.equal(applyVelocity(ret(), vt('return_not_picked'), undefined, inp('2026-10-12'), NOW).attention, 'pickup_failed');
+});
+
+test('Velocity has no record of the number, or did not answer → pending and flagged "unverified", never trusted silently', () => {
+  const none = applyVelocity(fwd(), null, undefined, inp('2026-10-12'), NOW);
+  assert.equal(none.attention, 'unverified'); assert.equal(none.verified, false); assert.match(none.attention_reason!, /no record/);
+  const silent = applyVelocity(fwd(), undefined, undefined, inp('2026-10-12'), NOW);
+  assert.equal(silent.attention, 'unverified'); assert.match(silent.attention_reason!, /did not answer/);
+  assert.equal(silent.state, 'pending');
+});
+
+test('a forward parcel Velocity has turned into an RTO becomes an RTO row', () => {
+  const s = applyVelocity(fwd(), vt('rto_in_transit'), undefined, inp('2026-10-12'), NOW);
+  assert.equal(s.kind, 'rto'); assert.equal(s.rto_state, 'in_transit'); assert.equal(s.state, 'pending'); assert.equal(s.escalation, null);
+});
+
+test('an order note that says RTO while Velocity says delivered is a conflict to look at, not a closed parcel', () => {
+  const [row] = shipmentsOfOrder(order({ note: 'RTO In Transit on 2026-10-11 09:19:31' }), inp('2026-10-12'));
+  const s = applyVelocity(row, vt('delivered', { shipment_track: [{ delivered_date: '2026-10-10 12:00:00' }] }), undefined, inp('2026-10-12'), NOW);
+  assert.equal(s.state, 'pending'); assert.equal(s.attention, 'unverified'); assert.match(s.attention_reason!, /note says RTO/);
+});
+
+test('the promised date: the courier\'s original promise, else the order note, else its current estimate', () => {
+  const o = (note: string | null) => order({ note });
+  assert.equal(applyVelocity(fwd(), vt('in_transit', { original_edd: '2026-10-09T23:59:59+05:30', estimated_delivery_date: '2026-10-14T23:59:59+05:30' }), undefined, inp('2026-10-12'), NOW).edd, '2026-10-09');
+  assert.equal(applyVelocity(fwd(), vt('in_transit', { estimated_delivery_date: '2026-10-14T23:59:59+05:30' }), undefined, inp('2026-10-12'), NOW).edd, '2026-10-12');   // the note's
+  const [noNote] = shipmentsOfOrder(o(null), inp('2026-10-12'));
+  assert.equal(applyVelocity(noNote, vt('in_transit', { estimated_delivery_date: '2026-10-14T23:59:59+05:30' }), undefined, inp('2026-10-12'), NOW).edd, '2026-10-14');
+});
+
+test('Velocity\'s last tracking line is when the parcel last moved: a fresh scan is not "stuck", an old one is', () => {
+  const fresh = applyVelocity(fwd(), vt('in_transit'), undefined, inp('2026-10-12'), NOW);
+  assert.equal(fresh.stuck, false); assert.equal(fresh.velocity_last_activity, 'Item OFD at BOM_WagleEstate'); assert.equal(fresh.last_event_at, '2026-10-11T14:30:38+05:30');
+  const old = applyVelocity(fwd(), vt('in_transit', { shipment_track_activities: [{ date: '2026-10-01 09:00:00', activity: 'In transit' }] }), undefined, inp('2026-10-12'), NOW);
+  assert.equal(old.stuck, true); assert.match(old.note!, /no tracking update for 11 days/);
+});
+
+test('applying Velocity twice does not repeat the note, and a closed parcel stays closed and unflagged', () => {
+  const once = applyVelocity(fwd(), vt('in_transit', { shipment_track_activities: [{ date: '2026-10-01 09:00:00', activity: 'x' }] }), undefined, inp('2026-10-12'), NOW);
+  const twice = applyVelocity(once, vt('in_transit', { shipment_track_activities: [{ date: '2026-10-01 09:00:00', activity: 'x' }] }), undefined, inp('2026-10-12'), NOW);
+  assert.equal(twice.note, once.note);
+  const closed = applyVelocity({ ...fwd(), state: 'closed' }, null, undefined, inp('2026-10-12'), NOW);
+  assert.equal(closed.state, 'closed'); assert.equal(closed.attention, null);
+});
+
+test('wallet ledger: freight charged, and credits other than the COD reversal', () => {
+  const lost = parseCharges({ tracking_number: 'I81168271', charges: [
+    { amount_with_gst: 63.72, transaction_type: 'debit', event_type: 'shipment_debit' },
+    { amount_with_gst: 32.07, transaction_type: 'debit', event_type: 'shipment_cod_debit' },
+    { amount_with_gst: 32.07, transaction_type: 'credit', event_type: 'shipment_cod_credit' },
+    { amount_with_gst: 44.84, transaction_type: 'debit', event_type: 'shipment_rto_debit' }] });
+  assert.deepEqual(lost, { freightDebit: 63.72, creditReceived: 0 });
+  const cancelled = parseCharges({ charges: [
+    { amount_with_gst: 54.58, transaction_type: 'debit', event_type: 'shipment_debit' },
+    { amount_with_gst: 54.58, transaction_type: 'credit', event_type: 'shipment_credit' }] });
+  assert.deepEqual(cancelled, { freightDebit: 54.58, creditReceived: 54.58 });
+  assert.deepEqual(parseCharges(undefined), { freightDebit: null, creditReceived: 0 });
+});
+
+test('Velocity timestamps are IST wall-clock text; an answer with no tracking data is no tracking', () => {
+  assert.equal(istText('2026-10-11 14:30:38'), '2026-10-11T14:30:38+05:30');
+  assert.equal(istText('2026-10-11T09:00:00Z'), '2026-10-11T09:00:00Z');
+  assert.equal(istText(null), null); assert.equal(istText('garbage'), null);
+  assert.equal(parseTracking({}), null); assert.equal(parseTracking(null), null);
+  assert.equal(parseTracking({ tracking_data: { shipment_status: 'lost', shipment_track: [], shipment_track_activities: [] } })!.status, 'lost');
+});
+
+test('Return Prime writes "_" where a pickup has no tracking number: each such request keeps its own row, flagged, and Velocity is not asked', () => {
+  const a = shipmentsOfReturn(rp({ request_number: 'RET101' }, { awb: '_', shipment_status: 'Requested', tracking_url: '' }), inp('2026-10-12'))[0];
+  const b = shipmentsOfReturn(rp({ request_number: 'RET102', order: { name: '36075' } }, { awb: '_', shipment_status: 'Requested', tracking_url: '' }), inp('2026-10-12'))[0];
+  assert.notEqual(a.awb, b.awb); assert.match(a.awb, /^NOAWB-RET101/); assert.equal(a.tracking_url, null);
+  assert.equal(a.state, 'pending'); assert.equal(a.attention, 'unverified'); assert.match(a.attention_reason!, /no pickup tracking number/);
+  const after = applyVelocity(a, undefined, undefined, inp('2026-10-12'), NOW);
+  assert.equal(after.attention, 'unverified'); assert.match(after.attention_reason!, /no pickup tracking number/);   // not "Velocity did not answer"
 });
