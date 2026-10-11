@@ -99,6 +99,37 @@ October) the correction lands in October.
 
 Velocity does **not** deduct charges from the COD remittance: a remittance is exactly the COD amount.
 
+## The ledger engine and the Tally file
+
+`supabase/functions/_shared/ledger.ts` builds the entries of one order from facts (Shopify,
+Unicommerce, Velocity, GoKwik, Return Prime) and is tested on the real orders above
+(`ledger.test.ts`). Its rules:
+
+1. **Every order nets to zero** on the control account, whatever the other systems do.
+2. **Compare, then balance.** For every return the engine compares what Unicommerce's return
+   invoice covers with what the order requires, and issues the difference itself as an `erp`
+   voucher: a credit note for missing goods (orders from before 29 Sep have no Unicommerce invoice),
+   a credit note for the COD charge on a return to origin, a bill for the retained COD charge if
+   Unicommerce starts reversing it on customer returns, and an invoice for the ₹99 return fee.
+   Whatever Unicommerce changes, the result still balances. The Unicommerce API exposes no invoice
+   amounts, so the ledger relies on the order's own facts and keeps Unicommerce's invoice numbers
+   only as references.
+3. **Entitlement check.** On a customer return the credit or refund must equal goods returned less
+   the return fee. Anything else, such as a double store credit, is an exception.
+4. **Cutoff.** Entries dated before `accounting_start_date` are computed (so the order can be shown
+   to balance) but never exported; the carried-in balance is reported as `opening`.
+
+**Tally import file rules** (to build on this engine):
+
+- It contains only entries dated on or after the cutoff, grouped into vouchers that each balance.
+- An order that does not balance, or has an exception, is **left out and listed** as an exception:
+  Tally never receives an unbalanced order.
+- Sale and return vouchers come from the ledger, not from Unicommerce's Tally integration. The ERP
+  issues the balancing credit notes and invoices (with their own number series) and files them with the
+  rest, so the file is complete by itself.
+- Receipts (GoKwik settlement by UTR, Velocity COD remittance by UTR) post against the clearing
+  accounts, so a month-end report shows what has been delivered or settled but not yet received.
+
 ## Workflows built (this branch)
 
 | Workflow | What it does | Function |
