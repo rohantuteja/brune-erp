@@ -111,9 +111,15 @@ Unicommerce, Velocity, GoKwik, Return Prime) and is tested on the real orders ab
    voucher: a credit note for missing goods (orders from before 29 Sep have no Unicommerce invoice),
    a credit note for the COD charge on a return to origin, a bill for the retained COD charge if
    Unicommerce starts reversing it on customer returns, and an invoice for the ₹99 return fee.
-   Whatever Unicommerce changes, the result still balances. The Unicommerce API exposes no invoice
-   amounts, so the ledger relies on the order's own facts and keeps Unicommerce's invoice numbers
-   only as references.
+   Whatever Unicommerce changes, the result still balances. The ledger reads the actual amounts of
+   every sale and return invoice with Unicommerce's Get Invoice Details API
+   (`POST /services/rest/v1/invoice/details/get` with the shipping package code and `return: true`
+   for the return invoice): total, tax and `cashOnDeliveryCharges`, per invoice and per item.
+   Verified on 37707 (INS0006 ₹1,499 incl. COD charge ₹95.24, tax ₹71.38; ISR0001 ₹1,399, COD charge
+   ₹0.00, tax ₹66.62) and 37807 (ISR0004 equals its sale invoice). From it, `uc.codFee` is the COD
+   charge times (1 + rate) and `uc.goods` is the total less that. The `Return Invoices` export report
+   is NOT usable for this: its tax columns are zero, it lists packages by the date they were added
+   (so earlier packages' returns are missing) and it has no COD column.
 3. **Entitlement check.** On a customer return the credit or refund must equal goods returned less
    the return fee. Anything else, such as a double store credit, is an exception.
 4. **Cutoff.** Entries dated before `accounting_start_date` are computed (so the order can be shown
