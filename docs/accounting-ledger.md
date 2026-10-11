@@ -145,7 +145,7 @@ Unicommerce, Velocity, GoKwik, Return Prime) and is tested on the real orders ab
 
 Both start in dry mode and write what they would do to `cod_deliveries` / `store_credit_reversals`.
 
-| Facts gatherer + ledger run (read-only) | Reads each order from Shopify, Unicommerce, Return Prime and Velocity, maps it to facts (`_shared/order-facts.ts`), builds the ledger (`_shared/ledger.ts`) and reports which orders balance and which need a balancing document or a person. Writes nothing. | `accounting-ledger` |
+| Facts gatherer + ledger run | Reads each order from Shopify, Unicommerce, Return Prime and Velocity, maps it to facts (`_shared/order-facts.ts`), builds the ledger (`_shared/ledger.ts`) and reports which orders balance and which need a balancing document or a person. Writes nothing. | `accounting-ledger` |
 
 `accounting-ledger` actions (admin JWT or `x-cron-key`): `order` (`{order:"37613"}`: facts, notes, entries) and
 `report` (`{from, limit, after, only_issues}`, paged by Shopify order update time; `next` is the cursor).
@@ -196,11 +196,42 @@ Balancing documents the ERP has to issue for these orders: goods credit notes 40
 return invoice, or a short one), COD-charge credit notes 23 orders ₹2,300 (COD returns to origin), ₹99 return-fee
 invoices 16 orders ₹1,584.
 
+## The stored ledger (migration 017)
+
+`accounting-ledger` saves what it computes so the books can be read, filtered and exported without recomputing:
+
+| Table | One row per | Holds |
+|---|---|---|
+| `ledger_orders` | Shopify order | status (`complete`, `open`, `attention`, `not_a_sale`), open amount (`net`), the amount carried in from before the start date (`opening`), the first exception, the balancing documents the ERP issues, notes, and the facts the order was computed from |
+| `ledger_entries` | double-entry line | date, voucher, account, debit, credit, source document, who issued it (`unicommerce`, `erp`, `shopify`, `return_prime`, `courier`, `gateway`), memo, and `exportable` (dated on or after `accounting_start_date`) |
+| `ledger_runs` | sync run | the queue of order ids, how far it got, orders missing from Shopify, a summary of statuses, and any error |
+
+The ledger is derived data: every sync recomputes an order from scratch and replaces its rows in one transaction
+(`ledger_save_orders`), so a fix to the rules is applied by syncing again. Nothing in these tables is sent to
+Shopify, Unicommerce or Tally. Signed-in users can read them; only the function writes.
+
+**Sync.** `sync` starts a run (or continues the running one) and saves orders for up to `budget_s` seconds.
+A full run queues every order updated since the start date; an incremental run queues those updated since the
+last run (two days back) plus every order that is `open` or `attention`, because those change without Shopify
+noticing: a parcel arrives, a courier delivers, Unicommerce issues an invoice. `tick` is what the schedule calls
+(pg_cron `accounting-ledger-sync`, every 10 minutes): it does nothing unless `app_settings.ledger_sync_mode` is
+`live`; then it continues a part-done run, or starts a full run each night (23 h) or an incremental one each hour
+(55 min). A run that stops mid-way continues where it was; one that errors is marked `failed` and the next tick
+starts a new one.
+
+**First sync, 11 Oct 2026:** 352 orders and 2,164 lines in 92 s, none missing. Checks on the stored data: total
+debits equal total credits (₹10,73,329.05 each); every order's lines balance; all 279 complete orders net to zero;
+each order's stored `net` equals the sum of its control-account lines; 1,397 lines are exportable and 767 are
+carried in. The status counts match the read-only report (279 / 7 / 50 / 12 / 4).
+
+**Screen.** Analytics → Ledger (`/analytics/ledger`, `src/pages/LedgerSection.jsx`): status cards, the Needs
+attention list, the documents the ERP issues (by type, with order numbers), and a filterable order table
+(`?lstatus=`, `?lq=`) whose rows open to the order's double-entry lines.
+
 ## Still to build
 
-1. **Control-ledger report** (Analytics): the read-only run above exists as an edge function. Still to do: page
-   through every order since 1 Oct, store the entries and exceptions in tables, and show them in Analytics, plus
-   orders delivered with no remittance after 10 days.
+1. **Control-ledger report**: done (stored ledger and Analytics → Ledger above). Still to do: orders delivered with
+   no remittance after 10 days (needs the Velocity remittance matching).
 2. **GoKwik settlement import** (upload screen; the `settlement_v2` and `rawSettlementReport`
    downloads carry the same payments, the raw one adds `Remark`, `PG Transaction Type`, `Origin`).
    Match on `Platform Order Id` (the Shopify order number); post per UTR.

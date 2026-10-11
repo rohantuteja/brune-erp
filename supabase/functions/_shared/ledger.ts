@@ -197,7 +197,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
         reason: `waiting for the returned parcel${days >= 1 ? ` (customer refunded ${days} day${days === 1 ? '' : 's'} ago)` : ''}; credit notes are issued once it is back` });
     } else if (net < 0 && (f.returns ?? []).some(r => r.kind === 'rto')) {
       // The parcel came back and the sale is reversed, but nothing was given back to the customer.
-      exceptions.push({ type: 'refund_due', amount: net, reason: `the parcel was returned to origin and the sale reversed, but ${Math.abs(net).toFixed(2)} the customer paid has not been refunded or credited` });
+      exceptions.push({ type: 'refund_due', amount: net, reason: `the parcel was returned to origin and the sale reversed, but the customer's payment of ${Math.abs(net).toFixed(2)} has not been refunded or credited` });
     } else if (net > 0 && f.codFee > 0 && !(f.returns ?? []).length && !f.delivered) {
       const days = opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.saleDate)) / 86_400_000)) : 0;
       exceptions.push({ type: 'in_transit', amount: net, reason: `COD parcel not delivered yet, invoiced ${days} day${days === 1 ? '' : 's'} ago${days > 15 ? ' (long overdue: check with the courier)' : ''}` });

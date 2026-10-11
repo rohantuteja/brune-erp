@@ -1,8 +1,9 @@
-// accounting-ledger v4 — READ ONLY
+// accounting-ledger v5
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
-// or a balancing document. Nothing is written anywhere: no tables, no Shopify,
-// Unicommerce or Return Prime calls that change anything.
+// or a balancing document. `order` and `report` write nothing. `sync` and `tick`
+// save the result to the ledger_* tables (migration 017) and nothing else: no
+// Shopify, Unicommerce or Return Prime call here changes anything.
 //
 // Per order it reads:
 //   Shopify       the order, how it was paid, refunds, the customer's store credit
@@ -22,11 +23,19 @@
 //            orders updated since `from`. One page of `limit` orders, or with `budget_s` as many
 //            pages as fit in that many seconds (Return Prime is read once per call). Pass `next`
 //            back as `after` for more; `next` is null at the end.
+//   sync   — { kind?: "full" | "incremental", budget_s?: 100 } start a run (or continue the one
+//            that is running) and save orders for up to budget_s seconds. A run holds the queue
+//            of Shopify order ids: a full run is every order updated since the start date, an
+//            incremental one those updated since the last run plus every open order.
+//   tick   — what the schedule calls every 10 minutes. Does nothing unless
+//            app_settings.ledger_sync_mode is "live"; then it continues a part-done run, or
+//            starts a full run (each night) or an incremental one (each hour).
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { buildFacts, istDate, type RawInputs } from '../_shared/order-facts.ts';
 import { buildOrderLedger } from '../_shared/ledger.ts';
+import { decideTick, ledgerRow } from '../_shared/ledger-store.ts';
 import { ucPost } from '../_shared/unicommerce.ts';
 import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
 
@@ -53,7 +62,9 @@ serve(async (req) => {
     switch (body.action) {
       case 'order':  return json(await oneOrder(ctx, String(body.order ?? '').replace(/^#/, '')));
       case 'report': return json(await report(ctx, body));
-      default:       return json({ error: 'action must be order or report' }, 400);
+      case 'sync':   return json(await sync(ctx, body));
+      case 'tick':   return json(await tick(ctx, body));
+      default:       return json({ error: 'action must be order, report, sync or tick' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -113,6 +124,109 @@ async function report(ctx: Ctx, body: any) {
   return { cutoff, from, summary, balancing, next, seconds: Math.round((Date.now() - started) / 1000), orders: rows };
 }
 
+// ── Storing the ledger ────────────────────────────────────────────────────────
+
+const CHUNK = 40;                 // orders per Shopify query
+const DEFAULT_BUDGET_S = 100;     // one call stays well inside the 150 s the platform allows
+
+const budgetMs = (body: any) => Math.min(Math.max(Number(body?.budget_s ?? DEFAULT_BUDGET_S), 5), 110) * 1000;
+
+async function latestRunning(ctx: Ctx) {
+  const { data } = await ctx.admin.from('ledger_runs').select('*').eq('status', 'running').order('started_at', { ascending: false }).limit(1);
+  return data?.[0] ?? null;
+}
+
+async function sync(ctx: Ctx, body: any) {
+  const running = await latestRunning(ctx);
+  const run = running ?? await startRun(ctx, body.kind === 'incremental' ? 'incremental' : 'full');
+  return advance(ctx, run, budgetMs(body));
+}
+
+async function tick(ctx: Ctx, body: any) {
+  const mode = await setting(ctx.admin, 'ledger_sync_mode', 'off');
+  if (mode !== 'live') return { mode, did: 'off' };
+  const running = await latestRunning(ctx);
+  const { data: done } = await ctx.admin.from('ledger_runs').select('kind, started_at').eq('status', 'done').order('started_at', { ascending: false }).limit(50);
+  const at = (r?: { started_at: string }) => r ? Date.parse(r.started_at) : null;
+  const did = decideTick(
+    Date.now(),
+    running ? { kind: running.kind, status: running.status, startedAt: Date.parse(running.started_at), updatedAt: Date.parse(running.updated_at) } : null,
+    at(done?.[0]), at(done?.find(r => r.kind === 'full')),
+  );
+  if (did === 'busy' || did === 'wait') return { mode, did };
+  const run = did === 'continue' ? running! : await startRun(ctx, did);
+  return { mode, did, ...(await advance(ctx, run, budgetMs(body))) };
+}
+
+// The queue: every order updated since the start date (full) or since the last run (incremental),
+// plus every order that is still open or needs attention, because those change without Shopify
+// noticing (a parcel arrives, a courier delivers, Unicommerce issues an invoice).
+async function startRun(ctx: Ctx, kind: 'full' | 'incremental') {
+  const cutoff = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
+  let since = cutoff;
+  if (kind === 'incremental') {
+    const { data } = await ctx.admin.from('ledger_runs').select('started_at').eq('status', 'done').order('started_at', { ascending: false }).limit(1);
+    if (data?.[0]) { const d = istDate(Date.parse(data[0].started_at) - 2 * 86_400_000); since = d > cutoff ? d : cutoff; }
+  }
+  const ids = new Set<number>(await shopifyOrderIds(ctx, `updated_at:>=${since}`));
+  const { data: open } = await ctx.admin.from('ledger_orders').select('order_id').in('status', ['open', 'attention']);
+  for (const r of open ?? []) ids.add(Number(r.order_id));
+  const queue = [...ids];
+  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [] } }).select('*').single();
+  if (error) throw new Error(`could not start a run: ${error.message}`);
+  return data;
+}
+
+async function advance(ctx: Ctx, run: any, budget: number) {
+  const started = Date.now();
+  const queue: number[] = run.queue ?? [];
+  const missing: number[] = run.summary?.missing ?? [];
+  let pos: number = run.pos;
+  try {
+    const shared = await sharedInputs(ctx);
+    while (pos < run.total && Date.now() - started < budget) {
+      const ids = queue.slice(pos, pos + CHUNK);
+      const page = await shopifyOrders(ctx, ids.map(i => `id:${i}`).join(' OR '), ids.length);
+      const found = new Set(page.nodes.map(n => Number(n.legacyResourceId)));
+      for (const i of ids) if (!found.has(i)) missing.push(i);
+      const rows = (await process(ctx, page.nodes, shared)).map(r => ledgerRow(r, shared.cutoff));
+      const { error } = await ctx.admin.rpc('ledger_save_orders', { p_orders: rows });
+      if (error) throw new Error(`saving the ledger: ${error.message}`);
+      pos += ids.length;
+      await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing } }).eq('id', run.id);
+    }
+    const finished = pos >= run.total;
+    if (finished) {
+      const counts: Record<string, number> = {};
+      for (const st of ['complete', 'open', 'attention', 'not_a_sale']) {
+        const { count } = await ctx.admin.from('ledger_orders').select('order_name', { count: 'exact', head: true }).eq('status', st);
+        counts[st] = count ?? 0;
+      }
+      await ctx.admin.from('ledger_runs').update({ status: 'done', finished_at: new Date().toISOString(), updated_at: new Date().toISOString(), summary: { ...run.summary, missing, orders: counts } }).eq('id', run.id);
+    }
+    return { run: run.id, kind: run.kind, finished, processed: pos, total: run.total, missing: missing.length, seconds: Math.round((Date.now() - started) / 1000) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await ctx.admin.from('ledger_runs').update({ status: 'failed', error: message.slice(0, 500), updated_at: new Date().toISOString() }).eq('id', run.id);
+    throw err;
+  }
+}
+
+async function shopifyOrderIds(ctx: Ctx, q: string): Promise<number[]> {
+  const ids: number[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < 40; page++) {
+    const res = await gql(ctx, `query LedgerIds($q: String!, $after: String) {
+      orders(first: 250, after: $after, query: $q, sortKey: UPDATED_AT) { pageInfo { hasNextPage endCursor } nodes { legacyResourceId } }
+    }`, { q, after });
+    const conn = res.data.orders;
+    for (const n of conn.nodes) ids.push(Number(n.legacyResourceId));
+    if (!conn.pageInfo.hasNextPage) break;
+    after = conn.pageInfo.endCursor;
+  }
+  return ids;
+}
+
 // ── Gathering ─────────────────────────────────────────────────────────────────
 
 type Shared = Awaited<ReturnType<typeof sharedInputs>>;
@@ -144,7 +258,7 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
   const awbOf = (o: any) => (o.fulfillments ?? []).flatMap((f: any) => (f.trackingInfo ?? []).map((t: any) => String(t.number ?? ''))).find(Boolean) as string | undefined;
   const velocity = await velocityDelivery(ctx, needVelocity.map(awbOf).filter(Boolean) as string[]);
 
-  const out: Array<{ order: string; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
+  const out: Array<{ order: string; orderId: number; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
   for (const o of orders) {
     const id = Number(o.legacyResourceId);
     const awb = awbOf(o);
@@ -154,7 +268,7 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
       codDeliveredOn: codBy.get(id) ?? null,
       velocityDeliveredOn: awb ? velocity.get(awb) ?? null : null,
     });
-    out.push({ order: built.facts.order, facts: built.facts, notes: built.notes, skip: built.skip, ledger: buildOrderLedger(built.facts, { cutoff, today }) });
+    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, ledger: buildOrderLedger(built.facts, { cutoff, today }) });
   }
   return out;
 }

@@ -8,6 +8,7 @@ import { usePermissions } from './contexts/PermissionsContext';
 import { supabase } from './lib/supabase';
 import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
+import LedgerSection from './pages/LedgerSection';
 
 // ── Pipeline health cache ─────────────────────────────────────────────────────
 // Caches the heavy pipeline_health RPC result in localStorage (persists across
@@ -97,6 +98,7 @@ const ANALYTICS_TAB_TO_SLUG = {
   wip:          'wip',
   cod_pending:  'pending-cod',
   returns:      'returns',
+  ledger:       'ledger',
   health:       'stock-health',
   production:   'production',
   costing:      'costing',
@@ -7476,6 +7478,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'wip', label: 'WIP Value' },
     { id: 'cod_pending', label: 'Pending COD' },
     { id: 'returns', label: 'Returns' },
+    { id: 'ledger', label: 'Ledger' },
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
     { id: 'costing', label: 'Costing' },
@@ -7493,6 +7496,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
           </SubTabBtn>
         ))}
       </div>
+
+      {/* ── LEDGER ── */}
+      {activeSection === 'ledger' && <LedgerSection showToast={showToast} />}
 
       {/* ── INVENTORY VALUE ── */}
       {activeSection === 'inventory' && (
