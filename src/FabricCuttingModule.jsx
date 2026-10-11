@@ -10,6 +10,7 @@ import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 import LedgerSection from './pages/LedgerSection';
 import ShipmentsSection from './pages/ShipmentsSection';
+import BankSection from './pages/BankSection';
 
 // ── Pipeline health cache ─────────────────────────────────────────────────────
 // Caches the heavy pipeline_health RPC result in localStorage (persists across
@@ -101,6 +102,7 @@ const ANALYTICS_TAB_TO_SLUG = {
   returns:      'returns',
   shipments:    'shipments',
   ledger:       'ledger',
+  bank:         'bank-and-card',
   health:       'stock-health',
   production:   'production',
   costing:      'costing',
@@ -7482,6 +7484,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'returns', label: 'Returns' },
     { id: 'shipments', label: 'Shipments' },
     { id: 'ledger', label: 'Ledger' },
+    ...(isAdmin ? [{ id: 'bank', label: 'Bank & card' }] : []),     // salaries, founders' payments and balances: admin only
     { id: 'health', label: 'Stock Health' },
     { id: 'production', label: 'Production' },
     { id: 'costing', label: 'Costing' },
@@ -7505,6 +7508,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
       {/* ── LEDGER ── */}
       {activeSection === 'ledger' && <LedgerSection showToast={showToast} />}
+
+      {/* ── BANK & CARD (admin only; the tables behind it refuse everyone else too) ── */}
+      {activeSection === 'bank' && isAdmin && <BankSection showToast={showToast} />}
 
       {/* ── INVENTORY VALUE ── */}
       {activeSection === 'inventory' && (
