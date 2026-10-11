@@ -81,6 +81,12 @@ const ago = (iso) => {
   return `${Math.round(mins / 1440)}d ago`;
 };
 const days = (n) => `${n} day${n === 1 ? '' : 's'}`;
+// Some parcels have a tracking link typed in as the courier name: show those as Velocity (or "other" for any other link).
+const courierOf = (s) => {
+  const c = String(s.courier || '').trim();
+  if (!c) return '';
+  return /^https?:\/\//i.test(c) ? (/velocityshipping/i.test(c) ? 'velocity' : 'other') : c.toLowerCase();
+};
 const shopLink = (s) => s.order_id ? `${SHOP_ORDERS}/${s.order_id}` : `${SHOP_ORDERS}?query=${encodeURIComponent(s.order_name)}`;
 
 // ── Per-row facts the lists and filters share ───────────────────────────────────────────────────
@@ -120,7 +126,7 @@ const SORT_KEY = {
 function ticketText(rows) {
   const head = 'AWB\tOrder\tCourier\tDispatched\tPromised\tDays since dispatch\tStatus (Velocity)\tPayment\tLast activity';
   return [head, ...rows.map(s => [
-    s.awb, s.order_name, s.courier || '', s.dispatched_on, s.edd || '', s.pending_days, statusLabel(s.status),
+    s.awb, s.order_name, courierOf(s), s.dispatched_on, s.edd || '', s.pending_days, statusLabel(s.status),
     s.payment_type ? PAY_LABEL[s.payment_type] : 'Customer return', s.velocity_last_activity || '',
   ].join('\t'))].join('\n');
 }
@@ -278,7 +284,7 @@ function Detail({ s, canReview, onAct, form, children }) {
         {cell('Return request', s.request_number)}
         {cell('Freight charged', s.freight_debit != null ? inr2(s.freight_debit) : null)}
         {cell('Credited by Velocity', Number(s.credit_received) > 0 ? inr2(s.credit_received) : s.freight_debit != null ? 'nothing yet' : null)}
-        {cell('Courier', s.courier)}
+        {cell('Courier', courierOf(s))}
         {cell('Shopify says', s.raw_status)}
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -310,7 +316,7 @@ function ShipmentRow({ s, expanded, onToggle, picked, onPick, canReview, onAct, 
         </td>
         <td className="py-2 px-2 whitespace-nowrap">
           {s.tracking_url ? <a href={s.tracking_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-stone-800 hover:underline">{s.awb} <ExternalLink className="w-3 h-3 text-stone-400" /></a> : <span className="font-mono text-xs text-stone-500">no tracking number</span>}
-          <div className="text-[11px] text-stone-500">{[s.courier, s.city].filter(Boolean).join(' · ')}</div>
+          <div className="text-[11px] text-stone-500">{[courierOf(s), s.city].filter(Boolean).join(' · ')}</div>
         </td>
         <td className="py-2 px-2 whitespace-nowrap text-stone-700">
           {fmtDate(s.dispatched_on)}
@@ -412,7 +418,7 @@ export default function ShipmentsSection({ showToast }) {
   }, [scoped]);
   const viewCount = { escalate: counts.now + counts.consider, attention: counts.attention, claim: counts.claim, ticket: counts.ticket, resolved: counts.resolved, all: counts.all };
 
-  const couriers = useMemo(() => [...new Set(scoped.map(s => (s.courier || '').toLowerCase()).filter(Boolean))].sort(), [scoped]);
+  const couriers = useMemo(() => [...new Set(scoped.map(courierOf).filter(Boolean))].sort(), [scoped]);
   const statuses = useMemo(() => [...new Set(scoped.filter(IN_VIEW[p.sview] ?? IN_VIEW.all).map(s => s.status))].sort((a, b) => statusLabel(a).localeCompare(statusLabel(b))), [scoped, p.sview]);
 
   const shown = useMemo(() => {
@@ -420,7 +426,7 @@ export default function ShipmentsSection({ showToast }) {
     const list = scoped
       .filter(IN_VIEW[p.sview] ?? IN_VIEW.all)
       .filter(s => p.spay === 'all' || s.payment_type === p.spay)
-      .filter(s => !p.scourier || (s.courier || '').toLowerCase() === p.scourier)
+      .filter(s => !p.scourier || courierOf(s) === p.scourier)
       .filter(s => !p.sstat || s.status === p.sstat)
       .filter(s => p.stk === 'all' || (p.stk === 'none' ? !s.ticket : p.stk === 'ticket' ? s.ticket : s.due))
       .filter(s => !q || s.order_name.toLowerCase().includes(q) || s.awb.toLowerCase().includes(q) || (s.request_number || '').toLowerCase().includes(q));
@@ -451,7 +457,7 @@ export default function ShipmentsSection({ showToast }) {
   const csv = () => {
     downloadCsv(`shipments-${p.sview}-${today}.csv`,
       ['Order', 'AWB', 'Type', 'Payment', 'Courier', 'City', 'Dispatched', 'Promised', 'Days since dispatch', 'Days late', 'Status (Velocity)', 'Needs attention', 'Last activity', 'Last tracking update', 'Freight charged', 'Credited by Velocity', 'Ticket', 'Follow up', 'Resolved by', 'Note', 'Order total', 'Cash to collect'],
-      target.map(s => [s.order_name, s.awb, KIND_LABEL[s.kind], s.payment_type ? PAY_LABEL[s.payment_type] : '', s.courier, s.city, s.dispatched_on, s.edd, s.pending_days, s.late_days, statusLabel(s.status),
+      target.map(s => [s.order_name, s.awb, KIND_LABEL[s.kind], s.payment_type ? PAY_LABEL[s.payment_type] : '', courierOf(s), s.city, s.dispatched_on, s.edd, s.pending_days, s.late_days, statusLabel(s.status),
         s.attention ? ATTENTION[s.attention]?.label : '', s.velocity_last_activity, s.last_event_at, s.freight_debit, s.credit_received,
         s.ticket ? `${s.review.ticket_type === 'credit_note' ? 'Credit note' : 'Delivery'} ${s.review.ticket_ref || ''}`.trim() : '', s.review?.follow_up_on, s.manual ? s.review.reviewed_by_name : '', s.review?.note || s.note, s.order_total, s.cod_due]));
     flash(`Downloaded ${target.length} rows`);
