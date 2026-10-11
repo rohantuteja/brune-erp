@@ -5,6 +5,37 @@ Analytics → Shipments answers two questions about Velocity parcels:
 1. **Escalate.** A forward parcel is past its promised delivery date: raise a ticket with Velocity before the customer complains. Prepaid first (the customer has paid and always complains), COD and part-paid parcels still get a view.
 2. **Credit note.** Any parcel (forward, RTO or customer return) still not delivered 45 days after dispatch: only then can a credit note be requested from Velocity.
 
+## Velocity's own tracking decides
+
+**Shopify's fulfilment status and Return Prime's shipment status lag the courier.** The first version of this screen trusted them and listed 133 parcels as pending; checking each against Velocity found **29 already resolved** (20 returns cancelled, 4 returns and 1 RTO delivered back, 2 forward parcels delivered) and 3 RTOs that Velocity had marked **lost** (including 36354, which had been flagged only as "never delivered"). So Shopify and Return Prime now only say which parcels *might* be pending, and every one of them is then asked of Velocity (`shipment-watch` step 4):
+
+| Velocity API (`shazam.velocity.in/custom/api/v1`, `private_secrets.velocity_api_token`) | Gives |
+|---|---|
+| `order-tracking` `{awbs: [...]}` (50 per call) | `tracking_data.shipment_status` (in_transit, ndr_raised, return_cancelled, lost ...), `shipment_track[0].delivered_date`, `estimated_delivery_date` / `original_edd`, and the tracking log `shipment_track_activities` (date, activity) |
+| `shipping-charges` `{awbs: [...]}` | the parcel's wallet ledger: `shipment_debit` (freight), `shipment_cod_debit` / `shipment_cod_credit`, `shipment_rto_debit`, NDR service charges, and `shipment_credit` when Velocity refunds or compensates |
+| `cod-remittance` | COD delivery and payment (used by the ledger, not here) |
+
+Probed and **not available** (404): credit notes, claims, tickets, wallet balance or transactions, invoices. The ERP therefore cannot read the credit-note *documents* or Velocity's ticket replies; it can only see wallet credits per parcel. Every one of the 20 cancelled returns was credited its freight automatically (credit = debit); the 3 lost RTOs had no credit yet.
+
+What Velocity's answer does to a parcel (`applyVelocity`):
+
+- **Closed on its own**, only with evidence (a delivery date or a tracking log): `delivered` (outcome delivered), `return_delivered` / `rto_delivered` (outcome returned_to_us), any `*cancel*` (outcome cancelled). `closed_on` is the date of the delivery scan or last tracking line.
+- **Flagged, never hidden** (`attention`, with a reason):
+  - `lost`: Velocity marked it lost / damaged / destroyed. Stays pending: a claim is due.
+  - `ndr`: delivery failed, Velocity waits for instructions. `pickup_failed`: a return could not be collected.
+  - `unverified`: Velocity cannot confirm. Reasons: no record of the tracking number; did not answer; a terminal status without evidence (33966 says delivered but has no scan or log); the order note says RTO while Velocity says delivered; Return Prime has no pickup number yet (it writes `_`; each such request gets its own `NOAWB-<request>` row and Velocity is not asked).
+- A forward parcel Velocity reports as `rto_*` becomes an RTO row even without a note.
+- The promise the customer was given is the courier's `original_edd`, else the order note's EDD (ignored if dated before dispatch), else its current estimate. The last tracking line is when the parcel last moved (drives "stuck").
+- A parcel Velocity could not be asked about (API down) is flagged `unverified` for that scan, not trusted.
+
+## Marking parcels: resolved, ticket raised
+
+Table `shipment_reviews` (migration 021) holds what a person decided; a scan never overwrites it. Written only through `shipment_review_set(p_awbs[], p_status, p_ticket_type, p_ticket_ref, p_follow_up_on, p_note, p_credit_note_ref, p_credit_note_amount)` and `shipment_review_clear(p_awbs[])` (security definer; allowed for admins and anyone with `can_view_analytics`; max 500 parcels per call). Every change is appended to `shipment_review_log` with who and when.
+
+- **Ticket raised** (type: delivery escalation or credit note request; ticket number; follow-up in N days): the parcel leaves *Escalate* / *Needs attention* (a credit-note ticket also leaves *Credit note due*) and sits under *Ticket raised* until the follow-up date, when it returns marked "Follow up due".
+- **Mark resolved** (delivered / back with us / Velocity issued a credit note + its number and amount / cancelled / other): the parcel leaves every open list and appears under *Resolved* with who resolved it and why.
+- **Reopen** removes either mark. Parcels Velocity closes on its own also show under *Resolved*, labelled "Confirmed by Velocity".
+
 ## Where the data comes from
 
 | Shipment | Source | What it gives |
@@ -41,11 +72,11 @@ All thresholds are `app_settings` rows (days), editable without a deploy:
 
 `shipment-watch` (cron key or admin JWT) with actions `scan` (`{dry?}`), `tick` (what the schedule calls; does nothing unless the mode is `live`) and `status`. A scan reads Shopify in pages of 25 orders (`created_at` within the lookback, fulfilled or partial, not delivered), re-reads any previously pending order that no longer matches the search (so it can be closed), reads every Return Prime request, and upserts `public.shipments` (migration 020; one row per AWB; rows are kept after they close). The result summary, including anomaly counts (RTO note without tag, tag without note), is stored in `app_settings.shipment_watch_last_run`. Cron `shipment-watch` runs every 30 minutes.
 
-The screen reads `shipments` directly (RLS: signed-in users read). Views `?sview=` `escalate | claim | rto | return | all`, payment filter `?spay=`, search `?sq=`. "Copy AWBs" and "Copy for a ticket" (tab-separated: order, AWB, courier, city, dispatched, promised, status) put the list on the clipboard for a Velocity ticket.
+The screen reads `shipments` and `shipment_reviews` directly (RLS: signed-in users read). Everything is in the URL: `?sview=` `escalate | attention | claim | ticket | resolved | all`, `stype` (forward / rto / return), `spay`, `scourier`, `sstat`, `stk` (ticket state), `sq` (search), `sfrom` / `sto` (dispatch date range), `sage` (pending for N+ days), `ssort` / `sdir`, `spage` / `ssize`. Dates and type scope the whole page (cards and tab counts follow them); the rest filter the table. Rows expand for the detail and the mark buttons; tick rows to act on a selection. "Copy AWBs", "Copy for a ticket" (tab-separated) and CSV act on the selection, else on everything the filters show, across all pages. On a phone the table becomes cards. Shared building blocks (date range, paging, collapsible panels, sortable headers, chips, CSV) are in `src/components/AnalyticsKit.jsx` with tested logic in `src/lib/analyticsKit.js`; the Ledger screen uses the same.
 
 ## First reading, 11 Oct 2026
 
-133 pending parcels: 63 forward, 20 RTO, 50 customer returns. Escalate now: 10 prepaid forward parcels, all truly past their promised date (two are months old: 33966 at 135 days and 35868 at 75 days, both still showing "out for delivery"). Consider: 5 COD / part-paid. Credit note eligible (45+ days): 25 (2 forward, 4 RTO, 19 returns). Three old orders are untracked.
+Before Velocity was asked: 133 pending (63 forward, 20 RTO, 50 returns), 10 to escalate now, 25 credit-note eligible. After: **107 pending, 26 closed by Velocity** (24 returns, 1 forward, 1 RTO). Flagged: 3 lost (33740, 34691, 36354), 6 delivery failed, 9 pickup failed, 2 that cannot be confirmed (33966, and return 36075 with no pickup number). Escalate now 3, consider 3, credit-note eligible 9. Three old orders are untracked. All 5 parcels Velocity shows delivered back to us arrived before the 29 Sep opening-stock load, so no restock is missing.
 
 ## The ledger and RTOs in progress
 
