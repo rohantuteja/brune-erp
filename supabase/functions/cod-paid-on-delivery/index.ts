@@ -30,7 +30,7 @@
 // private_secrets.erp_stock_cron_key). Velocity allows 5 calls a minute, 100
 // parcels each, so lookups are spaced.
 //
-// Admin actions (POST { action } with an admin user's JWT):
+// Admin actions (POST { action } with an admin user's JWT, or with the x-cron-key header):
 //   status  — mode, start date, limit, counts per status, recent attention/failed rows
 //   sweep   — { dry?: true } run the job now; dry (default) only reports
 //   order   — { order: "37858", dry?: true } the same for one order
@@ -57,25 +57,30 @@ serve(async (req) => {
   });
   const raw = await req.text();
   try {
+    const body = raw ? JSON.parse(raw) : {};
     const cronKey = req.headers.get('x-cron-key');
     if (cronKey) {
+      // The scheduled job ({}), or an admin action sent with the same secret key.
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
-      return json(await sweep(await loadCtx(admin), { record: true }));
+      const ctx = await loadCtx(admin);
+      return json(body.action ? await dispatch(ctx, body) : await sweep(ctx, { record: true }));
     }
     const denied = await requireAdmin(admin, req);
     if (denied) return denied;
-    const body = raw ? JSON.parse(raw) : {};
-    const ctx = await loadCtx(admin);
-    switch (body.action) {
-      case 'status': return json(await status(ctx));
-      case 'sweep':  return json(await sweep(ctx, { record: body.dry === false }));
-      case 'order':  return json(await sweep(ctx, { record: body.dry === false, only: String(body.order ?? '').replace(/^#/, '') }));
-      default:       return json({ error: 'action must be status, sweep or order' }, 400);
-    }
+    return json(await dispatch(await loadCtx(admin), body));
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+async function dispatch(ctx: Ctx, body: any) {
+  switch (body.action) {
+    case 'status': return await status(ctx);
+    case 'sweep':  return await sweep(ctx, { record: body.dry === false });
+    case 'order':  return await sweep(ctx, { record: body.dry === false, only: String(body.order ?? '').replace(/^#/, '') });
+    default:       throw new Error('action must be status, sweep or order');
+  }
+}
 
 // ── The job ───────────────────────────────────────────────────────────────────
 

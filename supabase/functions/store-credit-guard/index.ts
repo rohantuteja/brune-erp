@@ -29,7 +29,7 @@
 // Schedule: every 2 minutes (pg_cron, migration 016, header x-cron-key matching
 // private_secrets.erp_stock_cron_key) over the last 48 hours of refunds.
 //
-// Admin actions (POST { action } with an admin user's JWT):
+// Admin actions (POST { action } with an admin user's JWT, or with the x-cron-key header):
 //   status  — mode and the reversal rows
 //   sweep   — { hours?: 48, dry?: true } check recent returns; dry (default) writes nothing
 //   check   — { order: "37613" } what the guard would do about one order's return
@@ -42,7 +42,7 @@ import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets
 
 const RP_API = 'https://api.returnprime.co';
 const SWEEP_PAGES = 3;          // 10 requests a page, newest first
-const LOOKUP_PAGES = 15;        // looking for one older return
+const LOOKUP_PAGES = 30;        // looking for one older return (36791 is ~140 returns back)
 const STALE_CLAIM_MS = 10 * 60_000;
 // Shopify's refund transaction lands within seconds of Return Prime's own credit.
 const REFUND_BEFORE_MS = 2 * 60_000;
@@ -61,27 +61,32 @@ serve(async (req) => {
   });
   const raw = await req.text();
   try {
+    const body = raw ? JSON.parse(raw) : {};
     const cronKey = req.headers.get('x-cron-key');
     if (cronKey) {
+      // The scheduled job ({}), or an admin action sent with the same secret key.
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
-      return json(await sweep(await loadCtx(admin), { hours: 48, record: true }));
+      const ctx = await loadCtx(admin);
+      return json(body.action ? await dispatch(ctx, body) : await sweep(ctx, { hours: 48, record: true }));
     }
     const denied = await requireAdmin(admin, req);
     if (denied) return denied;
-    const body = raw ? JSON.parse(raw) : {};
-    const ctx = await loadCtx(admin);
-    const order = String(body.order ?? '').replace(/^#/, '');
-    switch (body.action) {
-      case 'status':  return json(await status(ctx));
-      case 'sweep':   return json(await sweep(ctx, { hours: Number(body.hours ?? 48), record: body.dry === false }));
-      case 'check':   return json(await one(ctx, order, 'check'));
-      case 'reverse': return json(await one(ctx, order, 'reverse'));
-      default:        return json({ error: 'action must be status, sweep, check or reverse' }, 400);
-    }
+    return json(await dispatch(await loadCtx(admin), body));
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+async function dispatch(ctx: Ctx, body: any) {
+  const order = String(body.order ?? '').replace(/^#/, '');
+  switch (body.action) {
+    case 'status':  return await status(ctx);
+    case 'sweep':   return await sweep(ctx, { hours: Number(body.hours ?? 48), record: body.dry === false });
+    case 'check':   return await one(ctx, order, 'check');
+    case 'reverse': return await one(ctx, order, 'reverse');
+    default:        throw new Error('action must be status, sweep, check or reverse');
+  }
+}
 
 // ── The job ───────────────────────────────────────────────────────────────────
 

@@ -132,6 +132,13 @@ Both start in dry mode and write what they would do to `cod_deliveries` / `store
   CA decides the document form (credit note under section 34 vs cancelling the invoice).
 - **COD fee on customer-return invoices:** still to check on the first one (order 37856, once its
   parcel is received). Goods-only is right there, because the fee was collected and is kept.
+- **Asking Unicommerce to include the COD charge on every return invoice (RTO and customer returns)
+  is acceptable, if the ERP then bills the retained charges.** Unicommerce can't tell the two cases
+  apart, so a blanket setting reverses the whole sale, COD fee included. For a customer return the
+  ERP then issues one invoice for the retained ₹199 (₹99 return fee + ₹100 COD fee: 189.52 taxable
+  + 9.48 IGST). Net GST is the same as case B (output 71.38 − 71.38 + 9.48), and RTOs need nothing
+  more. Control check, customer return: +1,499 sale −1,499 delivered −1,499 credit note +1,300 store
+  credit +199 retained-charges invoice = 0. CA to confirm.
 - **Velocity's own mark-paid at remittance** is to be switched off by the owner once
   `cod_paid_mode` is "live". Until then both can run: Shopify refuses to mark a paid order paid.
 - **Paid COD + store credit orders that are returned:** no example yet; the guard covers them either way.
