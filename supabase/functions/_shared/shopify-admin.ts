@@ -38,10 +38,12 @@ export async function gql(ctx: Ctx, query: string, variables?: Record<string, un
   return body;
 }
 
-// app_settings.value is jsonb; the workflows read plain strings from it.
+// app_settings.value is jsonb; the workflows read strings (or numbers) from it.
 export async function setting(admin: SupabaseClient, key: string, fallback: string): Promise<string> {
   const { data } = await admin.from('app_settings').select('value').eq('key', key).maybeSingle();
-  return typeof data?.value === 'string' ? data.value : fallback;
+  if (typeof data?.value === 'string') return data.value;
+  if (typeof data?.value === 'number') return String(data.value);
+  return fallback;
 }
 
 export async function cronKeyValid(admin: SupabaseClient, key: string): Promise<boolean> {

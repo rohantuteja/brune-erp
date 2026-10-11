@@ -71,6 +71,7 @@ CREATE POLICY "authenticated read" ON public.store_credit_reversals FOR SELECT T
 INSERT INTO public.app_settings (key, value) VALUES
   ('accounting_start_date', to_jsonb('2026-10-01'::text)),
   ('cod_paid_mode',         to_jsonb('dry'::text)),
+  ('cod_paid_limit',        to_jsonb(100)),          -- most orders one run may mark paid
   ('credit_guard_mode',     to_jsonb('dry'::text))
 ON CONFLICT (key) DO NOTHING;
 

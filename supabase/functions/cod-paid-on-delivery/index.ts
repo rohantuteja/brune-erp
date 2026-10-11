@@ -22,13 +22,16 @@
 //
 // Dry mode: until app_settings.cod_paid_mode is "live" the job only writes
 // 'would_mark' rows saying what it would do. A dry admin sweep writes nothing.
+// app_settings.cod_paid_limit caps how many orders one run marks (default 100);
+// set it to 1 for the first live run, check that order, then raise it. Orders
+// over the cap simply wait for the next run.
 //
 // Schedule: every 15 minutes (pg_cron, migration 016, header x-cron-key matching
 // private_secrets.erp_stock_cron_key). Velocity allows 5 calls a minute, 100
 // parcels each, so lookups are spaced.
 //
 // Admin actions (POST { action } with an admin user's JWT):
-//   status  — mode, start date, counts per status, recent attention/failed rows
+//   status  — mode, start date, limit, counts per status, recent attention/failed rows
 //   sweep   — { dry?: true } run the job now; dry (default) only reports
 //   order   — { order: "37858", dry?: true } the same for one order
 
@@ -80,6 +83,7 @@ async function sweep(ctx: Ctx, opts: { record: boolean; only?: string }) {
   const startDate = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
   const mode = await setting(ctx.admin, 'cod_paid_mode', 'dry');
   const live = opts.record && mode === 'live';
+  let budget = Math.max(0, Number(await setting(ctx.admin, 'cod_paid_limit', '100')) || 0);
   const velocityToken = (await secrets(ctx.admin, ['velocity_api_token'])).velocity_api_token;
   if (!velocityToken) throw new Error('velocity_api_token is missing from private_secrets');
 
@@ -100,12 +104,16 @@ async function sweep(ctx: Ctx, opts: { record: boolean; only?: string }) {
     would_mark: [] as Array<{ order: string; awb: string; delivered_on: string; amount: number }>,
     attention: [] as Array<{ order: string; reason: string }>,
     failed: [] as Array<{ order: string; reason: string }>,
-    baseline: 0, waiting: 0, skipped: {} as Record<string, number>,
+    baseline: 0, waiting: 0, deferred: 0, limit: budget, skipped: {} as Record<string, number>,
     remittances_recorded: 0, overdue_remittance: [] as Array<{ order: string; delivered_on: string }>,
   };
 
   for (const o of todo) {
     const d = decideMark(o, rows.get(o.awbs[0] ?? ''), startDate);
+    if (d.action === 'mark' && live) {
+      if (budget <= 0) { out.deferred++; continue; }   // over cod_paid_limit: next run
+      budget--;
+    }
     await act(ctx, o, d, { live, record: opts.record }, out);
   }
 
@@ -288,6 +296,7 @@ async function status(ctx: Ctx) {
     .in('status', ['attention', 'failed']).order('updated_at', { ascending: false }).limit(20);
   return {
     mode: await setting(ctx.admin, 'cod_paid_mode', 'dry'),
+    limit_per_run: await setting(ctx.admin, 'cod_paid_limit', '100'),
     accounting_start_date: await setting(ctx.admin, 'accounting_start_date', '2026-10-01'),
     counts, needs_attention: needs ?? [],
   };
