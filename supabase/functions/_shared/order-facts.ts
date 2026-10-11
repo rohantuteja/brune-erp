@@ -48,6 +48,7 @@ export type RawInputs = {
   reversalIds?: string[];                      // store credit debits the ERP made to take back a double credit
   codDeliveredOn?: string | null;              // cod_deliveries.delivered_on
   velocityDeliveredOn?: string | null;         // Velocity cod-remittance delivery_date
+  remittance?: { utr: string; date: string; amount: number | null } | null;   // the COD money paid by the courier (UTR set)
   adjustments?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; approved_by: string }>;   // ledger_adjustments for this order
 };
 
@@ -120,8 +121,9 @@ export function buildFacts(inp: RawInputs): Built {
     const codTx = txs.find(t => succeeded(t) && isCodGateway(t.gateway));
     const date = inp.codDeliveredOn ?? inp.velocityDeliveredOn ?? (codTx ? istDate(codTx.processedAt) : null);
     if (date) {
-      delivered = { date, amount: owedInCash };
-      if (!inp.codDeliveredOn && !inp.velocityDeliveredOn) notes.push('delivery date taken from the Shopify payment date');
+      const guessed = !inp.codDeliveredOn && !inp.velocityDeliveredOn;
+      delivered = { date, amount: owedInCash, ...(guessed ? { estimated: true } : {}) };
+      if (guessed) notes.push('delivery date taken from the Shopify payment date');
     }
   }
 
@@ -226,6 +228,7 @@ export function buildFacts(inp: RawInputs): Built {
   return {
     facts: {
       order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, delivered, payments, storeCreditUsed, returns,
+      remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
       approved: (inp.adjustments ?? []).map(a => ({ kind: a.kind, amount: Number(a.amount), reason: a.reason, by: a.approved_by })),
     },
     notes,

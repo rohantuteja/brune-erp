@@ -188,3 +188,55 @@ test('a return waiting a long time says how long the customer has been refunded'
   assert.equal(l.exceptions[0].type, 'awaiting_return');
   assert.match(l.exceptions[0].reason, /refunded 10 days ago/);
 });
+
+// ── The courier's money: delivered, then remitted (UTR) ──────────────────────────────────────
+const codOrder = (over: Partial<Facts> = {}): Facts => ({ ...base, order: 'C1', goods: 1399, codFee: 100, saleDate: '2026-10-02', delivered: { date: '2026-10-04', amount: 1499 }, ...over });
+
+test('COD delivered and remitted in full → the courier receivable is cleared into the bank', () => {
+  const l = buildOrderLedger(codOrder({ remitted: { date: '2026-10-09', amount: 1499, utr: 'UTR123' } }), { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.status, 'complete'); assert.equal(l.net, 0); assert.equal(l.codOpen, 0);
+  const r = l.entries.filter(e => e.voucher === 'remittance');
+  assert.deepEqual(r.map(e => [e.account, e.debit, e.credit]), [['Bank', 1499, 0], ['COD receivable (Velocity)', 0, 1499]]);
+  assert.equal(r[0].doc, 'UTR123'); assert.equal(r[0].date, '2026-10-09');
+});
+
+test('COD delivered a few days ago, not remitted yet → money still with the courier, not a problem', () => {
+  const l = buildOrderLedger(codOrder(), { cutoff: CUTOFF, today: '2026-10-08' });
+  assert.equal(l.status, 'complete'); assert.equal(l.codOpen, 1499); assert.deepEqual(l.exceptions, []);
+});
+
+test('COD delivered more than 10 days ago and never remitted → overdue, someone chases Velocity', () => {
+  const l = buildOrderLedger(codOrder(), { cutoff: CUTOFF, today: '2026-10-16' });
+  assert.equal(l.status, 'attention'); assert.equal(l.exceptions[0].type, 'remittance_overdue');
+  assert.equal(l.exceptions[0].amount, 1499); assert.equal(l.net, 0);          // the customer side is fine
+  assert.match(l.exceptions[0].reason, /delivered 12 days ago/);
+});
+
+test('exactly 10 days is not overdue yet', () => {
+  assert.deepEqual(buildOrderLedger(codOrder(), { cutoff: CUTOFF, today: '2026-10-14' }).exceptions, []);
+});
+
+test('Velocity paid a different amount than the COD collected → flagged', () => {
+  const l = buildOrderLedger(codOrder({ remitted: { date: '2026-10-09', amount: 1399, utr: 'UTR9' } }), { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.exceptions[0].type, 'remittance_differs'); assert.equal(l.exceptions[0].amount, -100); assert.equal(l.codOpen, 100);
+});
+
+test('a delivery date that is only a guess is never called overdue', () => {
+  const f = codOrder({ delivered: { date: '2026-09-01', amount: 1499, estimated: true } });
+  assert.deepEqual(buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-20' }).exceptions, []);
+});
+
+test('delivered in September, remitted in October: the receipt is October\'s and exported, the delivery is carried in', () => {
+  const f = codOrder({ saleDate: '2026-09-27', delivered: { date: '2026-09-30', amount: 1499 }, remitted: { date: '2026-10-05', amount: 1499, utr: 'UTR5' } });
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.status, 'complete');
+  assert.deepEqual(l.exportable.map(e => e.voucher), ['remittance', 'remittance']);
+  assert.equal(l.opening, 0);                      // sale, delivery both before the cutoff and net out
+});
+
+test('a COD return to origin has no delivery, so nothing to remit and nothing overdue', () => {
+  const f: Facts = { ...base, order: 'C2', goods: 1399, codFee: 100, saleDate: '2026-09-25',
+    returns: [{ kind: 'rto', date: '2026-10-01', goodsReturned: 1399, uc: { doc: 'ISR1', goods: 1399, codFee: 100 }, storeCredit: [] }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-30' });
+  assert.equal(l.status, 'complete'); assert.equal(l.codOpen, 0);
+});

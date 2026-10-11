@@ -10,7 +10,7 @@
 //   Unicommerce   the order (saleorder/get) and, per shipping package, the sale and
 //                 return invoices with their real amounts (invoice/details/get)
 //   Return Prime  its refunds: amount, date, return fee, whether the parcel arrived
-//   cod_deliveries / Velocity   the delivery date of COD parcels
+//   cod_deliveries / Velocity   the delivery date of COD parcels and the remittance (UTR) that paid them
 // then _shared/order-facts.ts turns that into facts and _shared/ledger.ts into entries.
 // The rules and their tests: docs/accounting-ledger.md.
 //
@@ -26,6 +26,9 @@
 //   credit — { order: "37586" } read-only look at what Shopify says about the customer's money for
 //            an order: refunds, every store credit transaction on the customer's account, the
 //            order's timeline entries about credit / refunds / returns, and its note. No names.
+//   velocity_gap — { from?: "2026-09-10" } read-only: COD orders from before the start date that are NOT in the
+//            ledger (Shopify has not updated them since), checked against Velocity. Lists those Velocity paid on or
+//            after the start date (October receipts the ledger would otherwise miss) and those delivered but never paid.
 //   sync   — { kind?: "full" | "incremental", budget_s?: 100 } start a run (or continue the one
 //            that is running) and save orders for up to budget_s seconds. A run holds the queue
 //            of Shopify order ids: a full run is every order updated since the start date, an
@@ -66,9 +69,10 @@ serve(async (req) => {
       case 'order':  return json(await oneOrder(ctx, String(body.order ?? '').replace(/^#/, '')));
       case 'report': return json(await report(ctx, body));
       case 'credit': return json(await creditHistory(ctx, String(body.order ?? '').replace(/^#/, '')));
+      case 'velocity_gap': return json(await velocityGap(ctx, body));
       case 'sync':   return json(await sync(ctx, body));
       case 'tick':   return json(await tick(ctx, body));
-      default:       return json({ error: 'action must be order, report, credit, sync or tick' }, 400);
+      default:       return json({ error: 'action must be order, report, credit, velocity_gap, sync or tick' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -114,6 +118,52 @@ async function creditHistory(ctx: Ctx, name: string) {
       transactions: (a.transactions?.nodes ?? []).map((t: any) => ({ type: String(t.__typename).replace('StoreCreditAccount', ''), amount: t.amount?.amount, balanceAfter: t.balanceAfterTransaction?.amount, at: t.createdAt, event: t.event })),
     })),
     events: (o.events?.nodes ?? []).filter((e: any) => relevant.test(e.message) && !/email|@/i.test(e.message)).map((e: any) => ({ at: e.createdAt, message: String(e.message).replace(/<[^>]+>/g, '').slice(0, 200) })),
+  };
+}
+
+// COD parcels from before the accounting start date that are not in the ledger (Shopify has not touched the
+// order since), checked against Velocity: which were paid out on or after the start date (receipts that belong
+// to October) and which were delivered and never paid out.
+async function velocityGap(ctx: Ctx, body: any) {
+  const cutoff = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
+  const from = String(body.from ?? '2026-09-10');
+  const today = istDate(Date.now());
+  const found: Array<{ name: string; awb: string; cancelled: boolean; rto: boolean; id: number }> = [];
+  let after: string | null = null;
+  for (let page = 0; page < 40; page++) {
+    const res = await gql(ctx, `query Gap($q: String!, $after: String) {
+      orders(first: 100, after: $after, query: $q, sortKey: CREATED_AT) {
+        pageInfo { hasNextPage endCursor }
+        nodes { legacyResourceId name cancelledAt tags paymentGatewayNames fulfillments(first: 3) { trackingInfo { number } } }
+      }
+    }`, { q: `created_at:>=${from} updated_at:<${cutoff}`, after });
+    for (const n of res.data.orders.nodes) {
+      if (!/cash_on_delivery|ppcod/i.test((n.paymentGatewayNames ?? []).join(' '))) continue;
+      const awb = (n.fulfillments ?? []).flatMap((f: any) => (f.trackingInfo ?? []).map((t: any) => String(t.number ?? ''))).find(Boolean);
+      if (!awb) continue;
+      found.push({ name: String(n.name).replace(/^#/, ''), awb, id: Number(n.legacyResourceId), cancelled: !!n.cancelledAt, rto: (n.tags ?? []).some((t: string) => /^rto_delivered$/i.test(t)) });
+    }
+    const conn = res.data.orders;
+    if (!conn.pageInfo.hasNextPage) break;
+    after = conn.pageInfo.endCursor;
+  }
+  const { data: known } = await ctx.admin.from('ledger_orders').select('order_name').in('order_name', found.map(f => f.name));
+  const inLedger = new Set((known ?? []).map(r => String(r.order_name)));
+  const todo = found.filter(f => !inLedger.has(f.name) && !f.rto && !f.cancelled);
+  const v = await velocityLookup(ctx, todo.map(f => f.awb));
+  const rows = todo.map(f => ({ ...f, v: v.get(f.awb) }));
+  const paidAfter = rows.filter(r => r.v?.utr_no && String(r.v.remittance_date) >= cutoff);
+  const paidBefore = rows.filter(r => r.v?.utr_no && String(r.v.remittance_date) < cutoff);
+  const unpaid = rows.filter(r => r.v?.delivery_date && !r.v?.utr_no);
+  const undelivered = rows.filter(r => !r.v?.delivery_date);
+  const sum = (xs: typeof rows) => Math.round(xs.reduce((a, r) => a + Number(r.v?.cod_amount ?? 0), 0) * 100) / 100;
+  const age = (d: string) => Math.round((Date.parse(today) - Date.parse(d)) / 86_400_000);
+  return {
+    cutoff, from, cod_orders_checked: todo.length, already_in_ledger: found.filter(f => inLedger.has(f.name)).length,
+    paid_on_or_after_start: { orders: paidAfter.length, amount: sum(paidAfter), by_date: Object.fromEntries([...new Set(paidAfter.map(r => String(r.v!.remittance_date)))].sort().map(d => [d, { orders: paidAfter.filter(r => r.v!.remittance_date === d).length, amount: sum(paidAfter.filter(r => r.v!.remittance_date === d)) }])), list: paidAfter.map(r => ({ order: r.name, delivered: r.v!.delivery_date, remitted: r.v!.remittance_date, amount: r.v!.cod_amount, utr: r.v!.utr_no })) },
+    paid_before_start: { orders: paidBefore.length, amount: sum(paidBefore) },
+    delivered_never_paid: { orders: unpaid.length, amount: sum(unpaid), list: unpaid.map(r => ({ order: r.name, delivered: r.v!.delivery_date, days_ago: age(String(r.v!.delivery_date)), amount: r.v!.cod_amount, scheduled: r.v!.remittance_date })) },
+    not_delivered: { orders: undelivered.length, amount: sum(undelivered) },
   };
 }
 
@@ -284,28 +334,38 @@ async function sharedInputs(ctx: Ctx) {
 async function process(ctx: Ctx, orders: any[], shared?: Shared) {
   const { cutoff, sellerState, today, rp, reversalIds, adjustments } = shared ?? await sharedInputs(ctx);
   const ids = orders.map(o => Number(o.legacyResourceId));
-  const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on').in('order_id', ids);
-  const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r.delivered_on as string | null]));
+  const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on, utr, remittance_date, cod_amount').in('order_id', ids);
+  const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r]));
 
   // Unicommerce: the order, then its sale invoice and return invoices.
   const ucBy = new Map<number, RawInputs['uc']>();
   for (const o of orders) ucBy.set(Number(o.legacyResourceId), await unicommerce(ctx, Number(o.legacyResourceId)));
 
-  // Velocity delivery dates for COD parcels we have no delivery row for.
-  const needVelocity = orders.filter(o => !codBy.get(Number(o.legacyResourceId)) && /cash_on_delivery|ppcod/i.test((o.paymentGatewayNames ?? []).join(' ')));
+  // Velocity's view of every COD parcel that has not been paid out yet: when it was delivered and whether the
+  // money has been remitted (UTR). Parcels already paid out are known from cod_deliveries.
   const awbOf = (o: any) => (o.fulfillments ?? []).flatMap((f: any) => (f.trackingInfo ?? []).map((t: any) => String(t.number ?? ''))).find(Boolean) as string | undefined;
-  const velocity = await velocityDelivery(ctx, needVelocity.map(awbOf).filter(Boolean) as string[]);
+  const needVelocity = orders.filter(o => !codBy.get(Number(o.legacyResourceId))?.utr
+    && !(o.tags ?? []).some((t: string) => /^rto_delivered$/i.test(t))
+    && /cash_on_delivery|ppcod/i.test((o.paymentGatewayNames ?? []).join(' ')));
+  const velocity = await velocityLookup(ctx, needVelocity.map(awbOf).filter(Boolean) as string[]);
 
   const out: Array<{ order: string; orderId: number; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
   for (const o of orders) {
     const id = Number(o.legacyResourceId);
     const awb = awbOf(o);
+    const row = codBy.get(id);
+    const v = awb ? velocity.get(awb) : undefined;
+    // The money the courier paid out: from the delivery row when it has recorded the UTR, else Velocity's answer.
+    const remittance = row?.utr
+      ? { utr: String(row.utr), date: String(row.remittance_date ?? row.delivered_on ?? ''), amount: row.cod_amount != null ? Number(row.cod_amount) : null }
+      : v?.utr_no ? { utr: String(v.utr_no), date: String(v.remittance_date ?? ''), amount: v.cod_amount != null ? Number(v.cod_amount) : null } : null;
     const built = buildFacts({
       sellerState, today, shopify: o, uc: ucBy.get(id) ?? null,
       rpRequests: rp.get(String(o.name).replace(/^#/, '')) ?? [], reversalIds,
       adjustments: adjustments.get(String(o.name).replace(/^#/, '')) ?? [],
-      codDeliveredOn: codBy.get(id) ?? null,
-      velocityDeliveredOn: awb ? velocity.get(awb) ?? null : null,
+      codDeliveredOn: (row?.delivered_on as string | null) ?? null,
+      velocityDeliveredOn: v?.delivery_date ?? null,
+      remittance: remittance && remittance.date ? remittance : null,
     });
     out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, ledger: buildOrderLedger(built.facts, { cutoff, today }) });
   }
@@ -364,19 +424,28 @@ async function returnPrimeByOrder(ctx: Ctx): Promise<Map<string, any[]>> {
   return by;
 }
 
-// Delivery dates by AWB, from Velocity's COD remittance API (100 a call, 5 calls a minute).
-async function velocityDelivery(ctx: Ctx, awbs: string[]): Promise<Map<string, string | null>> {
-  const out = new Map<string, string | null>();
+// Velocity's COD remittance API: delivery date, COD amount, and the remittance (UTR set once paid), by AWB.
+// 100 parcels a call, 5 calls a minute, so calls are spaced 13 s apart even across separate lookups.
+type VelocityRec = { delivery_date: string | null; cod_amount: number | null; remittance_date: string | null; utr_no: string | null };
+let lastVelocityCall = 0;
+async function velocityLookup(ctx: Ctx, awbs: string[]): Promise<Map<string, VelocityRec>> {
+  const out = new Map<string, VelocityRec>();
   const list = [...new Set(awbs)];
   if (!list.length) return out;
   const token = (await secrets(ctx.admin, ['velocity_api_token'])).velocity_api_token;
   if (!token) return out;
   for (let i = 0; i < list.length; i += 100) {
-    if (i) await sleep(13_000);
-    const res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
+    const wait = 13_000 - (Date.now() - lastVelocityCall);
+    if (wait > 0) await sleep(wait);
+    lastVelocityCall = Date.now();
+    let res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
+    if (res.status === 429) {
+      await sleep(30_000); lastVelocityCall = Date.now();
+      res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
+    }
     if (!res.ok) continue;
     const body = await res.json().catch(() => ({}));
-    for (const r of body.data ?? []) out.set(String(r.tracking_number), r.delivery_date ?? null);
+    for (const r of body.data ?? []) out.set(String(r.tracking_number), { delivery_date: r.delivery_date ?? null, cod_amount: r.cod_amount ?? null, remittance_date: r.remittance_date ?? null, utr_no: r.utr_no ?? null });
   }
   return out;
 }

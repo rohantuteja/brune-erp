@@ -256,6 +256,49 @@ amount equals the difference the ledger found, it books it to `Goodwill credits`
 order. It never covers a shortfall and never a different amount. 37586: ₹1,599 credited for ₹1,499 paid, the extra
 ₹100 approved by the owner in chat on 11 Oct 2026. The GST treatment of a goodwill credit is for the CA.
 
+## Velocity: delivery, remittance and the money still with the courier
+
+The ledger follows each COD parcel to the bank. Velocity's `cod-remittance` API gives, per AWB, the delivery date, the
+COD amount and, once the money has been paid, the remittance date and UTR (`utr_no` set means paid; `remittance_date`
+alone is only a schedule). For every COD order that is not yet recorded as remitted the ledger asks Velocity (100 parcels a
+call, 5 calls a minute, so calls are spaced 13 s apart across the whole function); an order whose UTR is already on
+`cod_deliveries` is not asked again.
+
+| Event | Entry | Date |
+|---|---|---|
+| Delivered | Dr COD receivable (Velocity), Cr Customer (order control) | Velocity's delivery date |
+| Remitted | Dr Bank, Cr COD receivable (Velocity), document = the UTR | Velocity's remittance date |
+
+- `ledger_orders.cod_open` is the balance of COD receivable (Velocity): collected by the courier, not yet in the bank.
+  It is separate from `net`, which is the customer side: a delivered COD order nets to zero for the customer while
+  Velocity still owes the money.
+- **Overdue.** Delivered more than 10 days ago with no UTR: `remittance_overdue` (needs attention: chase Velocity).
+  A delivery date that is only a guess is never called overdue.
+- **Different amount.** Velocity paid something other than the COD collected: `remittance_differs`.
+- Money received in October for September sales is October's: the delivery is dated September (carried in) and the
+  remittance October (exported).
+- Velocity does not deduct its charges from a remittance (they come from the wallet or the monthly invoice), so the
+  remittance equals the COD amount exactly.
+
+**First reading, 11 Oct 2026** (81 delivered COD orders in the ledger): 57 remitted, none with a different amount; the
+other 24 (delivered 6 to 11 Oct, ₹37,201.90) are still with Velocity and none is overdue. Remittances found:
+
+| Remitted on | Parcels | Amount | Delivered |
+|---|---|---|---|
+| 5 Oct (Mon) | 36 | ₹53,978.60 | 25 Sep to 1 Oct |
+| 9 Oct (Fri) | 19 | ₹31,541.00 | 2 to 5 Oct |
+| 25 and 28 Sep | 1 each | ₹1,539.10 and ₹1,749.00 | September (before the start date) |
+
+Each remittance is one UTR for the whole batch, so the bank statement should show one credit of ₹53,978.60 on 5 Oct
+and one of ₹31,541.00 on 9 Oct. To check against it.
+
+**Coverage check** (`velocity_gap`). The ledger holds orders Shopify has updated since the start date. A September COD
+order that Velocity paid in October but never marked paid on Shopify (it skips COD orders that used store credit)
+would be missing. Checked every COD order created since 10 Sep that Shopify has not touched since 1 Oct (73 orders,
+₹1,05,380.10): all were paid out in September, none in October, none delivered and unpaid, none undelivered. So every
+October remittance is in the ledger. Widened back to 1 Aug (442 orders, ₹6,26,839): 441 paid out before October, and one
+COD parcel never delivered, order 36354 (₹1,539.10, created 10 Aug, fulfilled, no RTO tag): chase Velocity.
+
 ## Still to build
 
 1. **Control-ledger report**: done (stored ledger and Analytics → Ledger above). Still to do: orders delivered with
@@ -264,7 +307,7 @@ order. It never covers a shortfall and never a different amount. 37586: ₹1,599
    downloads carry the same payments, the raw one adds `Remark`, `PG Transaction Type`, `Origin`).
    Match on `Platform Order Id` (the Shopify order number); post per UTR.
 3. **Velocity charges**: per-parcel freight and COD fee from the `shipping-charges` API against the
-   monthly invoice.
+   monthly invoice. (Remittances are done: see Velocity above.)
 4. **Tally import file** from all of the above (sales and return vouchers from Unicommerce, so the
    Unicommerce–Tally integration isn't needed).
 

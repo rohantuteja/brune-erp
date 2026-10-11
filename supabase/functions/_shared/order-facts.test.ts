@@ -291,3 +291,39 @@ test('an approval never covers a shortfall: credited less than paid is still fla
   (raw.shopify.customer as any) = account(credit(1399, '2026-10-09T12:10:13Z'));
   assert.equal(ledger(buildFacts(raw)).exceptions[0].type, 'store_credit_differs');
 });
+
+// ── Remittance (UTR) from Velocity ───────────────────────────────────────────────────────────
+const codRaw = (over: Partial<RawInputs> = {}): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-12', uc: null, rpRequests: [],
+  shopify: { name: 'C9', createdAt: '2026-10-02T10:00:00Z', tags: ['COD'], paymentGatewayNames: ['cash_on_delivery'], subtotalPriceSet: m(1399), totalShippingPriceSet: m(100),
+    shippingAddress: { provinceCode: 'KA' }, transactions: [{ id: 'c', kind: 'SALE', status: 'SUCCESS', gateway: 'cash_on_delivery', amountSet: m(1499), processedAt: '2026-10-06T10:00:00Z' }], refunds: [], customer: null },
+  codDeliveredOn: '2026-10-05', ...over,
+});
+
+test('delivered and remitted: the remittance reaches the ledger and clears the courier receivable', () => {
+  const b = buildFacts(codRaw({ remittance: { utr: 'UTR55', date: '2026-10-09', amount: 1499 } }));
+  assert.deepEqual(b.facts.remitted, { date: '2026-10-09', amount: 1499, utr: 'UTR55' });
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.codOpen, 0); assert.equal(l.status, 'complete');
+});
+
+test('a remittance with no amount is taken as the COD collected', () => {
+  const b = buildFacts(codRaw({ remittance: { utr: 'UTR56', date: '2026-10-09', amount: null } }));
+  assert.equal(b.facts.remitted?.amount, 1499);
+});
+
+test('no remittance yet: the money is still with the courier', () => {
+  const b = buildFacts(codRaw());
+  assert.equal(b.facts.remitted, undefined);
+  assert.equal(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-12' }).codOpen, 1499);
+});
+
+test('a remittance on an order that was never delivered is ignored', () => {
+  const b = buildFacts(codRaw({ codDeliveredOn: null, remittance: { utr: 'UTR57', date: '2026-10-09', amount: 1499 }, shopify: { ...codRaw().shopify, transactions: [] } }));
+  assert.equal(b.facts.delivered, undefined); assert.equal(b.facts.remitted, undefined);
+});
+
+test('a guessed delivery date is marked as an estimate', () => {
+  const b = buildFacts(codRaw({ codDeliveredOn: null }));
+  assert.equal(b.facts.delivered?.estimated, true);
+});

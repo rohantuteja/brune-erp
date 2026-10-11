@@ -30,7 +30,8 @@ export type Facts = {
   codFee: number;                 // COD charge on the sale invoice, tax-inclusive (0 if none)
   saleDate: string;               // sale invoice date (the order date when no invoice exists)
   saleDoc?: string;               // Unicommerce sale invoice number
-  delivered?: { date: string; amount: number };            // courier collected this COD amount
+  delivered?: { date: string; amount: number; estimated?: boolean };   // courier collected this COD amount (estimated: the date is a guess)
+  remitted?: { date: string; amount: number; utr: string }; // the courier paid that COD money into the bank (UTR)
   payments?: Array<{ date: string; amount: number; ref: string }>;   // prepaid money settled by the gateway
   storeCreditUsed?: Array<{ date: string; amount: number }>;         // store credit spent at checkout
   approved?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; by: string }>;   // decisions a person made (ledger_adjustments)
@@ -54,7 +55,7 @@ export type Entry = {
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
 export type Exception = {
-  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'refund_due' | 'bad_facts';
+  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'bad_facts';
   amount: number; reason: string;
 };
 // awaiting_return and in_transit are normal stages of an order that is not finished yet.
@@ -64,11 +65,14 @@ export type OrderLedger = {
   net: number;          // whole life; must be 0
   opening: number;      // control balance carried in from before the cutoff
   balanced: boolean;    // net is zero and no exceptions: safe to export
+  codOpen: number;      // COD collected by the courier and not yet paid into the bank
   status: 'complete' | 'open' | 'attention';   // open = still travelling, attention = a person must look
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const sumOf = (xs?: Array<{ amount: number }>) => (xs ?? []).reduce((a, x) => a + x.amount, 0);
+// Delivered this long ago with no remittance: a courier or cash problem to chase.
+const REMITTANCE_OVERDUE_DAYS = 10;
 const split = (amount: number, rate: number) => { const taxable = r2(amount / (1 + rate)); return { taxable, tax: r2(amount - taxable) }; };
 
 export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string }): OrderLedger {
@@ -101,7 +105,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       [['Goodwill credits', extra, 0], [CUSTOMER, 0, extra]]);
 
   if (f.goods < 0 || f.codFee < 0 || !(f.rate >= 0)) {
-    return { entries, exportable: [], balancing, exceptions: [{ type: 'bad_facts', amount: 0, reason: 'negative amounts or rate' }], net: 0, opening: 0, balanced: false, status: 'attention' };
+    return { entries, exportable: [], balancing, exceptions: [{ type: 'bad_facts', amount: 0, reason: 'negative amounts or rate' }], net: 0, opening: 0, balanced: false, codOpen: 0, status: 'attention' };
   }
 
   // Sale invoice
@@ -117,6 +121,10 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   if (f.delivered) {
     voucher(f.delivered.date, 'delivery', 'courier', undefined, 'COD collected by the courier', [
       ['COD receivable (Velocity)', f.delivered.amount, 0], [CUSTOMER, 0, f.delivered.amount]]);
+  }
+  if (f.delivered && f.remitted) {
+    voucher(f.remitted.date, 'remittance', 'courier', f.remitted.utr, 'COD paid into the bank by the courier (UTR)', [
+      ['Bank', f.remitted.amount, 0], ['COD receivable (Velocity)', 0, f.remitted.amount]]);
   }
   for (const p of f.payments ?? []) {
     voucher(p.date, 'payment', 'gateway', p.ref, 'prepaid payment', [['Gateway clearing', p.amount, 0], [CUSTOMER, 0, p.amount]]);
@@ -234,9 +242,21 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       exceptions.push({ type: 'unexplained_residual', amount: net, reason: `the order is ${net > 0 ? 'owed' : 'over-settled'} by ${Math.abs(net).toFixed(2)}: a payment, return or credit is missing` });
     }
   }
+  // The courier's money: what it collected must reach the bank, in full, within a few days.
+  const codOpen = r2(entries.filter(e => e.account === 'COD receivable (Velocity)').reduce((a, e) => a + e.debit - e.credit, 0));
+  if (f.delivered && f.remitted && Math.abs(f.remitted.amount - f.delivered.amount) > 0.01) {
+    exceptions.push({ type: 'remittance_differs', amount: r2(f.remitted.amount - f.delivered.amount),
+      reason: `Velocity paid ${f.remitted.amount.toFixed(2)} (UTR ${f.remitted.utr}) for COD of ${f.delivered.amount.toFixed(2)}` });
+  } else if (f.delivered && !f.delivered.estimated && !f.remitted && opts.today) {
+    const days = Math.round((Date.parse(opts.today) - Date.parse(f.delivered.date)) / 86_400_000);
+    if (days > REMITTANCE_OVERDUE_DAYS) {
+      exceptions.push({ type: 'remittance_overdue', amount: codOpen,
+        reason: `delivered ${days} days ago and Velocity has not paid the ${codOpen.toFixed(2)} COD yet` });
+    }
+  }
   const exportable = entries.filter(e => e.date >= opts.cutoff);
   const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0));
   const balanced = Math.abs(net) <= 0.01 && !exceptions.length;
   const status = balanced ? 'complete' : exceptions.every(e => OPEN_STAGES.has(e.type)) ? 'open' : 'attention';
-  return { entries, exportable, balancing, exceptions, net, opening, balanced, status };
+  return { entries, exportable, balancing, exceptions, net, opening, balanced, codOpen, status };
 }

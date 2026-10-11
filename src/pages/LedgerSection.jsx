@@ -16,6 +16,7 @@ const STATUS_FILTERS = [
   { id: 'attention',  label: 'Needs attention' },
   { id: 'in_transit', label: 'COD in transit' },
   { id: 'awaiting_return', label: 'Waiting for parcel' },
+  { id: 'with_courier', label: 'COD with Velocity' },
   { id: 'complete',   label: 'Complete' },
   { id: 'not_a_sale', label: 'Not a sale' },
 ];
@@ -24,6 +25,8 @@ const EXCEPTION_LABEL = {
   in_transit: 'COD in transit',
   awaiting_return: 'Waiting for returned parcel',
   refund_due: 'Refund due',
+  remittance_overdue: 'Velocity payment overdue',
+  remittance_differs: 'Velocity paid a different amount',
   store_credit_differs: 'Store credit differs',
   unexplained_residual: 'Unexplained',
   bad_facts: 'Bad data',
@@ -129,6 +132,7 @@ function OrderRow({ o, open, onToggle }) {
         </td>
         <td className="py-2 px-2 text-stone-600 text-xs min-w-[240px]">
           {ex ? ex.reason : o.status === 'not_a_sale' ? (o.notes || [])[0] : ''}
+          {Number(o.cod_open) > 0 && !ex && <div className="text-stone-500 mt-0.5">With Velocity: {inr(o.cod_open, 2)} collected, not yet paid into the bank</div>}
           {docs.length > 0 && <div className="text-stone-500 mt-0.5">ERP issues: {docs.map(d => `${DOC_LABEL[d.type] || d.type} ${inr(d.amount, 2)}`).join(', ')}</div>}
         </td>
         <td className={`py-2 px-2 text-right tabular-nums whitespace-nowrap ${Number(o.net) < 0 ? 'text-red-700' : 'text-stone-900'}`}>
@@ -168,7 +172,7 @@ export default function LedgerSection({ showToast }) {
     const all = [];
     for (let from = 0; ; from += 1000) {
       const { data, error: err } = await supabase.from('ledger_orders')
-        .select('order_name, order_id, status, net, opening, sale_date, exception_type, exceptions, balancing, notes, computed_at')
+        .select('order_name, order_id, status, net, opening, cod_open, sale_date, exception_type, exceptions, balancing, notes, computed_at')
         .order('order_name', { ascending: false }).range(from, from + 999);
       if (err) { setError('Could not load the ledger'); showToast?.('Could not load the ledger', 'error'); setLoading(false); return; }
       all.push(...(data || []));
@@ -183,8 +187,10 @@ export default function LedgerSection({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   const stats = useMemo(() => {
-    const s = { complete: 0, not_a_sale: 0, in_transit: 0, awaiting_return: 0, attention: 0, transitAmount: 0, awaitingAmount: 0, attentionAmount: 0, lastComputed: null };
+    const s = { complete: 0, not_a_sale: 0, in_transit: 0, awaiting_return: 0, attention: 0, transitAmount: 0, awaitingAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0, lastComputed: null };
     for (const o of orders) {
+      if (Number(o.cod_open) > 0) { s.courier++; s.courierAmount += Number(o.cod_open); }
+      if (o.exception_type === 'remittance_overdue') s.courierOverdue++;
       if (o.status === 'complete') s.complete++;
       else if (o.status === 'not_a_sale') s.not_a_sale++;
       else if (o.status === 'attention') { s.attention++; s.attentionAmount += Number(o.net); }
@@ -212,11 +218,12 @@ export default function LedgerSection({ showToast }) {
       if (q && !o.order_name.includes(q)) return false;
       if (filter === 'all') return true;
       if (filter === 'attention' || filter === 'complete' || filter === 'not_a_sale') return o.status === filter;
+      if (filter === 'with_courier') return Number(o.cod_open) > 0;
       return o.exception_type === filter;
     });
   }, [orders, filter, search]);
 
-  const counts = { all: orders.length, attention: stats.attention, in_transit: stats.in_transit, awaiting_return: stats.awaiting_return, complete: stats.complete, not_a_sale: stats.not_a_sale };
+  const counts = { all: orders.length, attention: stats.attention, in_transit: stats.in_transit, awaiting_return: stats.awaiting_return, with_courier: stats.courier, complete: stats.complete, not_a_sale: stats.not_a_sale };
   const running = run?.status === 'running';
 
   if (loading && !orders.length) return <div className="text-sm text-stone-500 px-1 py-6">Loading the ledger…</div>;
@@ -249,11 +256,12 @@ export default function LedgerSection({ showToast }) {
             {running && <RefreshCw className="inline w-3 h-3 ml-1 animate-spin" />}
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
             {[
               { label: 'Complete', value: stats.complete, sub: 'net to zero', tone: 'text-emerald-800' },
               { label: 'COD in transit', value: stats.in_transit, sub: `${inr(stats.transitAmount)} due on delivery`, tone: 'text-sky-800' },
               { label: 'Waiting for parcel', value: stats.awaiting_return, sub: `${inr(stats.awaitingAmount)} refunded, goods not back`, tone: 'text-sky-800' },
+              { label: 'COD with Velocity', value: stats.courier, sub: stats.courier ? `${inr(stats.courierAmount)} collected, not yet paid in${stats.courierOverdue ? ` · ${stats.courierOverdue} overdue` : ''}` : 'nothing waiting', tone: stats.courierOverdue ? 'text-amber-800' : 'text-sky-800' },
               { label: 'Needs attention', value: stats.attention, sub: stats.attention ? `${inr(Math.abs(stats.attentionAmount))} net` : 'nothing to do', tone: stats.attention ? 'text-amber-800' : 'text-stone-500' },
             ].map(c => (
               <div key={c.label} className="bg-white rounded-lg border border-stone-200 p-3 sm:p-4">
