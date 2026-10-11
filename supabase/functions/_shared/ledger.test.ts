@@ -125,3 +125,34 @@ test('every voucher balances: total debits equal total credits on every scenario
   assert.equal(sum(l, 'debit'), sum(l, 'credit'));
   assert.equal(l.net, 0);
 });
+
+test('37605: refunded but the parcel is still travelling → waiting, no credit note yet, store credit still checked', () => {
+  const f: Facts = { ...base, order: '37605', goods: 1089.15, codFee: 0, saleDate: '2026-09-24',
+    payments: [{ date: '2026-09-24', amount: 1089.15, ref: 'KWIK' }],
+    returns: [{ kind: 'customer', date: '2026-10-11', goodsReturned: 1089.15, pending: true,
+      storeCredit: [{ date: '2026-10-11', amount: 1089.15, ref: 'RET741' }] }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF });
+  assert.equal(l.balanced, false);
+  assert.equal(l.exceptions[0].type, 'awaiting_return');
+  assert.deepEqual(l.balancing, []);                                   // nothing issued until the parcel is back
+  assert.ok(!l.entries.some(e => e.voucher === 'credit_note'));
+});
+
+test('a double store credit is caught even while the parcel is still travelling', () => {
+  const f: Facts = { ...base, order: 'X6', goods: 1599, codFee: 100, saleDate: '2026-09-25',
+    storeCreditUsed: [{ date: '2026-09-25', amount: 1340.10 }], delivered: { date: '2026-09-28', amount: 358.90 },
+    returns: [{ kind: 'customer', date: '2026-10-06', goodsReturned: 1599, returnFee: 99, pending: true,
+      storeCredit: [{ date: '2026-10-02', amount: 1500, ref: 'RP' }, { date: '2026-10-02', amount: 1340.10, ref: 'GoKwik' }] }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF });
+  assert.equal(l.exceptions[0].type, 'store_credit_differs');
+  assert.equal(l.exceptions[0].amount, 1340.10);
+});
+
+test('a return waiting a long time says how long the customer has been refunded', () => {
+  const f: Facts = { ...base, order: '37528', goods: 1649, codFee: 100, saleDate: '2026-09-21', delivered: { date: '2026-09-24', amount: 1749 },
+    returns: [{ kind: 'customer', date: '2026-10-02', goodsReturned: 1649, returnFee: 99, pending: true, refundedOn: '2026-10-02',
+      storeCredit: [{ date: '2026-10-02', amount: 1550, ref: 'r' }] }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.exceptions[0].type, 'awaiting_return');
+  assert.match(l.exceptions[0].reason, /refunded 10 days ago/);
+});

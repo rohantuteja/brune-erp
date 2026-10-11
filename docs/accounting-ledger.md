@@ -145,11 +145,34 @@ Unicommerce, Velocity, GoKwik, Return Prime) and is tested on the real orders ab
 
 Both start in dry mode and write what they would do to `cod_deliveries` / `store_credit_reversals`.
 
+| Facts gatherer + ledger run (read-only) | Reads each order from Shopify, Unicommerce, Return Prime and Velocity, maps it to facts (`_shared/order-facts.ts`), builds the ledger (`_shared/ledger.ts`) and reports which orders balance and which need a balancing document or a person. Writes nothing. | `accounting-ledger` |
+
+`accounting-ledger` actions (admin JWT or `x-cron-key`): `order` (`{order:"37613"}`: facts, notes, entries) and
+`report` (`{from, limit, after, only_issues}`, paged by Shopify order update time; `next` is the cursor).
+How the facts are read:
+
+- **Sale:** Unicommerce's sale invoice when one exists (amounts, COD charge, tax type, date, number); orders from before
+  29 Sep, or whose Unicommerce copy was cancelled, use Shopify's amounts (note: GST rate assumed 5%).
+- **Settlement:** prepaid payments from Shopify transactions, store credit spent at checkout, and for COD the courier
+  collection on the delivery date (`cod_deliveries`, else Velocity, else the Shopify payment date).
+- **Customer return** (one per Return Prime request that refunded something): goods returned from Shopify's refund
+  line items, return fee from Return Prime, store credit actually issued from the customer's store-credit account
+  within minutes of Return Prime's refund. A debit counts as a reversal only if its id is in
+  `store_credit_reversals` (a customer spending the credit looks the same). The credit note is due when the
+  parcel is back (Unicommerce's return invoice, else Return Prime's receipt); before that the return is `pending`
+  and shows as `awaiting_return` with how long the customer has been refunded.
+- **RTO:** orders tagged `rto_delivered`; the whole sale comes back.
+- **Not a sale:** cancelled before dispatch with no money moved (skipped and counted as `not_a_sale`).
+
+First live check (11 Oct, 25 orders updated since 1 Oct): 23 balanced, 1 not a sale (37740), 1 awaiting the returned
+parcel (37528: customer refunded 9 days ago, ₹1,550 open). The only documents the ERP must issue are the credit
+notes for goods on returns of orders from before 29 Sep (37599, 37613, 37665, 37692) and the ₹99 return fee invoices.
+
 ## Still to build
 
-1. **Control-ledger report** (Analytics): every order since 1 Oct with its entries above, the orders
-   that don't net to zero, orders delivered with no remittance after 10 days, returns without a
-   credit note, store credit without a return. Read-only first.
+1. **Control-ledger report** (Analytics): the read-only run above exists as an edge function. Still to do: page
+   through every order since 1 Oct, store the entries and exceptions in tables, and show them in Analytics, plus
+   orders delivered with no remittance after 10 days.
 2. **GoKwik settlement import** (upload screen; the `settlement_v2` and `rawSettlementReport`
    downloads carry the same payments, the raw one adds `Remark`, `PG Transaction Type`, `Origin`).
    Match on `Platform Order Id` (the Shopify order number); post per UTR.

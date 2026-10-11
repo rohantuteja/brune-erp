@@ -41,6 +41,8 @@ export type Facts = {
     storeCredit?: Array<{ date: string; amount: number; ref: string }>;   // credits issued (negative = taken back)
     returnFee?: number;           // return fee kept from the customer (₹99)
     cashRefund?: { date: string; amount: number };
+    pending?: boolean;            // the parcel is not back yet: no credit note exists or is due; store credit is still checked
+    refundedOn?: string;          // when the customer was refunded (shows how long a pending return has been waiting)
   }>;
 };
 
@@ -50,7 +52,7 @@ export type Entry = {
   memo: string;
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
-export type Exception = { type: 'store_credit_differs' | 'unexplained_residual' | 'bad_facts'; amount: number; reason: string };
+export type Exception = { type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'bad_facts'; amount: number; reason: string };
 export type OrderLedger = {
   entries: Entry[]; exportable: Entry[]; balancing: Balancing[]; exceptions: Exception[];
   net: number;          // whole life; must be 0
@@ -61,7 +63,7 @@ export type OrderLedger = {
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const split = (amount: number, rate: number) => { const taxable = r2(amount / (1 + rate)); return { taxable, tax: r2(amount - taxable) }; };
 
-export function buildOrderLedger(f: Facts, opts: { cutoff: string }): OrderLedger {
+export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string }): OrderLedger {
   const entries: Entry[] = [];
   const balancing: Balancing[] = [];
   const exceptions: Exception[] = [];
@@ -117,43 +119,46 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string }): OrderLedge
     const ucGoods = ret.uc?.goods ?? 0;
     const ucCod = ret.uc?.codFee ?? 0;
 
-    if (ret.uc) {
-      const p = parts(ucGoods, ucCod);
-      voucher(ret.date, 'credit_note', 'unicommerce', ret.uc.doc, `${tag}: Unicommerce return invoice`, [
-        ['Sales returns', p.g.taxable, 0], ['COD charge income', p.c.taxable, 0],
-        ...gst(r2(p.g.tax + p.c.tax), 'debit', 'output'),
-        [CUSTOMER, 0, r2(ucGoods + ucCod)],
-      ]);
-    }
-    // What the order requires of its credit notes, and what is missing or extra.
-    const needGoods = ret.goodsReturned;
-    if (r2(needGoods - ucGoods) > 0.005) {
-      const amt = r2(needGoods - ucGoods);
-      const p = split(amt, f.rate);
-      balancing.push({ type: 'credit_note_goods', amount: amt, reason: ret.uc ? `Unicommerce's return invoice covers ${ucGoods.toFixed(2)} of ${needGoods.toFixed(2)} goods` : 'no Unicommerce return invoice exists for this order' });
-      voucher(ret.date, 'credit_note', 'erp', undefined, `${tag}: credit note for goods`, [
-        ['Sales returns', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [CUSTOMER, 0, amt]]);
-    }
-    if (fullReturn && r2(f.codFee - ucCod) > 0.005) {
-      const amt = r2(f.codFee - ucCod);
-      const p = split(amt, f.rate);
-      balancing.push({ type: 'credit_note_cod_fee', amount: amt, reason: 'returned to origin: the COD charge was never collected, so it is reversed too' });
-      voucher(ret.date, 'credit_note', 'erp', undefined, `${tag}: credit note for the COD charge`, [
-        ['COD charge income', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [CUSTOMER, 0, amt]]);
-    }
-    if (!fullReturn && ucCod > 0.005) {
-      // The customer paid the COD charge and it is kept: bill it back.
-      const p = split(ucCod, f.rate);
-      balancing.push({ type: 'retained_cod_fee_invoice', amount: ucCod, reason: "the return invoice reversed the COD charge, but the customer paid it and it is kept" });
-      voucher(ret.date, 'invoice', 'erp', undefined, `${tag}: retained COD charge`, [
-        [CUSTOMER, ucCod, 0], ['COD charge income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
-    }
-    // Return fee kept from the customer: Unicommerce never invoices it
-    if (ret.returnFee && ret.returnFee > 0) {
-      const p = split(ret.returnFee, f.rate);
-      balancing.push({ type: 'return_fee_invoice', amount: ret.returnFee, reason: 'return fee kept from the customer' });
-      voucher(ret.date, 'invoice', 'erp', undefined, `${tag}: return fee`, [
-        [CUSTOMER, ret.returnFee, 0], ['Return fee income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
+    // Credit notes and fees are due once the parcel is back (a pending return has none yet).
+    if (!ret.pending) {
+      if (ret.uc) {
+        const p = parts(ucGoods, ucCod);
+        voucher(ret.date, 'credit_note', 'unicommerce', ret.uc.doc, `${tag}: Unicommerce return invoice`, [
+          ['Sales returns', p.g.taxable, 0], ['COD charge income', p.c.taxable, 0],
+          ...gst(r2(p.g.tax + p.c.tax), 'debit', 'output'),
+          [CUSTOMER, 0, r2(ucGoods + ucCod)],
+        ]);
+      }
+      // What the order requires of its credit notes, and what is missing or extra.
+      const needGoods = ret.goodsReturned;
+      if (r2(needGoods - ucGoods) > 0.005) {
+        const amt = r2(needGoods - ucGoods);
+        const p = split(amt, f.rate);
+        balancing.push({ type: 'credit_note_goods', amount: amt, reason: ret.uc ? `Unicommerce's return invoice covers ${ucGoods.toFixed(2)} of ${needGoods.toFixed(2)} goods` : 'no Unicommerce return invoice exists for this order' });
+        voucher(ret.date, 'credit_note', 'erp', undefined, `${tag}: credit note for goods`, [
+          ['Sales returns', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [CUSTOMER, 0, amt]]);
+      }
+      if (fullReturn && r2(f.codFee - ucCod) > 0.005) {
+        const amt = r2(f.codFee - ucCod);
+        const p = split(amt, f.rate);
+        balancing.push({ type: 'credit_note_cod_fee', amount: amt, reason: 'returned to origin: the COD charge was never collected, so it is reversed too' });
+        voucher(ret.date, 'credit_note', 'erp', undefined, `${tag}: credit note for the COD charge`, [
+          ['COD charge income', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [CUSTOMER, 0, amt]]);
+      }
+      if (!fullReturn && ucCod > 0.005) {
+        // The customer paid the COD charge and it is kept: bill it back.
+        const p = split(ucCod, f.rate);
+        balancing.push({ type: 'retained_cod_fee_invoice', amount: ucCod, reason: "the return invoice reversed the COD charge, but the customer paid it and it is kept" });
+        voucher(ret.date, 'invoice', 'erp', undefined, `${tag}: retained COD charge`, [
+          [CUSTOMER, ucCod, 0], ['COD charge income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
+      }
+      // Return fee kept from the customer: Unicommerce never invoices it
+      if (ret.returnFee && ret.returnFee > 0) {
+        const p = split(ret.returnFee, f.rate);
+        balancing.push({ type: 'return_fee_invoice', amount: ret.returnFee, reason: 'return fee kept from the customer' });
+        voucher(ret.date, 'invoice', 'erp', undefined, `${tag}: return fee`, [
+          [CUSTOMER, ret.returnFee, 0], ['Return fee income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
+      }
     }
     // Store credit actually issued (and anything taken back)
     let issued = 0;
@@ -179,7 +184,14 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string }): OrderLedge
   // Does the order net to zero?
   const net = r2(entries.filter(e => e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0));
   if (Math.abs(net) > 0.01 && !exceptions.length) {
-    exceptions.push({ type: 'unexplained_residual', amount: net, reason: `the order is ${net > 0 ? 'owed' : 'over-settled'} by ${Math.abs(net).toFixed(2)}: a payment, return or credit is missing` });
+    const waiting = (f.returns ?? []).filter(r => r.pending);
+    if (waiting.length) {
+      const days = Math.max(0, ...waiting.map(r => r.refundedOn && opts.today ? Math.round((Date.parse(opts.today) - Date.parse(r.refundedOn)) / 86_400_000) : 0));
+      exceptions.push({ type: 'awaiting_return', amount: net,
+        reason: `waiting for the returned parcel${days >= 1 ? ` (customer refunded ${days} day${days === 1 ? '' : 's'} ago)` : ''}; credit notes are issued once it is back` });
+    } else {
+      exceptions.push({ type: 'unexplained_residual', amount: net, reason: `the order is ${net > 0 ? 'owed' : 'over-settled'} by ${Math.abs(net).toFixed(2)}: a payment, return or credit is missing` });
+    }
   }
   const exportable = entries.filter(e => e.date >= opts.cutoff);
   const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0));
