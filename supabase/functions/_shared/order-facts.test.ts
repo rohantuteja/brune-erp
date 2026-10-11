@@ -143,7 +143,8 @@ test('a COD order with no delivery yet has no delivered fact (the order is still
   const b = buildFacts(raw);
   assert.equal(b.facts.delivered, undefined);
   assert.equal(b.facts.codFee, 100);
-  assert.equal(ledger(b).exceptions[0].type, 'unexplained_residual');
+  assert.equal(ledger(b).exceptions[0].type, 'in_transit');
+  assert.equal(ledger(b).status, 'open');
 });
 
 test('37599: the customer spent exactly the credit on a new order → that debit is NOT a reversal, the return still balances', () => {

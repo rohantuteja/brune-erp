@@ -102,11 +102,43 @@ test('37711: sold 29 Sep, delivered 6 Oct → September carries the receivable, 
   assert.equal(l.exportable.filter(e => e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0), -1499);
 });
 
-test('a COD order never delivered or paid is an unexplained residual, not exported as balanced', () => {
-  const l = buildOrderLedger({ ...base, order: 'X3', goods: 1399, codFee: 100, saleDate: '2026-10-02' }, { cutoff: CUTOFF });
+test('a COD order not delivered yet is in transit: open, not an error', () => {
+  const l = buildOrderLedger({ ...base, order: 'X3', goods: 1399, codFee: 100, saleDate: '2026-10-02' }, { cutoff: CUTOFF, today: '2026-10-11' });
   assert.equal(l.balanced, false);
-  assert.equal(l.exceptions[0].type, 'unexplained_residual');
+  assert.equal(l.status, 'open');
+  assert.equal(l.exceptions[0].type, 'in_transit');
   assert.equal(l.exceptions[0].amount, 1499);
+  assert.match(l.exceptions[0].reason, /invoiced 9 days ago/);
+});
+
+test('37850: COD with the ₹199 paid up front, not delivered → ₹1,400 still due on delivery', () => {
+  const f: Facts = { ...base, order: '37850', goods: 1499, codFee: 100, saleDate: '2026-10-08', payments: [{ date: '2026-10-07', amount: 199, ref: 'p' }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-11' });
+  assert.equal(l.exceptions[0].type, 'in_transit'); assert.equal(l.net, 1400); assert.equal(l.status, 'open');
+});
+
+test('a COD parcel stuck for weeks is flagged for a courier check', () => {
+  const l = buildOrderLedger({ ...base, order: 'X4', goods: 1399, codFee: 100, saleDate: '2026-09-12' }, { cutoff: CUTOFF, today: '2026-10-11' });
+  assert.match(l.exceptions[0].reason, /long overdue/);
+});
+
+test('37586: prepaid order returned to origin before the ERP handled RTOs, customer never refunded → refund due', () => {
+  const f: Facts = { ...base, order: '37586', goods: 1499, codFee: 0, saleDate: '2026-09-24', payments: [{ date: '2026-09-24', amount: 1499, ref: 'p' }],
+    returns: [{ kind: 'rto', date: '2026-10-11', goodsReturned: 1499, storeCredit: [] }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-11' });
+  assert.equal(l.net, -1499); assert.equal(l.status, 'attention');
+  assert.equal(l.exceptions[0].type, 'refund_due'); assert.equal(l.exceptions[0].amount, -1499);
+  assert.deepEqual(types(l), ['credit_note_goods']);
+});
+
+test('an unpaid prepaid order stays an unexplained residual: it is not a COD parcel in transit', () => {
+  const l = buildOrderLedger({ ...base, order: 'X5', goods: 1399, codFee: 0, saleDate: '2026-10-02' }, { cutoff: CUTOFF, today: '2026-10-11' });
+  assert.equal(l.exceptions[0].type, 'unexplained_residual'); assert.equal(l.status, 'attention');
+});
+
+test('status: complete when it nets to zero, open while travelling, attention for a person', () => {
+  const done = buildOrderLedger({ ...base, order: 'X6', goods: 1399, codFee: 100, saleDate: '2026-10-02', delivered: { date: '2026-10-04', amount: 1499 } }, { cutoff: CUTOFF });
+  assert.equal(done.status, 'complete');
 });
 
 test('intra-state sale splits the tax into CGST and SGST that add back up', () => {

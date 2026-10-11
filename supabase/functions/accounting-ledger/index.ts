@@ -1,4 +1,4 @@
-// accounting-ledger v1 — READ ONLY
+// accounting-ledger v4 — READ ONLY
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. Nothing is written anywhere: no tables, no Shopify,
@@ -18,8 +18,10 @@
 //
 // Actions (POST { action } with an admin user's JWT, or the x-cron-key header):
 //   order  — { order: "37613" } full facts, notes and entries for one order
-//   report — { from?: "2026-10-01", limit?: 15, after?: cursor, only_issues?: true }
-//            a page of orders updated since `from`; pass `next` back as `after` for more
+//   report — { from?: "2026-10-01", limit?: 15, after?: cursor, only_issues?: true, budget_s?: 80 }
+//            orders updated since `from`. One page of `limit` orders, or with `budget_s` as many
+//            pages as fit in that many seconds (Return Prime is read once per call). Pass `next`
+//            back as `after` for more; `next` is null at the end.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -62,9 +64,11 @@ serve(async (req) => {
 
 async function oneOrder(ctx: Ctx, name: string) {
   if (!name) return { error: 'order is required' };
-  const nodes = await shopifyOrders(ctx, `name:${name}`, 1);
-  if (!nodes.nodes.length) return { error: `order ${name} not found on Shopify` };
-  const [res] = await process(ctx, nodes.nodes);
+  const nodes = await shopifyOrders(ctx, `name:${name}`, 5);
+  // Shopify's name search is loose ("37720" also finds "3-7720"): keep the exact order.
+  const exact = nodes.nodes.filter(n => String(n.name).replace(/^#/, '') === name);
+  if (!exact.length) return { error: `order ${name} not found on Shopify` };
+  const [res] = await process(ctx, exact);
   return { ...res, entries: res.ledger.entries };
 }
 
@@ -72,38 +76,64 @@ async function report(ctx: Ctx, body: any) {
   const cutoff = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
   const from = String(body.from ?? cutoff);
   const limit = Math.min(Math.max(Number(body.limit ?? 15), 1), 40);
-  const page = await shopifyOrders(ctx, `updated_at:>=${from}`, limit, body.after ?? null);
-  const results = await process(ctx, page.nodes);
-  const summary = { orders: results.length, balanced: 0, not_a_sale: 0, awaiting_return: 0, store_credit_differs: 0, unexplained_residual: 0, bad_facts: 0, needing_balancing_documents: 0 };
+  const budgetMs = Math.min(Math.max(Number(body.budget_s ?? 0), 0), 100) * 1000;
+  const started = Date.now();
+  const shared = await sharedInputs(ctx);
+  const results: Awaited<ReturnType<typeof process>> = [];
+  let after: string | null = body.after ?? null;
+  let next: string | null = null;
+  do {
+    const page = await shopifyOrders(ctx, `updated_at:>=${from}`, limit, after);
+    results.push(...await process(ctx, page.nodes, shared));
+    next = page.hasNext ? page.cursor : null;
+    after = next;
+  } while (next && Date.now() - started < budgetMs);
+
+  const summary = { orders: results.length, balanced: 0, not_a_sale: 0, open: 0, attention: 0, awaiting_return: 0, in_transit: 0, refund_due: 0, store_credit_differs: 0, unexplained_residual: 0, bad_facts: 0, needing_balancing_documents: 0 };
+  const balancing: Record<string, { orders: number; amount: number }> = {};
   for (const r of results) {
     if (r.skip) { summary.not_a_sale++; continue; }
     if (r.ledger.balanced) summary.balanced++;
+    if (r.ledger.status === 'open') summary.open++;
+    if (r.ledger.status === 'attention') summary.attention++;
     for (const t of new Set(r.ledger.exceptions.map((e: any) => e.type))) (summary as any)[t as string]++;
     if (r.ledger.balancing.some((b: any) => b.type !== 'return_fee_invoice')) summary.needing_balancing_documents++;
+    for (const b of r.ledger.balancing) {
+      const t = (balancing[b.type] ??= { orders: 0, amount: 0 });
+      t.orders++; t.amount = Math.round((t.amount + b.amount) * 100) / 100;
+    }
   }
   const rows = results
     .filter(r => !r.skip)
     .filter(r => !body.only_issues || !r.ledger.balanced || r.ledger.balancing.some((b: any) => b.type !== 'return_fee_invoice'))
     .map(r => ({
-      order: r.order, balanced: r.ledger.balanced, net: r.ledger.net, opening: r.ledger.opening,
+      order: r.order, status: r.ledger.status, balanced: r.ledger.balanced, net: r.ledger.net, opening: r.ledger.opening,
       exceptions: r.ledger.exceptions, balancing: r.ledger.balancing, notes: r.notes,
     }));
-  return { cutoff, from, summary, next: page.hasNext ? page.cursor : null, orders: rows };
+  return { cutoff, from, summary, balancing, next, seconds: Math.round((Date.now() - started) / 1000), orders: rows };
 }
 
 // ── Gathering ─────────────────────────────────────────────────────────────────
 
-async function process(ctx: Ctx, orders: any[]) {
+type Shared = Awaited<ReturnType<typeof sharedInputs>>;
+
+// What every order in a run needs, read once per run.
+async function sharedInputs(ctx: Ctx) {
   const cutoff = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
   const sellerState = await setting(ctx.admin, 'seller_state', 'UP');
   const today = istDate(Date.now());
   const rp = await returnPrimeByOrder(ctx);
-  const ids = orders.map(o => Number(o.legacyResourceId));
-  const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on').in('order_id', ids);
-  const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r.delivered_on as string | null]));
   // The debits the ERP made to take back double store credit (store-credit-guard).
   const { data: rev } = await ctx.admin.from('store_credit_reversals').select('debit_transaction_id').eq('status', 'reversed');
   const reversalIds = (rev ?? []).map(r => String(r.debit_transaction_id)).filter(Boolean);
+  return { cutoff, sellerState, today, rp, reversalIds };
+}
+
+async function process(ctx: Ctx, orders: any[], shared?: Shared) {
+  const { cutoff, sellerState, today, rp, reversalIds } = shared ?? await sharedInputs(ctx);
+  const ids = orders.map(o => Number(o.legacyResourceId));
+  const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on').in('order_id', ids);
+  const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r.delivered_on as string | null]));
 
   // Unicommerce: the order, then its sale invoice and return invoices.
   const ucBy = new Map<number, RawInputs['uc']>();

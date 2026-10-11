@@ -163,10 +163,38 @@ How the facts are read:
   and shows as `awaiting_return` with how long the customer has been refunded.
 - **RTO:** orders tagged `rto_delivered`; the whole sale comes back.
 - **Not a sale:** cancelled before dispatch with no money moved (skipped and counted as `not_a_sale`).
+- `report` with `budget_s` (up to 100) keeps paging inside one call and reads Return Prime once; 352 orders take about 100 s.
 
-First live check (11 Oct, 25 orders updated since 1 Oct): 23 balanced, 1 not a sale (37740), 1 awaiting the returned
-parcel (37528: customer refunded 9 days ago, ₹1,550 open). The only documents the ERP must issue are the credit
-notes for goods on returns of orders from before 29 Sep (37599, 37613, 37665, 37692) and the ₹99 return fee invoices.
+**Order states.** Every order ends in one of these (`OrderLedger.status`):
+
+| Status | Meaning | Blocks the Tally export? |
+|---|---|---|
+| `complete` | nets to zero | no |
+| `open` (`in_transit`) | COD parcel shipped, not delivered yet; the amount is the receivable due on delivery. Reason says how many days; over 15 days is flagged for a courier check | no |
+| `open` (`awaiting_return`) | the customer is refunded, the parcel isn't back yet, so no credit note is due | no |
+| `attention` (`refund_due`) | parcel returned to origin and sale reversed, but the customer's payment was never refunded or credited | yes |
+| `attention` (`store_credit_differs`) | store credit issued ≠ goods returned less the fee: a double credit | yes |
+| `attention` (`unexplained_residual`, `bad_facts`) | a payment, return or credit is missing / the facts are inconsistent | yes |
+
+Orders cancelled before dispatch are `not a sale` and skipped.
+
+**Full run, 11 Oct 2026** (all 352 orders updated since 1 Oct, one call of 101 s, function v4):
+
+| | Orders |
+|---|---|
+| Complete | 279 |
+| Not a sale | 7 |
+| Open, COD in transit | 50 (₹82,517.20 due on delivery; 3 are over 15 days old: 37294 and 37378 are tagged `rto_initiated`, 37358 has no tag) |
+| Open, waiting for the returned parcel | 12 (₹15,489.45; the oldest refunded 9 days ago, 37528) |
+| Attention, refund due | 4: 37370 ₹1,259.10, 37535 ₹1,300, 37560 ₹1,629.10, 37586 ₹1,499 (₹5,687.20) |
+| Double store credit / unexplained | 0 |
+
+The four `refund_due` orders were returned to origin before the ERP handled RTOs (tag `rto_delivered`, so the stock
+sync treats them as baseline), are still `PAID` on Shopify and have no refund or store credit.
+
+Balancing documents the ERP has to issue for these orders: goods credit notes 40 orders ₹58,290.60 (no Unicommerce
+return invoice, or a short one), COD-charge credit notes 23 orders ₹2,300 (COD returns to origin), ₹99 return-fee
+invoices 16 orders ₹1,584.
 
 ## Still to build
 

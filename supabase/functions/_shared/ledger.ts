@@ -52,12 +52,18 @@ export type Entry = {
   memo: string;
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
-export type Exception = { type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'bad_facts'; amount: number; reason: string };
+export type Exception = {
+  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'refund_due' | 'bad_facts';
+  amount: number; reason: string;
+};
+// awaiting_return and in_transit are normal stages of an order that is not finished yet.
+const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit']);
 export type OrderLedger = {
   entries: Entry[]; exportable: Entry[]; balancing: Balancing[]; exceptions: Exception[];
   net: number;          // whole life; must be 0
   opening: number;      // control balance carried in from before the cutoff
   balanced: boolean;    // net is zero and no exceptions: safe to export
+  status: 'complete' | 'open' | 'attention';   // open = still travelling, attention = a person must look
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -88,7 +94,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   const parts = (goods: number, cod: number) => ({ g: split(goods, f.rate), c: split(cod, f.rate) });
 
   if (f.goods < 0 || f.codFee < 0 || !(f.rate >= 0)) {
-    return { entries, exportable: [], balancing, exceptions: [{ type: 'bad_facts', amount: 0, reason: 'negative amounts or rate' }], net: 0, opening: 0, balanced: false };
+    return { entries, exportable: [], balancing, exceptions: [{ type: 'bad_facts', amount: 0, reason: 'negative amounts or rate' }], net: 0, opening: 0, balanced: false, status: 'attention' };
   }
 
   // Sale invoice
@@ -189,11 +195,19 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       const days = Math.max(0, ...waiting.map(r => r.refundedOn && opts.today ? Math.round((Date.parse(opts.today) - Date.parse(r.refundedOn)) / 86_400_000) : 0));
       exceptions.push({ type: 'awaiting_return', amount: net,
         reason: `waiting for the returned parcel${days >= 1 ? ` (customer refunded ${days} day${days === 1 ? '' : 's'} ago)` : ''}; credit notes are issued once it is back` });
+    } else if (net < 0 && (f.returns ?? []).some(r => r.kind === 'rto')) {
+      // The parcel came back and the sale is reversed, but nothing was given back to the customer.
+      exceptions.push({ type: 'refund_due', amount: net, reason: `the parcel was returned to origin and the sale reversed, but ${Math.abs(net).toFixed(2)} the customer paid has not been refunded or credited` });
+    } else if (net > 0 && f.codFee > 0 && !(f.returns ?? []).length && !f.delivered) {
+      const days = opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.saleDate)) / 86_400_000)) : 0;
+      exceptions.push({ type: 'in_transit', amount: net, reason: `COD parcel not delivered yet, invoiced ${days} day${days === 1 ? '' : 's'} ago${days > 15 ? ' (long overdue: check with the courier)' : ''}` });
     } else {
       exceptions.push({ type: 'unexplained_residual', amount: net, reason: `the order is ${net > 0 ? 'owed' : 'over-settled'} by ${Math.abs(net).toFixed(2)}: a payment, return or credit is missing` });
     }
   }
   const exportable = entries.filter(e => e.date >= opts.cutoff);
   const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0));
-  return { entries, exportable, balancing, exceptions, net, opening, balanced: Math.abs(net) <= 0.01 && !exceptions.length };
+  const balanced = Math.abs(net) <= 0.01 && !exceptions.length;
+  const status = balanced ? 'complete' : exceptions.every(e => OPEN_STAGES.has(e.type)) ? 'open' : 'attention';
+  return { entries, exportable, balancing, exceptions, net, opening, balanced, status };
 }
