@@ -53,6 +53,16 @@ test('a prepaid parcel one day past its promise must be escalated; COD at one da
   assert.equal(shipmentsOfOrder(order(), inp('2026-10-13'))[0].escalation, null);
 });
 
+test('37800: fulfilled again with a new courier on 9 Oct, the note still holds the first booking\'s promise of 8 Oct → that promise is not this parcel\'s', () => {
+  const o = order({ name: '37800', paymentGatewayNames: ['Gokwik UPI'], transactions: [{ kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1600) }],
+    note: 'EDD: 2026-10-08 09:00:00 +0530',
+    fulfillments: [{ createdAt: '2026-10-09T16:50:58Z', displayStatus: 'IN_TRANSIT', deliveredAt: null, inTransitAt: '2026-10-10T05:32:48Z',
+      trackingInfo: [{ company: 'shadowfax', number: 'SF4186160480VEO' }], events: ev(['IN_TRANSIT', '2026-10-10T05:32:48Z']) }] });
+  const [s] = shipmentsOfOrder(o, inp('2026-10-11'));
+  assert.equal(s.edd, null); assert.equal(s.late_days, 0); assert.equal(s.escalation, null);       // dispatch + 7 days is 16 Oct
+  assert.equal(shipmentsOfOrder(o, inp('2026-10-17'))[0].late_days, 1);                            // …and it is late only after that
+});
+
 test('a prepaid parcel with no tracking movement for days is escalated before its date passes', () => {
   const o = order({ paymentGatewayNames: ['Gokwik UPI'], transactions: [{ kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1499) }], note: 'EDD: 2026-10-20 09:00:00 +0530' });
   const [s] = shipmentsOfOrder(o, inp('2026-10-16'));         // last event 11 Oct: five days quiet

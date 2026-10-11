@@ -157,6 +157,10 @@ export function shipmentsOfOrder(o: any, inp: Inputs): Shipment[] {
     const delivered = f.displayStatus === 'DELIVERED' || !!f.deliveredAt;
     const cancelled = !!o.cancelledAt;
     const kind: ShipmentKind = rtoState ? 'rto' : 'forward';
+    const dispatchedOn = istDay(f.createdAt ?? o.createdAt);
+    // An order that was fulfilled again (the first AWB cancelled, a new courier booked) keeps the note written for the
+    // first booking, so a promise dated before this parcel left is not this parcel's promise.
+    const promised = edd && edd >= dispatchedOn ? edd : null;
 
     const ds = String(f.displayStatus ?? '');
     let status: string, state: Shipment['state'] = 'pending', closedOn: string | null = null;
@@ -173,7 +177,7 @@ export function shipmentsOfOrder(o: any, inp: Inputs): Shipment[] {
       courier: t.company ?? null, tracking_url: `https://www.velocityshipping.in/track/${awb}`,
       payment_type: pay.type, order_total: total, cod_due: pay.codDue || null,
       city: o.shippingAddress?.city ?? null, pincode: o.shippingAddress?.zip ?? null,
-      dispatched_on: istDay(f.createdAt ?? o.createdAt), edd, rto_state: rtoState, rto_since: rtoSince,
+      dispatched_on: dispatchedOn, edd: promised, rto_state: rtoState, rto_since: rtoSince,
       status, raw_status: f.displayStatus ?? null, last_event_at: last, attempts, state, closed_on: closedOn,
       note: rtoState && state === 'pending' && rtoSince ? `RTO ${rtoState === 'initiated' ? 'initiated' : 'in transit'} since ${rtoSince}` : null,
     }, inp));

@@ -32,6 +32,7 @@ All thresholds are `app_settings` rows (days), editable without a deploy:
 | `shipment_lookback_days` | 150 | how far back the scan looks for pending parcels |
 | `shipment_watch_mode` | `off` → `live` | gates the schedule |
 
+- **A re-fulfilled order keeps the first booking's note.** Order 37800's first AWB (xpressbees) was cancelled on 5 Oct and a new one (shadowfax) booked on 9 Oct, but the note still said `EDD: 2026-10-08`. A promise dated before the parcel left is ignored (stored as not given) and the dispatch + `shipment_default_sla_days` fallback applies.
 - Days pending run from dispatch (the fulfilment date). A forward parcel and its RTO share one AWB, so the clock does not restart when the RTO begins. For a customer return the clock starts when the request was made. **Assumption to confirm with Velocity:** they may count the 45 days differently (e.g. from the pickup scan).
 - Payment type: `prepaid`, `cod`, or `partial` (an advance or store credit plus COD). For COD and part-paid parcels the screen shows how much cash is to be collected.
 - Return Prime's flags (`approved`, `archived`, `rejected`, `received`) are objects, `{ status: boolean, ... }`. `archived` does NOT mean closed (it is set once the refund is paid while the parcel may still be travelling); a return is finished when received, rejected, or its shipment status says so.
@@ -44,7 +45,7 @@ The screen reads `shipments` directly (RLS: signed-in users read). Views `?sview
 
 ## First reading, 11 Oct 2026
 
-133 pending parcels: 63 forward, 20 RTO, 50 customer returns. Escalate now: 11 prepaid forward parcels, all truly past their promised date (7 of them old stuck parcels, 33 days on average). Consider: 5 COD / part-paid. Credit note eligible (45+ days): 25 (2 forward, 4 RTO, 19 returns). Three old orders are untracked.
+133 pending parcels: 63 forward, 20 RTO, 50 customer returns. Escalate now: 10 prepaid forward parcels, all truly past their promised date (two are months old: 33966 at 135 days and 35868 at 75 days, both still showing "out for delivery"). Consider: 5 COD / part-paid. Credit note eligible (45+ days): 25 (2 forward, 4 RTO, 19 returns). Three old orders are untracked.
 
 ## The ledger and RTOs in progress
 

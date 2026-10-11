@@ -1,4 +1,4 @@
-// shipment-watch v2
+// shipment-watch v3
 // Follows every parcel the business is waiting on and stores it in `shipments` (migration 020):
 //   forward parcels not delivered, parcels coming back to origin (RTO), and customer returns on their way.
 // Sources: Shopify (Velocity writes its tracking on the fulfilment and its promise and RTO state in the order
