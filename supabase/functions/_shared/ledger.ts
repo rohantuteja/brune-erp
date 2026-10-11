@@ -31,6 +31,7 @@ export type Facts = {
   saleDate: string;               // sale invoice date (the order date when no invoice exists)
   saleDoc?: string;               // Unicommerce sale invoice number
   delivered?: { date: string; amount: number; estimated?: boolean };   // courier collected this COD amount (estimated: the date is a guess)
+  rtoOnTheWay?: { state: 'initiated' | 'in_transit'; since?: string };   // the courier is bringing the parcel back (not there yet)
   remitted?: { date: string; amount: number; utr: string }; // the courier paid that COD money into the bank (UTR)
   payments?: Array<{ date: string; amount: number; ref: string }>;   // prepaid money settled by the gateway
   storeCreditUsed?: Array<{ date: string; amount: number }>;         // store credit spent at checkout
@@ -55,11 +56,11 @@ export type Entry = {
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
 export type Exception = {
-  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'bad_facts';
+  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'bad_facts';
   amount: number; reason: string;
 };
 // awaiting_return and in_transit are normal stages of an order that is not finished yet.
-const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit']);
+const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit', 'rto_on_the_way']);
 export type OrderLedger = {
   entries: Entry[]; exportable: Entry[]; balancing: Balancing[]; exceptions: Exception[];
   net: number;          // whole life; must be 0
@@ -235,6 +236,11 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     } else if (net < 0 && (f.returns ?? []).some(r => r.kind === 'rto')) {
       // The parcel came back and the sale is reversed, but nothing was given back to the customer.
       exceptions.push({ type: 'refund_due', amount: net, reason: `the parcel was returned to origin and the sale reversed, but the customer's payment of ${Math.abs(net).toFixed(2)} has not been refunded or credited` });
+    } else if (net > 0 && f.rtoOnTheWay && !(f.returns ?? []).length && !f.delivered) {
+      // Never delivered and on its way back: nothing will be collected. It ends as a return to origin.
+      const days = f.rtoOnTheWay.since && opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.rtoOnTheWay.since)) / 86_400_000)) : 0;
+      exceptions.push({ type: 'rto_on_the_way', amount: net,
+        reason: `returning to origin (${f.rtoOnTheWay.state === 'initiated' ? 'RTO initiated' : 'RTO in transit'}${f.rtoOnTheWay.since ? ` ${days} day${days === 1 ? '' : 's'} ago` : ''}); the sale is reversed when the parcel is back` });
     } else if (net > 0 && f.codFee > 0 && !(f.returns ?? []).length && !f.delivered) {
       const days = opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.saleDate)) / 86_400_000)) : 0;
       exceptions.push({ type: 'in_transit', amount: net, reason: `COD parcel not delivered yet, invoiced ${days} day${days === 1 ? '' : 's'} ago${days > 15 ? ' (long overdue: check with the courier)' : ''}` });

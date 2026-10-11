@@ -6,6 +6,7 @@ const TABS = [
   { name: 'WIP Value',          slug: 'wip' },
   { name: 'Pending COD',        slug: 'pending-cod' },
   { name: 'Returns',            slug: 'returns' },
+  { name: 'Shipments',          slug: 'shipments' },
   { name: 'Ledger',             slug: 'ledger' },
   { name: 'Stock Health',       slug: 'stock-health' },
   { name: 'Production',         slug: 'production' },

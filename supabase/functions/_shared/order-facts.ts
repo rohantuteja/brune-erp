@@ -12,6 +12,7 @@
 //   Velocity     the delivery date of COD parcels (via cod_deliveries or its API).
 
 import type { Facts } from './ledger.ts';
+import { parseNote } from './shipments.ts';
 
 type Return = NonNullable<Facts['returns']>[number];
 
@@ -115,7 +116,11 @@ export function buildFacts(inp: RawInputs): Built {
     .map(t => ({ date: istDate(t.processedAt), amount: money(t.amountSet) }));
 
   const owedInCash = r2(goods + codFee - sum(payments.map(p => p.amount)) - sum(storeCreditUsed.map(s => s.amount)));
-  const isRto = tags.includes('rto_delivered');
+  // Velocity writes "RTO Initiated / In Transit / Delivered on <date>" in the order note and does not always tag the
+  // order. The tag still counts; so does a note that says the parcel is back.
+  const noteRto = parseNote(o.note).rto;
+  const isRto = tags.includes('rto_delivered') || noteRto?.state === 'delivered';
+  const rtoOnTheWay = !isRto && (noteRto && noteRto.state !== 'delivered' ? noteRto : tags.includes('rto_initiated') ? { state: 'initiated' as const, on: '' } : null);
   let delivered: Facts['delivered'];
   if (owedInCash > 0.005 && !isRto) {
     const codTx = txs.find(t => succeeded(t) && isCodGateway(t.gateway));
@@ -228,6 +233,7 @@ export function buildFacts(inp: RawInputs): Built {
   return {
     facts: {
       order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, delivered, payments, storeCreditUsed, returns,
+      rtoOnTheWay: rtoOnTheWay ? { state: rtoOnTheWay.state, since: rtoOnTheWay.on || undefined } : undefined,
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
       approved: (inp.adjustments ?? []).map(a => ({ kind: a.kind, amount: Number(a.amount), reason: a.reason, by: a.approved_by })),
     },

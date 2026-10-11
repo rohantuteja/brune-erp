@@ -327,3 +327,22 @@ test('a guessed delivery date is marked as an estimate', () => {
   const b = buildFacts(codRaw({ codDeliveredOn: null }));
   assert.equal(b.facts.delivered?.estimated, true);
 });
+
+// ── Velocity's note says the parcel is coming back, with no RTO tag ──────────────────────────
+test('37762: note says RTO In Transit, no tag → the ledger sees a COD parcel returning, not one still on its way to the customer', () => {
+  const b = buildFacts(codRaw({ codDeliveredOn: null, shopify: { ...codRaw().shopify, name: '37762', tags: ['COD', 'GoKwik'], note: 'RTO In Transit on 2026-10-11 00:13:06', transactions: [] } }));
+  assert.deepEqual(b.facts.rtoOnTheWay, { state: 'in_transit', since: '2026-10-11' });
+  assert.equal(b.facts.delivered, undefined);
+  const l = ledger(b);
+  assert.equal(l.exceptions[0].type, 'rto_on_the_way'); assert.equal(l.status, 'open');
+});
+
+test('a note that says RTO Delivered counts as the parcel being back even if the tag is missing', () => {
+  const b = buildFacts(codRaw({ codDeliveredOn: null, shopify: { ...codRaw().shopify, name: 'R9', tags: [], note: 'RTO Delivered on 2026-10-03 16:04:38', transactions: [] } }));
+  assert.equal(b.facts.returns?.[0].kind, 'rto'); assert.equal(b.facts.rtoOnTheWay, undefined);
+});
+
+test('the RTO tag alone, without a note, still means the parcel is on its way back', () => {
+  const b = buildFacts(codRaw({ codDeliveredOn: null, shopify: { ...codRaw().shopify, tags: ['rto_initiated'], note: null, transactions: [] } }));
+  assert.equal(b.facts.rtoOnTheWay?.state, 'initiated');
+});

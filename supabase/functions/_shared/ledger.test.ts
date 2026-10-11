@@ -240,3 +240,22 @@ test('a COD return to origin has no delivery, so nothing to remit and nothing ov
   const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-30' });
   assert.equal(l.status, 'complete'); assert.equal(l.codOpen, 0);
 });
+
+// ── Parcels coming back to origin, not there yet (Velocity's note: RTO Initiated / In Transit) ──
+test('37762: COD parcel on its way back is "returning to origin", an open stage, not "COD in transit"', () => {
+  const f: Facts = { ...base, order: '37762', goods: 1399, codFee: 100, saleDate: '2026-10-02', rtoOnTheWay: { state: 'in_transit', since: '2026-10-11' } };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.exceptions[0].type, 'rto_on_the_way'); assert.equal(l.status, 'open');
+  assert.match(l.exceptions[0].reason, /RTO in transit 1 day ago/);
+});
+
+test('an RTO that was only just initiated says so', () => {
+  const f: Facts = { ...base, order: 'R2', goods: 1399, codFee: 100, saleDate: '2026-10-02', rtoOnTheWay: { state: 'initiated', since: '2026-10-10' } };
+  assert.match(buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-12' }).exceptions[0].reason, /RTO initiated 2 days ago/);
+});
+
+test('a prepaid parcel coming back nets to zero for now: the refund is due once it is back', () => {
+  const f: Facts = { ...base, order: 'R3', goods: 1499, codFee: 0, saleDate: '2026-10-02', payments: [{ date: '2026-10-02', amount: 1499, ref: 'p' }], rtoOnTheWay: { state: 'in_transit', since: '2026-10-10' } };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.equal(l.net, 0); assert.equal(l.status, 'complete');
+});

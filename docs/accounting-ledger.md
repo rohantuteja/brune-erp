@@ -299,6 +299,16 @@ would be missing. Checked every COD order created since 10 Sep that Shopify has 
 October remittance is in the ledger. Widened back to 1 Aug (442 orders, ₹6,26,839): 441 paid out before October, and one
 COD parcel never delivered, order 36354 (₹1,539.10, created 10 Aug, fulfilled, no RTO tag): chase Velocity.
 
+## RTOs in progress (Velocity's order note)
+
+Velocity does not always tag an RTO order; it writes `RTO Initiated / In Transit / Delivered on <ts>` in the Shopify
+order note. The facts builder reads that note (`parseNote`, shared with the shipments screen, `docs/shipments.md`).
+A COD order that was never delivered and is coming back is the open stage `rto_on_the_way` ("returning to origin; the
+sale is reversed when the parcel is back"), not `in_transit`; the credit notes follow once `RTO Delivered` appears.
+After the resync of 11 Oct 2026: 15 orders `rto_on_the_way` (₹24,956.20 owed on the sale side), 35 `in_transit` (it
+was 50), debits equal credits at ₹11,68,025.75. A prepaid RTO nets to zero while it travels and stays `complete` until
+the return documents are due; the Shipments screen lists it.
+
 ## Still to build
 
 1. **Control-ledger report**: done (stored ledger and Analytics → Ledger above). Still to do: orders delivered with
