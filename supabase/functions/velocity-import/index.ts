@@ -1,4 +1,4 @@
-// velocity-import v2
+// velocity-import v3
 // Takes Velocity's wallet Ledger Report (.csv, from the Velocity dashboard) or a monthly tax invoice (.pdf), checks that it
 // adds up, stores the LINES (never the file), and reconciles the wallet: top-ups against the bank, each month's charges against
 // its invoice, balances month to month. Admins only (an admin's login, or the project's internal x-cron-key, which the
@@ -232,13 +232,17 @@ async function reconcile(admin: any) {
   const bankIds = (accts ?? []).map((a: any) => a.id);
   const { data: stmts } = bankIds.length ? await admin.from('finance_statements').select('period_from, period_to').in('account_id', bankIds) : { data: [] };
   const { data: cand } = bankIds.length
-    ? await admin.from('finance_lines').select('id, txn_date, debit, remarks').in('account_id', bankIds).gt('debit', 0).or('remarks.ilike.%shipfast%,remarks.ilike.%.cf@%,remarks.ilike.%velocity%')
+    ? await admin.from('finance_lines').select('id, txn_date, debit, remarks, bucket, kind').in('account_id', bankIds).gt('debit', 0)
+        .or('remarks.ilike.%shipfast%,remarks.ilike.%.cf@%,remarks.ilike.%velocity%,remarks.ilike.%fast@cashf%,bucket.eq."Velocity wallet recharge"')
     : { data: [] };
-  const matched = matchTopUps(topups, (cand ?? []).filter((c: any) => VELOCITY_HANDLE.test(c.remarks)).map((c: any) => ({ id: c.id, date: c.txn_date, amount: Number(c.debit), remarks: c.remarks })));
-  const dateOf = new Map((cand ?? []).map((c: any) => [c.id, c.txn_date]));
+  // A bank line counts if its payee is a Velocity handle OR a person filed it under the wallet recharge bucket (a handle not seen before).
+  const isFiled = (c: any) => c.bucket === 'Velocity wallet recharge';
+  const matched = matchTopUps(topups, (cand ?? []).filter((c: any) => VELOCITY_HANDLE.test(c.remarks) || isFiled(c)).map((c: any) => ({ id: c.id, date: c.txn_date, amount: Number(c.debit), remarks: c.remarks, filed: isFiled(c) })));
+  const byId = new Map((cand ?? []).map((c: any) => [c.id, c]));
   const outTopups = topups.map(t => ({
     key: t.key, at: t.at, date: t.date, amount: t.amount,
-    bank_line_id: matched.get(t.key) ?? null, bank_date: matched.has(t.key) ? dateOf.get(matched.get(t.key)!) ?? null : null,
+    bank_line_id: matched.get(t.key) ?? null, bank_date: matched.has(t.key) ? byId.get(matched.get(t.key)!)?.txn_date ?? null : null,
+    by_hand: matched.has(t.key) && byId.get(matched.get(t.key)!)?.kind === 'manual',
     bank_statement_covers: (stmts ?? []).some((s: any) => s.period_from <= t.date && t.date <= s.period_to),
   }));
 

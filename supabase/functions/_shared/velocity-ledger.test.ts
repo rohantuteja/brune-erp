@@ -111,7 +111,7 @@ test('a month of ledger lines is compared with the invoice before GST; every way
 });
 
 test('the Velocity payee is recognised under each handle seen on the bank statement', () => {
-  for (const r of ['UPI/1/UPI Pay/shipfast.cf@axi//ICI1', 'UPI/2/UPI Pay/cf.shipfast@cas//ICI2', 'UPI/3/UPI Pay/XXt.cf@axisban//ICI3', 'UPI/4/velocity/XXt.cf@axisban//ICI4']) assert.ok(VELOCITY_HANDLE.test(r), r);
+  for (const r of ['UPI/1/UPI Pay/shipfast.cf@axi//ICI1', 'UPI/2/UPI Pay/cf.shipfast@cas//ICI2', 'UPI/3/UPI Pay/XXt.cf@axisban//ICI3', 'UPI/4/velocity/XXt.cf@axisban//ICI4', 'UPI/6/UPI Pay/XXfast@cashfre//ICI6']) assert.ok(VELOCITY_HANDLE.test(r), r);
   assert.ok(!VELOCITY_HANDLE.test('UPI/5/UPI Pay/someone@ybl//ICI5'));
 });
 
@@ -128,4 +128,13 @@ test('each wallet top-up is matched to the bank payment that funded it, one bank
   assert.equal(m.has('C'), false);      // no bank payment that day: paid from somewhere else
   assert.equal(m.has('D'), false);      // the only nearby payment is not to a Velocity handle
   assert.equal(m.has('E'), false);      // bank line 1 already served top-up A
+});
+
+test('a bank line a person filed as a wallet recharge counts as the payment that funded the top-up, whatever its payee looks like', () => {
+  const top = { key: 'T', at: '2026-09-17 10:25:08', date: '2026-09-17', amount: 10000 };
+  const odd = { id: 9, date: '2026-09-17', amount: 10000, remarks: 'UPI/1/UPI Pay/someone.else@bank//ICI1' };
+  assert.equal(matchTopUps([top], [odd]).has('T'), false);                           // an unknown payee on its own is not enough
+  assert.equal(matchTopUps([top], [{ ...odd, filed: true }]).get('T'), 9);            // but filed there by a person it is
+  assert.equal(matchTopUps([top], [{ ...odd, filed: true, amount: 9000 }]).has('T'), false);   // the amount must still agree
+  assert.equal(matchTopUps([top], [{ ...odd, filed: true, date: '2026-09-20' }]).has('T'), false);   // and the date
 });
