@@ -1,4 +1,4 @@
-// velocity-import v1
+// velocity-import v2
 // Takes Velocity's wallet Ledger Report (.csv, from the Velocity dashboard) or a monthly tax invoice (.pdf), checks that it
 // adds up, stores the LINES (never the file), and reconciles the wallet: top-ups against the bank, each month's charges against
 // its invoice, balances month to month. Admins only (an admin's login, or the project's internal x-cron-key, which the
@@ -100,12 +100,15 @@ async function uploadLedger(admin: any, user: { id?: string; name: string }, bod
   }
   if (!before?.[0] && !after?.[0]) checks.push({ id: 'continues_earlier', ok: true, detail: 'no other ledger stored yet to compare with' });
 
-  const keys = parsed.lines.map(l => l.key);
+  // Lines already stored (an earlier, overlapping report) are kept as they are. Asked for by date range, a page at a time:
+  // asking by key put hundreds of long keys in the web address, which the database refuses ("Bad Request") on a real month.
   const have = new Set<string>();
-  for (let i = 0; i < keys.length; i += CHUNK) {
-    const { data, error } = await admin.from('velocity_wallet_lines').select('line_key').in('line_key', keys.slice(i, i + CHUNK));
-    if (error) throw new Error(error.message);
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin.from('velocity_wallet_lines').select('line_key')
+      .gte('txn_date', parsed.period_from).lte('txn_date', parsed.period_to).order('id').range(from, from + 999);
+    if (error) throw new Error(`checking the lines already stored: ${error.message}`);
     for (const r of data ?? []) have.add(r.line_key);
+    if (!data || data.length < 1000) break;
   }
   const fresh = parsed.lines.filter(l => !have.has(l.key));
 
