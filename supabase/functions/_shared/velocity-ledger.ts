@@ -128,21 +128,22 @@ export function balanceCheck(lines: WalletLine[]): { check: Check; opening: numb
 }
 
 // ── Top-ups against the bank ─────────────────────────────────────────────────────────────────
-/** The payee Velocity's top-ups go to on the bank statement (three Cashfree handles seen: shipfast.cf, cf.shipfast, a masked "…t.cf"). */
-export const VELOCITY_HANDLE = /shipfast|\.cf@|velocity/i;
+/** The payee Velocity's top-ups go to on the bank statement (four Cashfree handles seen: shipfast.cf, cf.shipfast, a masked "…t.cf", a masked "…fast@cashfre"). */
+export const VELOCITY_HANDLE = /shipfast|\.cf@|velocity|fast@cashf/i;
 
 export type TopUp = { key: string; at: string; date: string; amount: number };
-export type BankDebit = { id: number; date: string; amount: number; remarks: string };
+// `filed`: a person filed this bank line under the Velocity wallet recharge bucket, so it counts whatever the payee looks like.
+export type BankDebit = { id: number; date: string; amount: number; remarks: string; filed?: boolean };
 
 const dayNum = (d: string) => Math.round(Date.parse(`${d}T00:00:00Z`) / 86_400_000);
 
-/** Each wallet top-up against the bank payment that funded it: same amount, within a day, to a Velocity handle; one bank line serves one top-up. */
+/** Each wallet top-up against the bank payment that funded it: same amount, within a day, to a Velocity handle or filed there by a person; one bank line serves one top-up. */
 export function matchTopUps(topups: TopUp[], bank: BankDebit[], tolDays = 1): Map<string, number> {
   const out = new Map<string, number>();
   const used = new Set<number>();
   for (const t of [...topups].sort((a, b) => a.at.localeCompare(b.at))) {
     const hit = bank
-      .filter(b => !used.has(b.id) && Math.abs(b.amount - t.amount) <= 0.011 && VELOCITY_HANDLE.test(b.remarks) && Math.abs(dayNum(b.date) - dayNum(t.date)) <= tolDays)
+      .filter(b => !used.has(b.id) && Math.abs(b.amount - t.amount) <= 0.011 && (b.filed || VELOCITY_HANDLE.test(b.remarks)) && Math.abs(dayNum(b.date) - dayNum(t.date)) <= tolDays)
       .sort((a, b) => Math.abs(dayNum(a.date) - dayNum(t.date)) - Math.abs(dayNum(b.date) - dayNum(t.date)))[0];
     if (hit) { out.set(t.key, hit.id); used.add(hit.id); }
   }

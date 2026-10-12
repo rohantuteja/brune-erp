@@ -157,7 +157,7 @@ function TopupTable({ topups }) {
             <span className="mt-0.5 shrink-0">{icon[st]}</span>
             <span className="w-16 shrink-0 text-stone-700">{fmtDate(t.date)}</span>
             <span className="w-24 shrink-0 tabular-nums text-stone-900">{inr(t.amount)}</span>
-            <span className={st === 'not_in_bank' ? 'text-amber-800' : 'text-stone-500'}>{st === 'matched' ? `Bank payment on ${fmtDate(t.bank_date)}` : TOPUP_STATUS_TEXT[st]}</span>
+            <span className={st === 'not_in_bank' ? 'text-amber-800' : 'text-stone-500'}>{st === 'matched' ? `Bank payment on ${fmtDate(t.bank_date)}${t.by_hand ? ' (matched by you)' : ''}` : TOPUP_STATUS_TEXT[st]}</span>
           </div>
         );
       })}
