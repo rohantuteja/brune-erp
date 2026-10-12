@@ -4,16 +4,11 @@ const TABS = [
   { name: 'Inventory Value',    slug: 'inventory-value' },
   { name: 'Shopify Stock Value',slug: 'shopify-stock' },
   { name: 'WIP Value',          slug: 'wip' },
-  { name: 'Pending COD',        slug: 'pending-cod' },
-  { name: 'Returns',            slug: 'returns' },
   { name: 'Shipments',          slug: 'shipments' },
   { name: 'Ledger',             slug: 'ledger' },
-  { name: 'Stock Health',       slug: 'stock-health' },
   { name: 'Production',         slug: 'production' },
-  { name: 'Costing',            slug: 'costing' },
-  { name: 'Pipeline',           slug: 'pipeline' },
-  { name: 'Fabric Usage',       slug: 'fabric-usage' },
 ];
+// Bank & card and Velocity wallet are admin-only, so they are not in this list (the test user may not be an admin).
 
 test.describe('Analytics URL routing', () => {
 
@@ -45,23 +40,21 @@ test.describe('Analytics URL routing', () => {
     await expect(page.getByText(/2026-01-01.*2026-03-31/)).toBeVisible({ timeout: 8000 });
   });
 
-  test('T4: Returns — ?month pre-selects the month dropdown', async ({ page }) => {
-    await page.goto('/analytics/returns?month=2025-11');
-
-    // Month select should show November 2025
-    const select = page.locator('select').filter({ hasText: /November 2025|2025-11/ });
-    await expect(select).toBeVisible({ timeout: 8000 });
-    await expect(select).toHaveValue('2025-11');
+  test('T4: a tab that was removed (an old bookmark) opens Inventory Value', async ({ page }) => {
+    for (const old of ['returns', 'pending-cod', 'stock-health', 'costing', 'pipeline', 'fabric-usage']) {
+      await page.goto(`/analytics/${old}`);
+      await expect(page).toHaveURL(/\/analytics\/inventory-value/);
+    }
   });
 
-  test('T5: no filter bleed — Inventory Value date params gone after switching to Returns', async ({ page }) => {
+  test('T5: no filter bleed — Inventory Value date params gone after switching to Shipments', async ({ page }) => {
     await page.goto('/analytics/inventory-value?from=2026-01-01&to=2026-03-31');
 
-    // Switch to Returns tab
-    await page.getByText('Returns', { exact: true }).first().click();
-    await expect(page).toHaveURL(/\/analytics\/returns/);
+    // Switch to Shipments tab
+    await page.getByText('Shipments', { exact: true }).first().click();
+    await expect(page).toHaveURL(/\/analytics\/shipments/);
 
-    // from/to params must not bleed into Returns URL
+    // from/to params must not bleed into the Shipments URL
     const url = page.url();
     expect(url).not.toContain('from=');
     expect(url).not.toContain('to=');
@@ -72,9 +65,9 @@ test.describe('Analytics URL routing', () => {
     await page.goto('/analytics/inventory-value?from=2026-01-01&to=2026-03-31');
     await expect(page).toHaveURL(/inventory-value\?from=2026-01-01&to=2026-03-31/);
 
-    // Navigate to Returns with a month filter
-    await page.goto('/analytics/returns?month=2025-11');
-    await expect(page).toHaveURL(/returns\?month=2025-11/);
+    // Navigate to the Ledger with a status filter
+    await page.goto('/analytics/ledger?lstatus=attention');
+    await expect(page).toHaveURL(/ledger\?lstatus=attention/);
 
     // Go back
     await page.goBack();
@@ -82,7 +75,7 @@ test.describe('Analytics URL routing', () => {
 
     // Go forward
     await page.goForward();
-    await expect(page).toHaveURL(/returns\?month=2025-11/);
+    await expect(page).toHaveURL(/ledger\?lstatus=attention/);
   });
 
   test('T7: reload restores active tab and filters', async ({ page }) => {
@@ -133,8 +126,8 @@ test.describe('Analytics URL routing', () => {
     await page.goto('/analytics/production?from=2026-07-01&to=2026-07-31');
     await expect(page).toHaveURL(/from=2026-07-01/);
 
-    await page.getByText('Returns', { exact: true }).first().click();
-    await expect(page).toHaveURL(/\/analytics\/returns/);
+    await page.getByText('Shipments', { exact: true }).first().click();
+    await expect(page).toHaveURL(/\/analytics\/shipments/);
     const url = page.url();
     expect(url).not.toContain('from=');
     expect(url).not.toContain('to=');
