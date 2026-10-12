@@ -151,8 +151,19 @@ Both start in dry mode and write what they would do to `cod_deliveries` / `store
 `report` (`{from, limit, after, only_issues}`, paged by Shopify order update time; `next` is the cursor).
 How the facts are read:
 
-- **Sale:** Unicommerce's sale invoice when one exists (amounts, COD charge, tax type, date, number); orders from before
+- **Sale:** Unicommerce's sale invoice when one exists (amounts, COD charge, tax type, number); orders from before
   29 Sep, or whose Unicommerce copy was cancelled, use Shopify's amounts (note: GST rate assumed 5%).
+- **Which day the sale is booked on: the Shopify order date (IST), for every order** (decided 13 Oct 2026). September was
+  filed from Shopify's sales report, which counts an order on the day it was placed, and the books must follow the same
+  rule as the returns filed from them. Unicommerce creates its invoice when the parcel is packed, which can be the next
+  day or month (orders 37712 and 37716-37729 were placed on 30 Sep and invoiced on 1 Oct: booked on the invoice date they
+  would have been counted in both September's return and October's). The Unicommerce invoice keeps its number, amounts
+  and GST; its own date is stored as `facts.invoiceDate`, a note says so when it falls in a later month, and the
+  "invoiced N days ago" wording for COD parcels in transit still counts from it. Returns keep using the date of
+  Unicommerce's return invoice (the credit note). A sale dated before `accounting_start_date` is September's: it is not
+  exported, and what the order does afterwards (delivery, remittance, credit note) is October's, like order 37711.
+  Strictly, GST ties the supply of goods to the invoice / dispatch date; the order date is the rule the owner's
+  accountant already files on, and it only moves a sale between months at month ends.
 - **Settlement:** prepaid payments from Shopify transactions, store credit spent at checkout, and for COD the courier
   collection on the delivery date (`cod_deliveries`, else Velocity, else the Shopify payment date).
 - **Customer return** (one per Return Prime request that refunded something): goods returned from Shopify's refund

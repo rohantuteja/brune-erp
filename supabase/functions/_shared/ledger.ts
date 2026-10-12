@@ -28,7 +28,8 @@ export type Facts = {
   igst: boolean;                  // inter-state: IGST; otherwise CGST + SGST
   goods: number;                  // goods on the sale invoice, after discounts, tax-inclusive
   codFee: number;                 // COD charge on the sale invoice, tax-inclusive (0 if none)
-  saleDate: string;               // sale invoice date (the order date when no invoice exists)
+  saleDate: string;               // the day the sale is booked: the Shopify order date (IST)
+  invoiceDate?: string;           // the Unicommerce sale invoice's own date (absent when no invoice exists); the sale is NOT booked on it
   saleDoc?: string;               // Unicommerce sale invoice number
   delivered?: { date: string; amount: number; estimated?: boolean };   // courier collected this COD amount (estimated: the date is a guess)
   rtoOnTheWay?: { state: 'initiated' | 'in_transit'; since?: string };   // the courier is bringing the parcel back (not there yet)
@@ -242,7 +243,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       exceptions.push({ type: 'rto_on_the_way', amount: net,
         reason: `returning to origin (${f.rtoOnTheWay.state === 'initiated' ? 'RTO initiated' : 'RTO in transit'}${f.rtoOnTheWay.since ? ` ${days} day${days === 1 ? '' : 's'} ago` : ''}); the sale is reversed when the parcel is back` });
     } else if (net > 0 && f.codFee > 0 && !(f.returns ?? []).length && !f.delivered) {
-      const days = opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.saleDate)) / 86_400_000)) : 0;
+      const days = opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.invoiceDate ?? f.saleDate)) / 86_400_000)) : 0;   // counted from the invoice (dispatch), not the order
       exceptions.push({ type: 'in_transit', amount: net, reason: `COD parcel not delivered yet, invoiced ${days} day${days === 1 ? '' : 's'} ago${days > 15 ? ' (long overdue: check with the courier)' : ''}` });
     } else {
       exceptions.push({ type: 'unexplained_residual', amount: net, reason: `the order is ${net > 0 ? 'owed' : 'over-settled'} by ${Math.abs(net).toFixed(2)}: a payment, return or credit is missing` });
