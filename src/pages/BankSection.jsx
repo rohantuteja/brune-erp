@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import { callFunction } from '../lib/edgeCall';
 import { sortRows, clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { effectiveRange, statusCounts, payeeGroups, bucketTotals, signed, toBase64 } from '../lib/financeView';
 import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pills, EmptyState, downloadCsv, useUrlParams, wideScreen } from '../components/AnalyticsKit';
@@ -65,17 +66,7 @@ const SORT_KEY = {
   amount: l => Math.abs(signed(l)),
 };
 
-async function callImport(body) {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('You are signed out. Sign in again and retry.');
-  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/finance-import`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  return { ok: res.ok, json };
-}
+const callImport = (body) => callFunction('finance-import', body);
 
 /** Run a filing function over any number of lines, 1000 at a time. */
 async function inChunks(rpc, ids, extra = {}) {

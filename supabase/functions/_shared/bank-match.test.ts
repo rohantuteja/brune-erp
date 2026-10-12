@@ -139,3 +139,18 @@ test('bucket names are unique, and a rule that points at an unknown bucket is ig
   const m = one(bank('2026-10-02', 'UPI/1/UPI Pay/x@ybl//I', { debit: 1 }), ctx);
   assert.equal(m.status, 'needs_review'); assert.equal(m.bucket, null);
 });
+
+test('a payment to a Velocity wallet handle is proved by the wallet ledger: same amount, within a day, one payment per top-up', () => {
+  const topup = (key: string, at: string) => ({ key, at, date: at.slice(0, 10), amount: 10000 });
+  const ctx: Ctx = { ...empty, topups: [topup('t1', '2026-09-07 05:26:00'), topup('t2', '2026-09-12 04:50:00')] };
+  const a = bank('2026-09-07', 'UPI/1/UPI Pay/shipfast.cf@axi//ICI1', { debit: 10000 });
+  const b = bank('2026-09-12', 'UPI/2/UPI Pay/XXt.cf@axisban//ICI2', { debit: 10000 });
+  const again = bank('2026-09-12', 'UPI/3/UPI Pay/cf.shipfast@cas//ICI3', { debit: 10000 });   // a second payment, no second top-up
+  const m = classify([a, b, again], ctx);
+  assert.deepEqual([m.get(a.key)!.status, m.get(a.key)!.kind, m.get(a.key)!.bucket, m.get(a.key)!.match_ref], ['matched', 'velocity_recharge', 'Velocity wallet recharge', 'Wallet recharge 2026-09-07 05:26:00']);
+  assert.equal(m.get(b.key)!.status, 'matched');
+  assert.equal(m.get(again.key)!.status, 'suggested');     // looks like a top-up, nothing proves it yet
+  assert.equal(m.get(again.key)!.bucket, 'Velocity wallet recharge');
+  // another payee for the same amount is not taken for a top-up
+  assert.equal(one(bank('2026-09-07', 'UPI/4/UPI Pay/someone@ybl//ICI4', { debit: 10000 }), ctx).kind, 'unknown');
+});
