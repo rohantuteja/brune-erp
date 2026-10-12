@@ -4,6 +4,7 @@ import { callFunction } from '../lib/edgeCall';
 import { sortRows, clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { effectiveRange, statusCounts, payeeGroups, bucketTotals, signed, toBase64 } from '../lib/financeView';
 import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pills, EmptyState, downloadCsv, useUrlParams, wideScreen } from '../components/AnalyticsKit';
+import { useDeleteFlow, DeleteButton, DeletionLog } from '../components/UploadDelete';
 import { RefreshCw, Upload, FileSpreadsheet, Search, X, Download, Info, Landmark, Tags, ListChecks, CheckCircle2, AlertCircle, Undo2, Check } from 'lucide-react';
 
 // Analytics → Bank & card (admin only). Upload the bank statement (Excel), the credit card statement (PDF) and GoKwik's
@@ -198,9 +199,10 @@ function UploadPanel({ accounts, onDone }) {
 const matchingLine = (m) => m ? `Matching now: ${m.matched} matched, ${m.suggested} suggested, ${m.needs_review} need review, ${m.ignored} need no entry.` : null;
 
 // ── Statements already uploaded ─────────────────────────────────────────────────────────────────
-function StatementsList({ statements, accountName, gokwik }) {
+function StatementsList({ statements, accountName, gokwik, gokwikReports, flow, onDeleteStatement, onDeleteGokwik, logKey }) {
   return (
     <div className="space-y-3">
+      {flow.panel}
       {statements.length === 0 ? <div className="text-xs text-stone-500">No statement uploaded yet.</div> : (
         <div className="overflow-x-auto -mx-1">
           <table className="w-full min-w-[640px] text-xs">
@@ -214,7 +216,7 @@ function StatementsList({ statements, accountName, gokwik }) {
                 const bad = (s.checks || []).filter(c => !c.ok).length;
                 return (
                   <tr key={s.id} className="border-b border-stone-100 align-top">
-                    <td className="py-1.5 px-2"><div className="text-stone-900">{accountName(s.account_id)}</div><div className="text-[11px] text-stone-500 truncate max-w-[14rem]" title={s.filename}>{s.filename}</div></td>
+                    <td className="py-1.5 px-2"><div className="text-stone-900">{accountName(s.account_id)}</div><div className="text-[11px] text-stone-500 truncate max-w-[14rem]" title={s.filename}>{s.filename}</div><div className="mt-1 -ml-2"><DeleteButton onClick={() => onDeleteStatement(s)} disabled={flow.busy} /></div></td>
                     <td className="py-1.5 px-2 whitespace-nowrap text-stone-600">{fmtDate(s.period_from)} – {fmtDate(s.period_to)}</td>
                     <td className="py-1.5 px-2 text-right tabular-nums">{s.line_count}<div className="text-[11px] text-stone-500">{s.new_lines} new</div></td>
                     <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{s.closing != null ? inr(s.closing) : '—'}<div className="text-[11px] text-stone-500">{s.opening != null ? `from ${inr(s.opening)}` : 'amount due'}</div></td>
@@ -227,9 +229,31 @@ function StatementsList({ statements, accountName, gokwik }) {
           </table>
         </div>
       )}
-      <div className="text-[11px] text-stone-500">
-        GoKwik report: {gokwik.count ? `${gokwik.count} payments loaded${gokwik.latest ? `, settled up to ${fmtDate(gokwik.latest)}` : ''}.` : 'not uploaded yet, so prepaid payouts cannot be proved.'}
-      </div>
+      {gokwikReports.length > 0 ? (
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full min-w-[560px] text-xs">
+            <thead><tr className="text-left text-stone-500 border-b border-stone-200">
+              <th className="py-1.5 px-2 font-medium">GoKwik report</th><th className="py-1.5 px-2 font-medium text-right">Payments</th>
+              <th className="py-1.5 px-2 font-medium">Settled</th><th className="py-1.5 px-2 font-medium text-right">To the bank</th>
+            </tr></thead>
+            <tbody>
+              {gokwikReports.map(g => (
+                <tr key={g.source_file} className="border-b border-stone-100 align-top">
+                  <td className="py-1.5 px-2"><div className="text-[11px] text-stone-700 truncate max-w-[18rem]" title={g.source_file}>{g.source_file}</div><div className="text-[11px] text-stone-500">uploaded {ago(g.imported_at)}</div><div className="mt-1 -ml-2"><DeleteButton onClick={() => onDeleteGokwik(g)} disabled={flow.busy} /></div></td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{g.payments}</td>
+                  <td className="py-1.5 px-2 whitespace-nowrap text-stone-600">{fmtDate(g.settled_from)} – {fmtDate(g.settled_to)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{inr(g.to_bank)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="text-[11px] text-stone-500">
+          GoKwik report: {gokwik.count ? `${gokwik.count} payments loaded${gokwik.latest ? `, settled up to ${fmtDate(gokwik.latest)}` : ''}.` : 'not uploaded yet, so prepaid payouts cannot be proved.'}
+        </div>
+      )}
+      <DeletionLog kinds={['statement', 'gokwik_report']} refreshKey={logKey} />
     </div>
   );
 }
@@ -322,6 +346,7 @@ export default function BankSection({ showToast }) {
   const [statements, setStatements] = useState([]);
   const [lines, setLines] = useState([]);
   const [gokwik, setGokwik] = useState({ count: 0, latest: null });
+  const [gokwikReports, setGokwikReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(() => new Set());
@@ -332,12 +357,13 @@ export default function BankSection({ showToast }) {
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      const [acc, bk, st, gc, gl] = await Promise.all([
+      const [acc, bk, st, gc, gl, gr] = await Promise.all([
         supabase.from('finance_accounts').select('id, name, kind, holder').order('name'),
         supabase.from('finance_buckets').select('name, kind, needs_bill, note, sort').order('sort'),
         supabase.from('finance_statements').select('id, account_id, filename, period_from, period_to, opening, closing, line_count, new_lines, duplicate_lines, checks, uploaded_by_name, uploaded_at').order('uploaded_at', { ascending: false }),
         supabase.from('gokwik_payments').select('payment_id', { count: 'exact', head: true }),
         supabase.from('gokwik_payments').select('settlement_date').not('settlement_date', 'is', null).order('settlement_date', { ascending: false }).limit(1),
+        supabase.rpc('gokwik_reports'),
       ]);
       for (const r of [acc, bk, st]) if (r.error) throw new Error(r.error.message);
       const all = [];
@@ -351,12 +377,18 @@ export default function BankSection({ showToast }) {
       }
       setAccounts(acc.data || []); setBuckets(bk.data || []); setStatements(st.data || []); setLines(all);
       setGokwik({ count: gc.count || 0, latest: gl.data?.[0]?.settlement_date ?? null });
+      setGokwikReports(gr.error ? [] : gr.data || []);
     } catch (err) {
       setError('Could not load the bank lines'); showToast?.('Could not load the bank lines', 'error');
     }
     setLoading(false);
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
+
+  // Taking an upload back: a dry run is shown for confirmation first (see components/UploadDelete.jsx).
+  const flow = useDeleteFlow({ call: callImport, showToast, onDeleted: async () => { setSelected(new Set()); await load(); } });
+  const deleteStatement = (st) => flow.start({ action: 'delete_statement', statement_id: st.id });
+  const deleteGokwik = (g) => flow.start({ action: 'delete_gokwik', source_file: g.source_file });
 
   const accountName = useCallback((id) => accounts.find(a => a.id === id)?.name ?? '—', [accounts]);
 
@@ -468,6 +500,7 @@ export default function BankSection({ showToast }) {
           <li><b>Matched</b> lines are proved: a GoKwik or Velocity payout, a Meta invoice payment, or a payee you filed before. <b>Suggested</b> lines are the system’s guess; confirm or refile them. <b>Needs review</b> lines have no guess.</li>
           <li>When you file a line it is yours: re-matching never changes it. Tick <i>Remember this payee</i> to file every future line to the same payee automatically.</li>
           <li>The founder’s card: its purchases are company expenses the company owes him. Paying the card bill from the founder’s own money needs no company entry.</li>
+          <li>A wrong upload can be taken back from <i>Statements uploaded</i>: you see what would change before anything is deleted, and the matching is re-run afterwards.</li>
           <li>Dates start at {fmtDate(START_DATE)}, the accounting start date. {beforeStart ? `${beforeStart} earlier line${beforeStart === 1 ? ' is' : 's are'} stored; choose “All dates” to see them.` : ''}</li>
         </ul>
       </Collapsible>
@@ -478,7 +511,8 @@ export default function BankSection({ showToast }) {
       </Collapsible>
 
       <Collapsible id="bank-statements" title="Statements uploaded" icon={<Landmark className="w-4 h-4 text-stone-400" />} count={statements.length}>
-        <StatementsList statements={statements} accountName={accountName} gokwik={gokwik} />
+        <StatementsList statements={statements} accountName={accountName} gokwik={gokwik} gokwikReports={gokwikReports} flow={flow}
+          onDeleteStatement={deleteStatement} onDeleteGokwik={deleteGokwik} logKey={statements.length + gokwikReports.length} />
       </Collapsible>
 
       <Collapsible id="bank-scope" title="Dates and account" icon={<ListChecks className="w-4 h-4 text-stone-400" />} defaultOpen={wideScreen()}

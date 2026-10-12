@@ -1,4 +1,4 @@
-// velocity-import v3
+// velocity-import v4
 // Takes Velocity's wallet Ledger Report (.csv, from the Velocity dashboard) or a monthly tax invoice (.pdf), checks that it
 // adds up, stores the LINES (never the file), and reconciles the wallet: top-ups against the bank, each month's charges against
 // its invoice, balances month to month. Admins only (an admin's login, or the project's internal x-cron-key, which the
@@ -9,6 +9,9 @@
 //   ledger     { filename, csv }            the Ledger Report as text. Refused whole if its balance column does not follow from its amounts.
 //   invoice    { filename, data }           a Velocity tax invoice PDF, base64
 //   reconcile  {}                           the month-by-month reconciliation as JSON
+//   delete_ledger  { import_id, dry_run }   take back a ledger report and the lines it brought in (see migration 026)
+//   delete_invoice { invoice_no, dry_run }  take back a Velocity invoice
+//   A delete is a DRY RUN (counts only, nothing changes) unless dry_run is exactly false; a ledger delete re-runs the bank matching.
 //
 // Nothing here posts to Tally, Shopify, Unicommerce or Velocity: it only reads, and writes the velocity_* tables and vendor_invoices.
 
@@ -41,7 +44,9 @@ serve(async (req) => {
       case 'ledger':    return await uploadLedger(admin, user, body);
       case 'invoice':   return await uploadInvoice(admin, body);
       case 'reconcile': return json(await reconcile(admin));
-      default:          return json({ error: 'action must be ledger, invoice or reconcile' }, 400);
+      case 'delete_ledger':  return await removeUpload(admin, user, 'velocity_delete_import', { p_id: String(body.import_id ?? '') }, body.dry_run, true);
+      case 'delete_invoice': return await removeUpload(admin, user, 'velocity_delete_invoice', { p_invoice_no: String(body.invoice_no ?? '') }, body.dry_run, false);
+      default:          return json({ error: 'action must be ledger, invoice, reconcile, delete_ledger or delete_invoice' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -144,6 +149,19 @@ async function rematchBank(admin: any) {
   } catch { return null; }
 }
 
+// ── Taking an upload back ────────────────────────────────────────────────────────────────────
+// The database function counts what would go (dry run) or deletes it and writes the log. A ledger delete re-runs the bank matching,
+// so a bank payment that only the deleted top-ups proved goes back to "suggested". Anything but an explicit dry_run:false is a dry run.
+async function removeUpload(admin: any, user: { id?: string; name: string }, fn: string, args: Record<string, string>, dryRun: unknown, rematch: boolean) {
+  if (!Object.values(args).every(v => v)) return json({ error: 'say which upload to delete' }, 400);
+  const dry = dryRun !== false;
+  const { data, error } = await admin.rpc(fn, { ...args, p_dry_run: dry, p_by: user.id ?? null, p_by_name: user.name });
+  if (error) throw new Error(`${dry ? 'checking' : 'deleting'} the upload: ${error.message}`);
+  if (!data) return json({ error: 'that upload was not found: it may already have been deleted' }, 404);
+  if (dry || !rematch) return json(data);
+  return json({ ...data, bank_matching: await rematchBank(admin) });
+}
+
 // ── A monthly tax invoice ────────────────────────────────────────────────────────────────────
 async function uploadInvoice(admin: any, body: any) {
   if (!body.data) return json({ error: 'no file received' }, 400);
@@ -217,7 +235,7 @@ async function reconcile(admin: any) {
   }
 
   // Invoices against the ledger lines of their period.
-  const { data: invoices } = await admin.from('vendor_invoices').select('invoice_no, invoice_date, period, period_from, period_to, subtotal, tax, total, lines').eq('vendor', 'Velocity').order('invoice_date');
+  const { data: invoices } = await admin.from('vendor_invoices').select('invoice_no, invoice_date, period, period_from, period_to, subtotal, tax, total, lines, imported_at').eq('vendor', 'Velocity').order('invoice_date');
   for (const inv of invoices ?? []) {
     const against = inv.period_from && inv.period_to ? await checkAgainstLedger(admin, inv) : null;
     const mo = outMonths.find(x => x.month === String(inv.period_from ?? inv.invoice_date).slice(0, 7));
@@ -246,5 +264,6 @@ async function reconcile(admin: any) {
     bank_statement_covers: (stmts ?? []).some((s: any) => s.period_from <= t.date && t.date <= s.period_to),
   }));
 
-  return { imports: imports ?? [], months: outMonths, topups: outTopups, gaps };
+  const storedInvoices = (invoices ?? []).map((i: any) => ({ invoice_no: i.invoice_no, invoice_date: i.invoice_date, period_from: i.period_from, period_to: i.period_to, total: Number(i.total), uploaded_at: i.imported_at }));
+  return { imports: imports ?? [], invoices: storedInvoices, months: outMonths, topups: outTopups, gaps };
 }

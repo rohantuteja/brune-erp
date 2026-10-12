@@ -5,6 +5,7 @@ import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { toBase64 } from '../lib/financeView';
 import { KIND_LABEL, TOPUP_STATUS_TEXT, invoiceVerdict, monthLabel, splitKinds, topupCounts, topupStatus } from '../lib/velocityView';
 import { Pagination, Collapsible, Pills, StatCard, EmptyState, useUrlParams, wideScreen } from '../components/AnalyticsKit';
+import { useDeleteFlow, DeleteButton, DeletionLog } from '../components/UploadDelete';
 import { RefreshCw, Upload, Search, X, Info, Wallet, FileText, ListChecks, CheckCircle2, AlertCircle, CircleDashed } from 'lucide-react';
 
 // Analytics → Velocity wallet (admin only). Velocity charges are taken from a prepaid wallet as they happen and billed once a
@@ -13,6 +14,7 @@ import { RefreshCw, Upload, Search, X, Info, Wallet, FileText, ListChecks, Check
 // month's charges. Rules and design: docs/velocity-wallet.md. Nothing here posts to Tally.
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const callVelocity = (body) => callFunction('velocity-import', body);
 const URL_DEFAULTS = { vmonth: '', vkind: 'all', vq: '', vpage: '1', vsize: '25' };
 
 const inr = (n, digits = 2) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -212,6 +214,55 @@ function InvoicePanel({ invoice }) {
   );
 }
 
+// ── What has been uploaded, with a way to take each upload back ─────────────────────────────────
+function UploadedList({ imports, invoices, flow, onDeleteLedger, onDeleteInvoice, logKey }) {
+  return (
+    <div className="space-y-3">
+      {flow.panel}
+      {imports.length > 0 && (
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full min-w-[560px] text-xs">
+            <thead><tr className="text-left text-stone-500 border-b border-stone-200">
+              <th className="py-1.5 px-2 font-medium">Ledger report</th><th className="py-1.5 px-2 font-medium">Period</th>
+              <th className="py-1.5 px-2 font-medium text-right">Lines</th><th className="py-1.5 px-2 font-medium text-right">Wallet balance</th>
+            </tr></thead>
+            <tbody>
+              {imports.map(i => (
+                <tr key={i.id} className="border-b border-stone-100 align-top">
+                  <td className="py-1.5 px-2"><div className="text-stone-900 truncate max-w-[16rem]" title={i.filename}>{i.filename || 'ledger report'}</div><div className="text-[11px] text-stone-500">{i.uploaded_by_name || '—'} · {ago(i.uploaded_at)}</div><div className="mt-1 -ml-2"><DeleteButton onClick={() => onDeleteLedger(i)} disabled={flow.busy} /></div></td>
+                  <td className="py-1.5 px-2 whitespace-nowrap text-stone-600">{fmtDate(i.period_from)} – {fmtDate(i.period_to)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{i.line_count}<div className="text-[11px] text-stone-500">{i.new_lines} new</div></td>
+                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{inr(i.closing)}<div className="text-[11px] text-stone-500">from {inr(i.opening)}</div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {invoices.length > 0 && (
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full min-w-[560px] text-xs">
+            <thead><tr className="text-left text-stone-500 border-b border-stone-200">
+              <th className="py-1.5 px-2 font-medium">Invoice</th><th className="py-1.5 px-2 font-medium">Period</th>
+              <th className="py-1.5 px-2 font-medium text-right">Total with GST</th>
+            </tr></thead>
+            <tbody>
+              {invoices.map(v => (
+                <tr key={v.invoice_no} className="border-b border-stone-100 align-top">
+                  <td className="py-1.5 px-2"><div className="text-stone-900">{v.invoice_no}</div><div className="text-[11px] text-stone-500">dated {fmtDate(v.invoice_date)} · uploaded {ago(v.uploaded_at)}</div><div className="mt-1 -ml-2"><DeleteButton onClick={() => onDeleteInvoice(v)} disabled={flow.busy} /></div></td>
+                  <td className="py-1.5 px-2 whitespace-nowrap text-stone-600">{v.period_from ? `${fmtDate(v.period_from)} – ${fmtDate(v.period_to)}` : '—'}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{inr(v.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <DeletionLog kinds={['velocity_ledger', 'velocity_invoice']} refreshKey={logKey} />
+    </div>
+  );
+}
+
 // ── The screen ──────────────────────────────────────────────────────────────────────────────────
 export default function VelocitySection({ showToast }) {
   const [p, setP] = useUrlParams(URL_DEFAULTS, 'vpage');
@@ -229,6 +280,11 @@ export default function VelocitySection({ showToast }) {
     setLoading(false);
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
+
+  // Taking an upload back: a dry run is shown for confirmation first (see components/UploadDelete.jsx).
+  const flow = useDeleteFlow({ call: callVelocity, showToast, onDeleted: load });
+  const deleteLedger = (i) => flow.start({ action: 'delete_ledger', import_id: i.id });
+  const deleteInvoice = (v) => flow.start({ action: 'delete_invoice', invoice_no: v.invoice_no });
 
   const months = useMemo(() => (data?.months ?? []).map(m => m.month), [data]);
   const month = months.includes(p.vmonth) ? p.vmonth : months[months.length - 1] ?? '';
@@ -280,6 +336,7 @@ export default function VelocitySection({ showToast }) {
           <li>Velocity takes each charge from your prepaid wallet as it happens, <b>GST included</b>, and sends one tax invoice after month end. So a top-up is an <b>advance</b> and the invoice is the <b>expense</b>.</li>
           <li>Upload the dashboard’s <b>Ledger Report</b> (CSV). It is refused if its balance column does not follow from its amounts, and re-uploading overlapping reports never doubles a line.</li>
           <li>Each top-up is matched to the bank payment that funded it. One with no bank payment was probably paid from another account (for example, personally): it is a company expense owed to whoever paid.</li>
+          <li>A wrong upload can be taken back from <b>Uploaded files</b>: you see what would change before anything is deleted.</li>
           <li>Upload each month’s <b>tax invoice</b> (PDF) to check it against that month’s charges. The delivery-failure messages should match to the paisa. Velocity’s freight line counts some credits and not others, so every way of counting is shown.</li>
         </ul>
       </Collapsible>
@@ -288,6 +345,14 @@ export default function VelocitySection({ showToast }) {
         summary={data?.imports?.length ? `${data.imports.length} ledger report${data.imports.length === 1 ? '' : 's'} stored` : 'nothing uploaded yet'}>
         <UploadPanel onDone={load} />
       </Collapsible>
+
+      {((data?.imports?.length ?? 0) + (data?.invoices?.length ?? 0) > 0 || flow.pending) && (
+        <Collapsible id="velocity-uploads" title="Uploaded files" icon={<ListChecks className="w-4 h-4 text-stone-400" />} defaultOpen={Boolean(flow.pending)}
+          count={(data?.imports?.length ?? 0) + (data?.invoices?.length ?? 0)} summary="delete an upload to take its lines back">
+          <UploadedList imports={data?.imports ?? []} invoices={data?.invoices ?? []} flow={flow} onDeleteLedger={deleteLedger} onDeleteInvoice={deleteInvoice}
+            logKey={(data?.imports?.length ?? 0) + (data?.invoices?.length ?? 0)} />
+        </Collapsible>
+      )}
 
       {data?.gaps?.length > 0 && (
         <div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded px-3 py-2">

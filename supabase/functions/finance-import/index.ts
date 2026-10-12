@@ -1,4 +1,4 @@
-// finance-import v4
+// finance-import v5
 // Takes an uploaded bank statement (ICICI .xlsx), credit card statement (Kotak .pdf) or GoKwik settlement report (.csv),
 // checks that it adds up, stores the LINES (never the file), and works out what each line is. Admins only (an admin's
 // login, or the project's internal x-cron-key for server-to-server calls).
@@ -8,6 +8,9 @@
 //   statement  { account_id, filename, data }   data = the file, base64. Refused whole if its own totals do not add up.
 //   gokwik     { filename, csv }                GoKwik's rawSettlementReport (or settlement_v2) as text
 //   rematch    {}                               re-run the matching on every line no person has decided
+//   delete_statement { statement_id, dry_run }  take back a statement and the lines it brought in (see migration 026)
+//   delete_gokwik    { source_file, dry_run }   take back a GoKwik report's payments
+//   A delete is a DRY RUN (counts only, nothing changes) unless dry_run is exactly false; a real delete re-runs the matching.
 //
 // Nothing here posts to Tally, Shopify, Unicommerce or any other system: it only reads, and writes the finance_* tables.
 
@@ -41,7 +44,9 @@ serve(async (req) => {
       case 'statement': return await uploadStatement(admin, user, body);
       case 'gokwik':    return await uploadGokwik(admin, body);
       case 'rematch':   return json(await rematch(admin));
-      default:          return json({ error: 'action must be statement, gokwik or rematch' }, 400);
+      case 'delete_statement': return await removeUpload(admin, user, 'finance_delete_statement', { p_id: String(body.statement_id ?? '') }, body.dry_run);
+      case 'delete_gokwik':    return await removeUpload(admin, user, 'gokwik_delete_report', { p_source_file: String(body.source_file ?? '') }, body.dry_run);
+      default:          return json({ error: 'action must be statement, gokwik, rematch, delete_statement or delete_gokwik' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -154,6 +159,21 @@ async function uploadGokwik(admin: any, body: any) {
     payments: report.rows.length, new_payments: fresh, payouts: payouts.length, to_bank: Math.round(payouts.reduce((s, p) => s + p.amount, 0) * 100) / 100,
     settled_from: payouts.map(p => p.date).sort()[0] ?? null, settled_to: payouts.map(p => p.date).sort().pop() ?? null, checks: report.checks, matching: matched,
   });
+}
+
+// ── Taking an upload back ────────────────────────────────────────────────────────────────────
+// The database function counts what would go (dry run) or deletes it and writes the log; the matching is then re-run so a payment
+// that only the deleted upload proved goes back to "suggested". Anything but an explicit dry_run:false is a dry run.
+async function removeUpload(admin: any, user: { id?: string; name: string }, fn: string, args: Record<string, string>, dryRun: unknown) {
+  if (!Object.values(args).every(v => v)) return json({ error: 'say which upload to delete' }, 400);
+  const dry = dryRun !== false;
+  const { data, error } = await admin.rpc(fn, { ...args, p_dry_run: dry, p_by: user.id ?? null, p_by_name: user.name });
+  if (error) throw new Error(`${dry ? 'checking' : 'deleting'} the upload: ${error.message}`);
+  if (!data) return json({ error: 'that upload was not found: it may already have been deleted' }, 404);
+  if (dry) return json(data);
+  let matching = null, matching_error = null;
+  try { matching = await rematch(admin); } catch (err) { matching_error = err instanceof Error ? err.message : String(err); }
+  return json({ ...data, matching, matching_error });
 }
 
 // ── Matching ─────────────────────────────────────────────────────────────────────────────────
