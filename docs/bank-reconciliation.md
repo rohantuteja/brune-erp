@@ -38,6 +38,17 @@ Upload panel (what, file, upload; failed checks listed), statements already uplo
 
 Bucket names come from the owner's Tally profit and loss (spelling included: `Fabric and Consumbale`, `PAYMENT GATEWAY CHARGES`), plus bookkeeping buckets the accountant maps to a ledger (`GoKwik payout`, `Velocity COD remittance`, `Meta ads (invoice payment)`, the `To confirm: …` family). The Tally ledger each bucket maps to is **not** decided: that waits for the accountant.
 
+## Taking an upload back (migration 026)
+
+Each upload on the Bank & card and Velocity wallet pages has a **Delete** button (an "Uploaded files" list on the Velocity page; "Statements uploaded" on the Bank page, which also lists the GoKwik reports). It asks the server for a **dry run** first and shows what would happen; only "Delete this upload" deletes. Nothing is deleted unless the request says `dry_run: false` exactly.
+
+- **What goes:** the upload's record and the lines it brought in. A line is stored once, by the first upload that had it, so a line another upload of the **same account / ledger** also covers (that upload's period contains the line's date; a statement or report holds every line of its period) is **moved to that upload, not deleted**. That upload's new/duplicate counts are corrected.
+- **What falls back:** the bank matching is re-run straight after, so a payment only the deleted upload proved goes back to "suggested" (bank payments proved by deleted Velocity top-ups or GoKwik payouts; Velocity top-ups lose their bank payment when the bank statement goes).
+- **A person's decision:** lines a person filed go only when their own statement goes (the confirmation counts them: "N were filed by you"); a confirmed match to a deleted proof stays as filed.
+- **GoKwik:** payments carry the file that last held them (`source_file`), so deleting a report removes the payments still attributed to it; a payment also in a later report goes with whichever file last carried it (upload that report again to bring it back).
+- **Log:** every delete is written to `upload_deletions` (who, when, what, counts), shown as "Recently deleted" under the list. Admin read only. A Meta (or other vendor) invoice cannot be deleted from here: `velocity_delete_invoice` only touches `vendor = 'Velocity'`.
+- **Functions:** `finance-import` (`delete_statement`, `delete_gokwik`) and `velocity-import` (`delete_ledger`, `delete_invoice`); SQL `finance_delete_statement`, `velocity_delete_import`, `velocity_delete_invoice`, `gokwik_delete_report` (service role only; atomic), `gokwik_reports()` (admin, for the list).
+
 ## Not built yet
 
 - The Tally import file from this data and the ledger (needs the accountant's chart of accounts, voucher types and numbering).
