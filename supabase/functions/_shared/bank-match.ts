@@ -11,6 +11,8 @@
 // status: matched (proof, or the owner's own rule)  suggested (a guess to confirm)  needs_review  ignored (no entry needed)
 // Lines a person has decided are never touched (the caller leaves them out).
 
+import { VELOCITY_HANDLE, type TopUp } from './velocity-ledger.ts';
+
 export type Line = {
   key: string;                       // unique within the account
   account_kind: 'bank' | 'card';
@@ -24,7 +26,7 @@ export type Line = {
 export type Payout = { source: 'gokwik' | 'velocity'; utr: string; date: string; amount: number; payments: number };
 export type VendorInvoice = { vendor: string; invoice_no: string; invoice_date: string; period: string | null; subtotal: number; tax: number; total: number };
 export type Rule = { id: number; match_type: 'payee' | 'contains'; pattern: string; bucket: string };
-export type Ctx = { payouts: Payout[]; invoices: VendorInvoice[]; rules: Rule[] };
+export type Ctx = { payouts: Payout[]; invoices: VendorInvoice[]; rules: Rule[]; topups?: TopUp[] };   // topups: what Velocity's wallet ledger says was added
 export type Status = 'matched' | 'suggested' | 'needs_review' | 'ignored';
 export type Classification = {
   status: Status; kind: string; bucket: string | null; match_ref: string | null; reason: string; needs_bill: boolean; payee: string | null; rule_id: number | null;
@@ -159,6 +161,15 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
     return hit;
   };
 
+  // A wallet top-up Velocity's ledger shows, and the bank payment that funded it: same amount, within a day; one payment per top-up.
+  const usedTopup = new Set<string>();
+  const topupFor = (amount: number, date: string) => {
+    const hit = (ctx.topups ?? []).filter(t => !usedTopup.has(t.key) && near(t.amount, amount) && Math.abs(dayNum(t.date) - dayNum(date)) <= 1)
+      .sort((a, b) => Math.abs(dayNum(a.date) - dayNum(date)) - Math.abs(dayNum(b.date) - dayNum(date)))[0];
+    if (hit) usedTopup.add(hit.key);
+    return hit;
+  };
+
   for (const l of lines) {
     if (out.has(l.key)) continue;
     const { note, payee } = l.account_kind === 'bank' ? parseRemarks(l.remarks) : { note: '', payee: squash(l.remarks.replace(/\(.*?\)/g, '')).slice(0, 24) || null };
@@ -196,6 +207,13 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
       }
       done(result({ status: inv ? 'needs_review' : 'suggested', kind: 'meta_invoice', bucket: 'Meta ads (invoice payment)', match_ref: no ? `Invoice ${no}` : null,
         reason: inv ? `Invoice ${inv.invoice_no} is ₹${inv.total.toFixed(2)} but ₹${l.debit.toFixed(2)} was paid` : `A payment to Meta${no ? ` for invoice ${no}` : ''}: upload that invoice so it can be checked` }, null));
+      continue;
+    }
+
+    if (l.account_kind === 'bank' && l.debit > 0 && VELOCITY_HANDLE.test(l.remarks)) {
+      const t = topupFor(l.debit, l.txn_date);
+      done(t ? result({ status: 'matched', kind: 'velocity_recharge', bucket: 'Velocity wallet recharge', match_ref: `Wallet recharge ${t.at}`, reason: `Velocity's wallet ledger shows ₹${t.amount.toFixed(2)} added on ${t.date}: this payment funded it` }, payee)
+        : result({ status: 'suggested', kind: 'velocity_recharge', bucket: 'Velocity wallet recharge', reason: "A payment to a Velocity wallet handle with no matching top-up in Velocity's ledger yet: upload the ledger report that covers it" }, payee));
       continue;
     }
 

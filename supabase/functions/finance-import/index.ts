@@ -1,4 +1,4 @@
-// finance-import v2
+// finance-import v3
 // Takes an uploaded bank statement (ICICI .xlsx), credit card statement (Kotak .pdf) or GoKwik settlement report (.csv),
 // checks that it adds up, stores the LINES (never the file), and works out what each line is. Admins only (an admin's
 // login, or the project's internal x-cron-key for server-to-server calls).
@@ -164,8 +164,11 @@ async function loadContext(admin: any): Promise<Ctx> {
   for (const v of vel ?? []) payouts.push({ source: 'velocity', utr: v.utr, date: v.paid_on, amount: Number(v.amount), payments: v.payments });
   const invoices = await fetchAll<any>((f, t) => admin.from('vendor_invoices').select('vendor, invoice_no, invoice_date, period, subtotal, tax, total').range(f, t));
   const rules = await fetchAll<any>((f, t) => admin.from('finance_rules').select('id, match_type, pattern, bucket').range(f, t));
+  // Top-ups Velocity's wallet ledger shows: they prove the bank payments that funded the wallet.
+  const wallet = await fetchAll<any>((f, t) => admin.from('velocity_wallet_lines').select('line_key, txn_at, txn_date, amount').eq('kind', 'recharge').order('id').range(f, t));
   return {
     payouts, rules,
+    topups: wallet.map(w => ({ key: w.line_key, at: String(w.txn_at).replace('T', ' ').slice(0, 19), date: w.txn_date, amount: Number(w.amount) })),
     invoices: invoices.map(i => ({ vendor: i.vendor, invoice_no: i.invoice_no, invoice_date: i.invoice_date, period: i.period, subtotal: Number(i.subtotal), tax: Number(i.tax), total: Number(i.total) })),
   };
 }
@@ -178,6 +181,9 @@ async function rematch(admin: any) {
   // A payout a person has already filed against a line cannot explain another credit.
   const taken = new Set(all.filter(l => l.decided_at && (l.kind === 'gokwik_payout' || l.kind === 'velocity_remittance') && l.match_ref).map(l => String(l.match_ref).replace(/^UTR /, '')));
   ctx.payouts = ctx.payouts.filter(p => !taken.has(p.utr));
+  // Likewise a top-up a person has already tied to a payment.
+  const takenTopups = new Set(all.filter(l => l.decided_at && l.kind === 'velocity_recharge' && l.match_ref).map(l => String(l.match_ref).replace(/^Wallet recharge /, '')));
+  ctx.topups = (ctx.topups ?? []).filter(t => !takenTopups.has(t.at));
   const lines: Line[] = open.map(l => ({ key: String(l.id), account_kind: accounts.get(l.account_id) ?? 'bank', txn_date: l.txn_date, remarks: l.remarks, debit: Number(l.debit), credit: Number(l.credit), category: l.category, section: l.section }));
   const result = classify(lines, ctx);
   const rows = open.map(l => ({ id: l.id, ...result.get(String(l.id))! })).map(r => ({
