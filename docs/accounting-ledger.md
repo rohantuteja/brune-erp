@@ -293,10 +293,7 @@ call, 5 calls a minute, so calls are spaced 13 s apart across the whole function
   remittance October (exported).
 - Velocity does not deduct its charges from a remittance (they come from the wallet or the monthly invoice), so the
   remittance equals the COD amount exactly.
-- **If Velocity cannot be reached** (HTTP 503 on 13 Oct 2026, after a full sync had rewritten 56 orders without their
-  remittances because a failed call was silently skipped), the order is **held back**: it is not saved, so the last good
-  rows stay, and the run records the order names in `ledger_runs.summary.held`. A parcel Velocity answers for but does
-  not know is not a failure. After an outage run a full sync once Velocity answers.
+- **If Velocity cannot be reached,** the order is held back: see "When Velocity or Unicommerce cannot be reached" below.
 
 **First reading, 11 Oct 2026** (81 delivered COD orders in the ledger): 57 remitted, none with a different amount; the
 other 24 (delivered 6 to 11 Oct, ₹37,201.90) are still with Velocity and none is overdue. Remittances found:
@@ -361,6 +358,31 @@ customer control, so an order still nets to zero for the customer; what is open 
 **Check (14 Oct 2026, full sync against a before-snapshot):** 165 payout vouchers (₹2,08,471.70 gross, ₹4,299.57 fee,
 ₹774.33 GST, ₹2,03,397.80 to the bank), 44 awaiting, none missing or different; every other total equal to before
 under the renames; Myntra unchanged.
+
+## When Velocity or Unicommerce cannot be reached (`accounting-ledger` v17)
+
+The ledger is rebuilt from scratch on every sync, so a call that failed must never be read as "no data". On 13 Oct 2026
+Velocity's COD API answered 503, the lookup skipped it silently, and a full sync saved 56 delivered COD orders
+(₹87,058.70) without their remittances. Now (`supabase/functions/_shared/upstream.ts`, tested in `upstream.test.ts`):
+
+- **Velocity** is unreachable for a batch of parcels when the call fails, is refused, or comes back without a `data`
+  list (an error body is not an answer). A 429 is retried once. A parcel Velocity answers for with an error ("is a
+  prepaid order") is an answer.
+- **Unicommerce** is unreachable when `ucPost` reports an HTTP failure or there is no readable body. "No such order"
+  (`INVALID_SALE_ORDER_CODE`, every order from before 29 Sep) and "no invoice yet" are answers: those orders keep
+  Shopify's amounts as before. This covers the order, the sale invoice and every return invoice.
+- An order with an unreachable input is **held back**: not saved, its last rows kept, and recorded in
+  `ledger_runs.summary.held` as `{ key, order, why }` (`key` = the Shopify order id, or `M:<code>` for Myntra).
+- **Retried automatically.** Every later run queues the orders the last finished run held back, and the tick starts a
+  retry run (`kind = manual`, only those orders) ten minutes after a run that held any. Retry runs are not part of the
+  hourly / nightly schedule: they neither delay it nor move the window an incremental run looks back over.
+  `sync` with `{ "kind": "retry" }` starts one by hand.
+- **Visible.** The Ledger page shows an amber "N orders held back" line with the reason while the last finished run has
+  any; the single-order and report actions show the reason in the order's notes and `held`.
+- **Test seam.** Any action takes `{ "simulate_down": "velocity" | "unicommerce" }`: that system then answers like a 503.
+
+Checked live on 14 Oct 2026: an incremental sync with Velocity simulated down held 46 COD orders and left every one of
+them, and every other order, exactly as it was.
 
 ## Myntra orders (migration 027)
 

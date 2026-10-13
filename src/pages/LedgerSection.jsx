@@ -242,6 +242,7 @@ export default function LedgerSection({ showToast }) {
 
   const [orders, setOrders] = useState([]);
   const [run, setRun] = useState(null);
+  const [held, setHeld] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openOrder, setOpenOrder] = useState(null);
@@ -258,9 +259,11 @@ export default function LedgerSection({ showToast }) {
       if (!data || data.length < 1000) break;
     }
     const { data: runs } = await supabase.from('ledger_runs')
-      .select('id, kind, status, pos, total, error, started_at, finished_at, updated_at')
-      .order('started_at', { ascending: false }).limit(1);
-    setOrders(all); setRun(runs?.[0] ?? null); setLoading(false);
+      .select('id, kind, status, pos, total, error, started_at, finished_at, updated_at, summary')
+      .order('started_at', { ascending: false }).limit(5);
+    // Orders the last finished run could not read all their inputs for (an outage): they keep their last figures.
+    const finished = (runs || []).find(r => r.status === 'done');
+    setOrders(all); setRun(runs?.[0] ?? null); setHeld(Array.isArray(finished?.summary?.held) ? finished.summary.held : []); setLoading(false);
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
 
@@ -351,6 +354,13 @@ export default function LedgerSection({ showToast }) {
       </div>
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+
+      {held.length > 0 && (
+        <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          <b>{held.length} {held.length === 1 ? 'order is' : 'orders are'} held back</b> because {[...new Set(held.map(h => String(h.why).split(' could not')[0]))].join(' and ')} could not be reached. They keep their last figures and are tried again every 10 minutes.
+          <span className="text-amber-800"> {held.slice(0, 8).map(h => h.order).join(', ')}{held.length > 8 ? ` and ${held.length - 8} more` : ''}.</span>
+        </div>
+      )}
 
       {orders.length === 0 && !error && <div className="bg-white rounded-lg border border-stone-200 p-4 text-sm text-stone-600">Nothing stored yet. The first sync fills this in.</div>}
 
