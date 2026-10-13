@@ -42,10 +42,30 @@ export const GATEWAY_FEE = 'Payment Gateway Expenses';
 export const GST_INPUT_IGST = 'IGST Input  UP';
 const gatewayLedger = (name?: string) => /razorpay/i.test(name ?? '') ? RAZORPAY : GATEWAY;
 
+// The state the goods go to (the place of supply): on every customer-side voucher, decides IGST or CGST+SGST, and the B2C return is by state.
+export type PlaceOfSupply = { code: string; name: string; source: 'shopify' | 'unicommerce' };
+
+export type Waiting = {
+  amount: number;                 // what the order is worth as the channel says (goods + shipping or COD charge): an estimate, not an invoice
+  paid: number;                   // prepaid money and store credit already taken
+  mode: 'prepaid' | 'part paid' | 'cod' | 'marketplace';
+  inUnicommerce: boolean;         // Unicommerce has the order and has not invoiced it; false = it has not imported the order
+  shipped?: boolean;              // a tracking number exists although there is no invoice
+  cancelledInUnicommerce?: boolean;   // Unicommerce cancelled its copy of the order and Shopify did not
+};
+
 export type Facts = {
-  order: string;                  // Shopify order number; for a Myntra order, its Unicommerce invoice number
+  order: string;                 // Shopify order number; for a Myntra order, its Unicommerce invoice number
   channel?: 'shopify' | 'myntra'; // where the order came from (default shopify)
   channelRef?: string;            // Myntra: the Unicommerce order code
+  state?: PlaceOfSupply;          // absent = the state could not be found (the order cannot be exported)
+  // Cancelled before dispatch, so never a sale (no sale is booked), but the customer had paid through a gateway, or paid with
+  // store credit that did not all come back. Booking that money is not automatic: it is always an exception.
+  cancelled?: { paid: number; refunded: number; via: string[] };
+  // Not a sale yet: Unicommerce has not issued the sale invoice. Nothing is booked (no entries) and nothing is exported; the
+  // order is listed on the Ledger page until the invoice exists, then it is built as a normal sale on the order date.
+  waiting?: Waiting;
+  refundedOut?: number;           // what Shopify says it refunded to the customer (successful REFUND transactions); checked against what the ledger shows going back
   rate: number;                   // GST rate, 0.05 for garments up to ₹2,500
   igst: boolean;                  // inter-state: IGST; otherwise CGST + SGST
   goods: number;                  // goods on the sale invoice, after discounts, tax-inclusive
@@ -85,7 +105,8 @@ export type Entry = {
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
 export type Exception = {
-  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'awaiting_settlement' | 'awaiting_payout' | 'payout_missing' | 'payout_differs' | 'bad_facts';
+  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'awaiting_settlement' | 'awaiting_payout' | 'payout_missing' | 'payout_differs' | 'bad_facts'
+    | 'no_state' | 'cancelled_after_payment' | 'refund_not_booked' | 'invoice_overdue';
   amount: number; reason: string;
 };
 // awaiting_return, in_transit, awaiting_settlement and awaiting_payout are normal stages of an order that is not finished yet.
@@ -97,7 +118,7 @@ export type OrderLedger = {
   balanced: boolean;    // net is zero and no exceptions: safe to export
   codOpen: number;      // COD collected by the courier and not yet paid into the bank
   gatewayOpen: number;  // prepaid money the gateway holds and has not paid out yet
-  status: 'complete' | 'open' | 'attention';   // open = still travelling, attention = a person must look
+  status: 'complete' | 'open' | 'attention' | 'waiting_invoice';   // open = still travelling, attention = a person must look, waiting_invoice = not a sale yet
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -108,8 +129,29 @@ const REMITTANCE_OVERDUE_DAYS = 10;
 const PAYOUT_MAX_DAYS = 5;
 const split = (amount: number, rate: number) => { const taxable = r2(amount / (1 + rate)); return { taxable, tax: r2(amount - taxable) }; };
 
+// An order Unicommerce has not invoiced yet: no entries at all. It is only flagged when it has waited too long (opts.invoiceAlertDays,
+// 3 by default), was dispatched without an invoice, or Unicommerce cancelled its copy while Shopify did not.
+const daysBetween = (from: string, to?: string) => to ? Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 864e5)) : 0;
+function waitingLedger(f: Facts, today: string | undefined, alertDays: number): OrderLedger {
+  const w = f.waiting!;
+  const days = daysBetween(f.saleDate, today);
+  const paid = w.paid > 0 ? `; the customer has already paid ${w.paid.toFixed(2)}` : '';
+  const exceptions: Exception[] = [];
+  const reason = w.cancelledInUnicommerce
+    ? `Unicommerce cancelled its copy of this order but it is not cancelled here: find out why${paid}`
+    : w.shipped
+      ? `dispatched (it has a tracking number) but Unicommerce has issued no sale invoice: it cannot be booked or exported until the invoice exists${paid}`
+      : days >= alertDays
+        ? `ordered ${days} day${days === 1 ? '' : 's'} ago and Unicommerce has not invoiced it${w.inUnicommerce ? '' : ' (it has not even imported the order)'}${paid}`
+        : null;
+  if (reason) exceptions.push({ type: 'invoice_overdue', amount: w.amount, reason });
+  return { entries: [], exportable: [], balancing: [], exceptions, net: 0, opening: 0, balanced: false, codOpen: 0, gatewayOpen: 0, status: 'waiting_invoice' };
+}
+
 // gatewayCoverage: the transaction dates GoKwik's uploaded reports cover (from the earliest to the latest payment in them).
-export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string; gatewayCoverage?: { from: string; to: string } }): OrderLedger {
+// requireState: an order with no state is an exception (the Tally file puts the state on every voucher, so it cannot be exported).
+export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string; gatewayCoverage?: { from: string; to: string }; requireState?: boolean; invoiceAlertDays?: number }): OrderLedger {
+  if (f.waiting) return waitingLedger(f, opts.today, opts.invoiceAlertDays ?? 3);
   const ctrl = f.channel === 'myntra' ? MYNTRA : CUSTOMER;      // the account that must net to zero
   const entries: Entry[] = [];
   const balancing: Balancing[] = [];
@@ -329,6 +371,26 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     const rz = openOf(RAZORPAY);
     if (Math.abs(rz) > 0.01) exceptions.push({ type: 'awaiting_payout', amount: rz, reason: 'paid through Razorpay; its payout is not matched yet' });
   }
+  // Reality check against Shopify. Whatever the rules above did, money Shopify says it gave back to the customer must
+  // be visible in the ledger (store credit issued, or a cash refund). Only that direction is checked: a goodwill credit
+  // a person approved legitimately puts more into the ledger than Shopify refunded.
+  if (f.cancelled) {
+    const c = f.cancelled;
+    exceptions.push({
+      type: 'cancelled_after_payment', amount: r2(c.paid - c.refunded),
+      reason: `cancelled before dispatch, so never a sale, but the customer had paid ${c.paid.toFixed(2)} (${c.via.join(', ')}) and ${c.refunded.toFixed(2)} was refunded: this money is not booked automatically, check the refund and the payout`,
+    });
+  } else if (f.refundedOut) {
+    const booked = r2((f.returns ?? []).reduce((s, r) => s + sumOf(r.storeCredit) + (r.cashRefund?.amount ?? 0), 0));
+    const gap = r2(f.refundedOut - booked);
+    if (gap > 1.005) {
+      exceptions.push({
+        type: 'refund_not_booked', amount: gap,
+        reason: `Shopify refunded ${f.refundedOut.toFixed(2)} to the customer but the ledger shows only ${booked.toFixed(2)} going back (store credit or cash): ${gap.toFixed(2)} is not accounted for`,
+      });
+    }
+  }
+  if (opts.requireState && !f.state) exceptions.unshift({ type: 'no_state', amount: 0, reason: 'the state the goods go to is not on the order (Shopify shipping address or Unicommerce address): every voucher needs it, so this order cannot go to Tally' });
   const exportable = entries.filter(e => e.date >= opts.cutoff);
   const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === ctrl).reduce((s, e) => s + e.debit - e.credit, 0));
   const balanced = Math.abs(net) <= 0.01 && !exceptions.length;

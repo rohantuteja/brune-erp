@@ -27,6 +27,8 @@ export function ledgerRow(r: OrderResult, cutoff: string) {
     cod_open: sold ? r.ledger.codOpen : 0,
     gateway_open: sold ? r.ledger.gatewayOpen : 0,
     sale_date: sold ? r.facts.saleDate : null,
+    state: sold ? r.facts.state?.name ?? null : null,
+    state_code: sold ? r.facts.state?.code ?? null : null,
     exception_type: sold ? r.ledger.exceptions[0]?.type ?? null : null,
     exceptions: sold ? r.ledger.exceptions : [],
     balancing: sold ? r.ledger.balancing : [],

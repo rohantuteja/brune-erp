@@ -182,6 +182,90 @@ test('37740: cancelled by the customer before it shipped → never a sale', () =
   assert.equal(ledger(b).balanced, true);
 });
 
+// ── Cancelled before dispatch, but the customer had paid (order 37937, 14 Oct 2026) ───────────
+// It was paid with ₹1,699 of store credit and cancelled 20 seconds later by GoKwik's confirmation page, which credited the
+// ₹1,699 back. It was booked as a finished sale because store credit counted as "money moved".
+const cancelledPaid = (name: string, txs: any[], o: any = {}): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-14', uc: null, rpRequests: [],
+  shopify: { name, createdAt: '2026-10-13T19:32:21Z', cancelledAt: '2026-10-13T19:32:42Z', tags: ['Cancelled via GK Order confirmation page', 'StoreCredits', 'UPI'],
+    paymentGatewayNames: ['shopify_store_credit'], subtotalPriceSet: m(1699), totalShippingPriceSet: m(0), shippingAddress: { province: 'Haryana', provinceCode: 'HR' },
+    transactions: txs, fulfillments: [], refunds: [], customer: null, ...o },
+});
+const tx = (kind: string, gateway: string, amount: number, status = 'SUCCESS') => ({ id: `${kind}-${gateway}-${amount}`, kind, status, gateway, amountSet: m(amount), processedAt: '2026-10-13T19:32:30Z' });
+
+test('37937: paid with store credit, cancelled before dispatch, credit given back → never a sale', () => {
+  const b = buildFacts(cancelledPaid('37937', [tx('CAPTURE', 'Shopify Store Credits', 1699), tx('REFUND', 'Shopify Store Credits', 1699)]));
+  assert.equal(b.skip, 'cancelled before dispatch (store credit spent and credited back)');
+  assert.equal(ledger(b).entries.length, 0);
+});
+
+test('cancelled before dispatch, paid by UPI → no sale booked, but an exception a person must look at', () => {
+  const b = buildFacts(cancelledPaid('40001', [tx('CAPTURE', 'Gokwik UPI', 1699), tx('REFUND', 'Gokwik UPI', 1699)]));
+  assert.equal(b.skip, undefined);
+  assert.equal(b.facts.cancelled?.paid, 1699);
+  assert.deepEqual(b.facts.cancelled?.via, ['Gokwik UPI']);
+  const l = ledger(b);
+  assert.equal(l.entries.length, 0);                                  // nothing is booked on a guess
+  assert.equal(l.exceptions[0].type, 'cancelled_after_payment');
+  assert.equal(l.status, 'attention');
+  assert.equal(l.balanced, false);
+});
+
+test('cancelled before dispatch, paid by store credit that was NOT credited back → exception, not a sale', () => {
+  const l = ledger(buildFacts(cancelledPaid('40002', [tx('CAPTURE', 'Shopify Store Credits', 1699)])));
+  assert.equal(l.exceptions[0].type, 'cancelled_after_payment');
+  assert.equal(l.exceptions[0].amount, 1699);
+  assert.equal(l.status, 'attention');
+});
+
+test('cancelled before dispatch, part store credit and part UPI → exception (a gateway moved money)', () => {
+  const b = buildFacts(cancelledPaid('40003', [tx('CAPTURE', 'Gokwik UPI', 99), tx('CAPTURE', 'Shopify Store Credits', 1600), tx('REFUND', 'Shopify Store Credits', 1699)]));
+  assert.deepEqual(b.facts.cancelled?.via, ['Gokwik UPI']);
+  assert.equal(ledger(b).exceptions[0].type, 'cancelled_after_payment');
+});
+
+test('cancelled AFTER it shipped (tracking number) and paid with store credit → still a sale, as before (the RTO flow)', () => {
+  const b = buildFacts(cancelledPaid('40004', [tx('CAPTURE', 'Shopify Store Credits', 1699)], { fulfillments: [{ trackingInfo: [{ number: 'AWB1' }] }] }));
+  assert.equal(b.skip, undefined);
+  assert.equal(b.facts.cancelled, undefined);
+  assert.ok(ledger(b).entries.some(e => e.voucher === 'sale'));
+});
+
+test('Shopify refunds are read from the REFUND transactions', () => {
+  const b = buildFacts(cancelledPaid('40005', [tx('CAPTURE', 'Gokwik UPI', 500), tx('REFUND', 'shopify_store_credit', 300), tx('REFUND', 'shopify_store_credit', 150, 'FAILURE')], { cancelledAt: null }));
+  assert.equal(b.facts.refundedOut, 300);
+});
+
+// ── The reality check: money Shopify gave back must be visible in the ledger ────────────────
+const sold = (o: any = {}) => ({
+  order: 'X', rate: 0.05, igst: true, goods: 1000, codFee: 0, saleDate: '2026-10-05', state: { code: '27', name: 'Maharashtra', source: 'shopify' as const },
+  payments: [{ date: '2026-10-05', amount: 1000, ref: 'p', gateway: 'Gokwik UPI' }], ...o,
+});
+const returned = (credit: number) => [{ kind: 'customer' as const, date: '2026-10-08', goodsReturned: 400, qty: 1, pending: false, storeCredit: [{ date: '2026-10-08', amount: credit, ref: 'c' }] }];
+
+test('Shopify refunded money and the ledger shows none going back → refund_not_booked', () => {
+  const l = buildOrderLedger(sold({ refundedOut: 400 }), { cutoff: CUTOFF });
+  assert.equal(l.exceptions.at(-1)?.type, 'refund_not_booked');
+  assert.equal(l.exceptions.at(-1)?.amount, 400);
+  assert.equal(l.status, 'attention');
+});
+
+test('Shopify refund matches the store credit the ledger issued → no exception', () => {
+  const l = buildOrderLedger(sold({ refundedOut: 400, returns: returned(400) }), { cutoff: CUTOFF });
+  assert.deepEqual(l.exceptions, []);
+  assert.equal(l.balanced, true);
+});
+
+test('the ledger shows MORE going back than Shopify refunded (an approved goodwill credit) → not this check\'s business', () => {
+  const l = buildOrderLedger(sold({ refundedOut: 300, returns: returned(400) }), { cutoff: CUTOFF });
+  assert.ok(!l.exceptions.some(e => e.type === 'refund_not_booked'));
+});
+
+test('no refund in Shopify → the check stays quiet', () => {
+  assert.deepEqual(buildOrderLedger(sold({ refundedOut: 0 }), { cutoff: CUTOFF }).exceptions, []);
+  assert.deepEqual(buildOrderLedger(sold(), { cutoff: CUTOFF }).exceptions, []);
+});
+
 // ── Returns to origin before the ERP handled RTOs: credit a person gave by hand ──────────────
 const credit = (amount: number, createdAt: string) => ({ __typename: 'StoreCreditAccountCreditTransaction', amount: { amount: String(amount) }, createdAt });
 const debit = (amount: number, createdAt: string) => ({ __typename: 'StoreCreditAccountDebitTransaction', amount: { amount: String(-amount) }, createdAt });
@@ -409,6 +493,98 @@ test('no Unicommerce invoice (before 29 Sep): booked on the order date as before
   assert.equal(b.facts.saleDate, '2026-09-20'); assert.equal(b.facts.invoiceDate, undefined); assert.equal(b.facts.saleDoc, undefined);
 });
 
+// ── An order is a sale only once Unicommerce has invoiced it ─────────────────────────────────
+// Orders placed from the instant Unicommerce started (ucFrom) with no sale invoice WAIT: stored with no entries, listed on the
+// Ledger page, booked (on the order date) when the invoice exists. Older orders keep Shopify's amounts.
+const UC_FROM = '2026-09-29T17:07:59Z';
+const fresh = (name: string, createdAt: string, o: any = {}, txs?: any[]): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-14', ucFrom: UC_FROM, rpRequests: [],
+  uc: { order: { status: 'CREATED', returns: [] }, returnInvoices: {} },
+  shopify: { name, createdAt, tags: ['GoKwik'], paymentGatewayNames: ['cash_on_delivery'], subtotalPriceSet: m(1699), totalShippingPriceSet: m(0),
+    shippingAddress: { province: 'Haryana', provinceCode: 'HR' }, refunds: [], customer: null, fulfillments: [],
+    transactions: txs ?? [{ id: 'a', kind: 'SALE', status: 'PENDING', gateway: 'cash_on_delivery', amountSet: m(1699), processedAt: createdAt }], ...o },
+});
+const waitingLedger = (b: ReturnType<typeof buildFacts>, today = '2026-10-14') => buildOrderLedger(b.facts, { cutoff: CUTOFF, today, requireState: true });
+
+test('a new COD order, placed today, no invoice: waiting, nothing booked, nothing to flag yet', () => {
+  const b = buildFacts(fresh('37950', '2026-10-14T05:00:00Z'));
+  assert.equal(b.skip, undefined);
+  assert.deepEqual(b.facts.waiting, { amount: 1699, paid: 0, mode: 'cod', inUnicommerce: true });
+  assert.equal(b.facts.state?.name, 'Haryana'); assert.equal(b.facts.saleDate, '2026-10-14');
+  const l = waitingLedger(b);
+  assert.equal(l.status, 'waiting_invoice'); assert.equal(l.entries.length, 0); assert.equal(l.exportable.length, 0);
+  assert.equal(l.balanced, false); assert.deepEqual(l.exceptions, []);
+});
+
+test('order 37938: paid in full with store credit, not invoiced yet → waiting, not a "complete" sale', () => {
+  const b = buildFacts(fresh('37938', '2026-10-13T19:33:20Z', { paymentGatewayNames: ['shopify_store_credit'], tags: ['StoreCredits'] },
+    [{ id: 'c', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Shopify Store Credits', amountSet: m(1699), processedAt: '2026-10-13T19:33:21Z' }]));
+  assert.deepEqual(b.facts.waiting, { amount: 1699, paid: 1699, mode: 'prepaid', inUnicommerce: true });
+  const l = waitingLedger(b);
+  assert.equal(l.status, 'waiting_invoice'); assert.equal(l.entries.length, 0);
+});
+
+test('prepaid by UPI and part paid: the payment is NOT booked until the invoice exists', () => {
+  const upi = buildFacts(fresh('37951', '2026-10-14T05:00:00Z', {}, [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1699), processedAt: '2026-10-14T05:00:05Z' }]));
+  assert.equal(upi.facts.waiting?.mode, 'prepaid'); assert.equal(waitingLedger(upi).entries.length, 0);
+  const part = buildFacts(fresh('37952', '2026-10-14T05:00:00Z', {}, [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(99), processedAt: '2026-10-14T05:00:05Z' }]));
+  assert.equal(part.facts.waiting?.mode, 'part paid'); assert.equal(part.facts.waiting?.paid, 99);
+});
+
+test('waiting for 3 days (the default) is flagged; 2 days is not; the limit can be changed', () => {
+  const b = buildFacts(fresh('37953', '2026-10-11T05:00:00Z'));
+  assert.deepEqual(waitingLedger(b, '2026-10-13').exceptions, []);
+  const flagged = waitingLedger(b, '2026-10-14');
+  assert.equal(flagged.exceptions[0].type, 'invoice_overdue'); assert.match(flagged.exceptions[0].reason, /ordered 3 days ago and Unicommerce has not invoiced it/);
+  assert.equal(flagged.status, 'waiting_invoice');
+  assert.deepEqual(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-14', invoiceAlertDays: 5 }).exceptions, []);
+});
+
+test('dispatched with a tracking number but no invoice → flagged at once; Unicommerce not having the order is said too', () => {
+  const shipped = buildFacts(fresh('37954', '2026-10-14T05:00:00Z', { fulfillments: [{ trackingInfo: [{ number: 'AWB9' }] }] }));
+  assert.equal(shipped.facts.waiting?.shipped, true);
+  const l = waitingLedger(shipped);
+  assert.equal(l.exceptions[0].type, 'invoice_overdue'); assert.match(l.exceptions[0].reason, /dispatched .* no sale invoice/);
+  const notImported = buildFacts({ ...fresh('37955', '2026-10-10T05:00:00Z'), uc: null });
+  assert.equal(notImported.facts.waiting?.inUnicommerce, false);
+  assert.match(waitingLedger(notImported).exceptions[0].reason, /has not even imported the order/);
+});
+
+test('Unicommerce cancelled its copy but Shopify did not → flagged', () => {
+  const b = buildFacts({ ...fresh('37956', '2026-10-14T05:00:00Z'), uc: { order: { status: 'CANCELLED', returns: [] }, returnInvoices: {} } });
+  assert.equal(b.facts.waiting?.cancelledInUnicommerce, true);
+  assert.match(waitingLedger(b).exceptions[0].reason, /Unicommerce cancelled its copy/);
+});
+
+test('once Unicommerce has invoiced it, the order is a normal sale on the order date (no longer waiting)', () => {
+  const raw = fresh('37957', '2026-10-13T19:00:00Z');
+  raw.uc = { order: { status: 'COMPLETE', returns: [] }, saleInvoice: ucInvoice('INS0900', Date.parse('2026-10-14T06:00:00Z'), 1699, 80.9, 0), returnInvoices: {} };
+  const b = buildFacts(raw);
+  assert.equal(b.facts.waiting, undefined); assert.equal(b.facts.saleDoc, 'INS0900'); assert.equal(b.facts.saleDate, '2026-10-14');
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-14' });
+  assert.ok(l.entries.some(e => e.voucher === 'sale' && e.doc === 'INS0900'));
+});
+
+test('an order placed BEFORE Unicommerce started keeps Shopify\'s amounts and is booked as a sale (37697 and the other 29 Sep orders)', () => {
+  const b = buildFacts({ ...fresh('37697', '2026-09-29T12:15:17Z'), uc: null });
+  assert.equal(b.facts.waiting, undefined); assert.equal(b.facts.goods, 1699);
+  assert.ok(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-14' }).entries.some(e => e.voucher === 'sale'));
+  const noSetting = buildFacts({ ...fresh('37958', '2026-10-14T05:00:00Z'), ucFrom: undefined, uc: null });   // no start instant known → the old behaviour
+  assert.equal(noSetting.facts.waiting, undefined);
+});
+
+test('an order cancelled before dispatch is still "not a sale" (never waiting), paid or not', () => {
+  const cod = buildFacts(fresh('37959', '2026-10-14T05:00:00Z', { cancelledAt: '2026-10-14T05:01:00Z' }));
+  assert.equal(cod.skip, 'cancelled before dispatch'); assert.equal(cod.facts.waiting, undefined);
+  const credit = buildFacts(fresh('37960', '2026-10-14T05:00:00Z', { cancelledAt: '2026-10-14T05:00:20Z' }, [
+    { id: 'c', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Shopify Store Credits', amountSet: m(1699), processedAt: '2026-10-14T05:00:05Z' },
+    { id: 'r', kind: 'REFUND', status: 'SUCCESS', gateway: 'Shopify Store Credits', amountSet: m(1699), processedAt: '2026-10-14T05:00:21Z' }]));
+  assert.match(credit.skip!, /store credit spent and credited back/);
+  const upi = buildFacts(fresh('37961', '2026-10-14T05:00:00Z', { cancelledAt: '2026-10-14T05:00:20Z' }, [
+    { id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1699), processedAt: '2026-10-14T05:00:05Z' }]));
+  assert.equal(buildOrderLedger(upi.facts, { cutoff: CUTOFF, today: '2026-10-14' }).exceptions[0].type, 'cancelled_after_payment');
+});
+
 // ── Myntra: the order lives in Unicommerce only; Myntra owes the money ────────────────────────
 const ist = (t: string) => Date.parse(`${t}+05:30`);
 const myntraOrder = (over: Record<string, any> = {}, price = 1326, code = 'bb5a16bf-aaaa-4bbb-8ccc-000000000001') => ({
@@ -455,11 +631,31 @@ test('Myntra: ordered late on 31 Oct and invoiced in November is October\'s sale
   assert.ok(b.notes.some(n => /order date 2026-10-31.*in a later month/.test(n)));
 });
 
-test('Myntra: not invoiced yet is not stored; a cancelled invoiced order is not a sale', () => {
-  const none = buildMyntraFacts(myntra(myntraOrder({ status: 'PROCESSING', shippingPackages: [{ code: 'P', status: 'CREATED' }] }), undefined));
-  assert.equal(none.ignore, 'not invoiced yet');
+test('Myntra: a cancelled invoiced order is not a sale', () => {
   const cancelled = buildMyntraFacts(myntra(myntraOrder({ status: 'CANCELLED' }), myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326)));
   assert.equal(cancelled.skip, 'cancelled');
+});
+
+test('Myntra: an order not invoiced yet WAITS under its Unicommerce order code, with no entries; cancelled before the invoice it is dropped', () => {
+  const pending = myntraOrder({ status: 'PROCESSING', shippingPackages: [{ code: 'P', status: 'CREATED' }] });
+  const b = buildMyntraFacts(myntra(pending, undefined));
+  assert.equal(b.ignore, undefined); assert.equal(b.skip, undefined);
+  assert.equal(b.facts.order, 'bb5a16bf-aaaa-4bbb-8ccc-000000000001');         // no invoice number yet
+  assert.equal(b.facts.channel, 'myntra'); assert.equal(b.facts.channelRef, 'bb5a16bf-aaaa-4bbb-8ccc-000000000001');
+  assert.equal(b.facts.saleDate, '2026-10-06');
+  assert.deepEqual(b.facts.waiting, { amount: 1326, paid: 0, mode: 'marketplace', inUnicommerce: true });
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-07', requireState: true });
+  assert.equal(l.status, 'waiting_invoice'); assert.equal(l.entries.length, 0); assert.equal(l.exportable.length, 0);
+  assert.deepEqual(l.exceptions, []);
+  const late = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-13', requireState: true });
+  assert.equal(late.exceptions[0].type, 'invoice_overdue'); assert.match(late.exceptions[0].reason, /ordered 7 days ago/);
+  const gone = buildMyntraFacts(myntra(myntraOrder({ status: 'CANCELLED', shippingPackages: [] }), undefined));
+  assert.equal(gone.ignore, 'cancelled before it was invoiced'); assert.equal(gone.facts.waiting, undefined);
+});
+
+test('Myntra: once invoiced it is a normal sale under the invoice number, and no longer waiting', () => {
+  const b = buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
+  assert.equal(b.facts.waiting, undefined); assert.equal(b.facts.order, 'I0927RE000000030');
 });
 
 test('Myntra: a customer return still on its way is "waiting for the parcel"; the sale stays open', () => {
@@ -539,4 +735,82 @@ test('a Myntra order carries its pieces on the sale and on the return', () => {
   const o = myntraOrder({ returns: [{ code: 'RET9', type: 'Customer Returned', statusCode: 'COURIER_ALLOCATED', returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
   const b = buildMyntraFacts(myntra(o, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
   assert.equal(b.facts.qty, 1); assert.equal(b.facts.returns![0].qty, 1);
+});
+
+// ── The state the goods go to: on every voucher ───────────────────────────────────────────────
+const stateOrder = (shipping: any, uc: any, sale = ucInvoice('INS0200', Date.parse('2026-10-08T06:00:00Z'), 1499, 71.38, 100)): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-12',
+  shopify: {
+    name: '37900', createdAt: '2026-10-08T05:00:00Z', tags: ['COD'], paymentGatewayNames: ['cash_on_delivery'],
+    subtotalPriceSet: m(1399), totalShippingPriceSet: m(100), shippingAddress: shipping,
+    transactions: [{ id: 'x', kind: 'SALE', status: 'PENDING', gateway: 'cash_on_delivery', amountSet: m(1499), processedAt: '2026-10-08T05:00:00Z' }],
+    refunds: [], fulfillments: [{ trackingInfo: [{ number: 'AWB1' }] }],
+  },
+  uc: { order: { status: 'COMPLETE', returns: [], ...uc }, saleInvoice: sale, returnInvoices: {} },
+  rpRequests: [],
+});
+
+test('state: Shopify\'s shipping address names it, and the GST code comes with it', () => {
+  const b = buildFacts(stateOrder({ province: 'Maharashtra', provinceCode: 'MH' }, {}));
+  assert.deepEqual(b.facts.state, { code: '27', name: 'Maharashtra', source: 'shopify' });
+  assert.equal(b.facts.igst, true);
+  assert.ok(!b.notes.some(n => /state|CGST|IGST/.test(n)), b.notes.join(' | '));
+});
+
+test('state: a short code alone is enough, and a Shopify code that differs from Unicommerce\'s (TS / TG) is the same state', () => {
+  assert.equal(buildFacts(stateOrder({ provinceCode: 'TS' }, { addresses: [{ id: 2, state: 'TG', stateName: 'Telangana' }] })).facts.state?.code, '36');
+  const b = buildFacts(stateOrder({ provinceCode: 'TS' }, { addresses: [{ id: 2, state: 'TG', stateName: 'Telangana' }] }));
+  assert.ok(!b.notes.some(n => /Unicommerce has/.test(n)));
+});
+
+test('state: with no Shopify address Unicommerce\'s is used, and its shipping address is the one that is not the billing address', () => {
+  const uc = { billingAddress: { id: 11 }, addresses: [{ id: 11, state: 'DL', stateName: 'Delhi' }, { id: 10, state: 'KA', stateName: 'Karnataka' }] };
+  const b = buildFacts(stateOrder(null, uc));
+  assert.deepEqual(b.facts.state, { code: '29', name: 'Karnataka', source: 'unicommerce' });
+  assert.equal(buildFacts(stateOrder(undefined, { addresses: [{ id: 5, state: 'MH', stateName: 'Maharashtra' }] })).facts.state?.name, 'Maharashtra');   // a single address
+});
+
+test('state: Shopify and Unicommerce disagree → Shopify\'s delivery state is used and a note says so', () => {
+  const b = buildFacts(stateOrder({ province: 'Kerala', provinceCode: 'KL' }, { billingAddress: { id: 1 }, addresses: [{ id: 2, state: 'DL', stateName: 'Delhi' }] }));
+  assert.equal(b.facts.state?.name, 'Kerala');
+  assert.ok(b.notes.some(n => /Shopify delivers this to Kerala but Unicommerce has Delhi/.test(n)));
+});
+
+test('state: the invoice charged IGST but the goods stay in Uttar Pradesh → a note to check the invoice', () => {
+  const b = buildFacts(stateOrder({ province: 'Uttar Pradesh', provinceCode: 'UP' }, {}));      // the invoice above is IGST
+  assert.equal(b.facts.state?.code, '09');
+  assert.ok(b.notes.some(n => /charged IGST but the goods go to Uttar Pradesh, which needs CGST and SGST/.test(n)), b.notes.join(' | '));
+  const ok = buildFacts(stateOrder({ province: 'Uttar Pradesh', provinceCode: 'UP' }, {}, { ...ucInvoice('INS0201', Date.parse('2026-10-08T06:00:00Z'), 1499, 0, 100), centralGst: 35.69, stateGst: 35.69 }));
+  assert.equal(ok.facts.igst, false);
+  assert.ok(!ok.notes.some(n => /charged/.test(n)));
+});
+
+test('state: with no Unicommerce invoice the kind of GST follows the state', () => {
+  const raw = stateOrder({ province: 'Uttar Pradesh', provinceCode: 'UP' }, {});
+  raw.uc = null;
+  assert.equal(buildFacts(raw).facts.igst, false);
+  raw.shopify.shippingAddress = { province: 'Delhi', provinceCode: 'DL' };
+  assert.equal(buildFacts(raw).facts.igst, true);
+});
+
+test('state: none found → no state on the facts, a note, and with requireState an exception that keeps the order out of Tally', () => {
+  const b = buildFacts(stateOrder(null, {}));
+  assert.equal(b.facts.state, undefined);
+  assert.ok(b.notes.some(n => /no state found/.test(n)));
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-12', requireState: true });
+  assert.ok(l.exceptions.some(e => e.type === 'no_state'));
+  assert.equal(l.status, 'attention');
+  assert.equal(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-12' }).exceptions.some(e => e.type === 'no_state'), false);   // off unless asked for
+  const withState = buildFacts(stateOrder({ province: 'Delhi' }, {}));
+  assert.equal(buildOrderLedger(withState.facts, { cutoff: CUTOFF, today: '2026-10-12', requireState: true }).exceptions.some(e => e.type === 'no_state'), false);
+});
+
+test('state: a Myntra order\'s state is its one Unicommerce address, and the invoice\'s kind of GST is checked against it', () => {
+  const order = myntraOrder({ addresses: [{ id: 1, state: 'MH', stateName: 'Maharashtra' }], billingAddress: { id: 2 } });
+  const b = buildMyntraFacts({ ...myntra(order, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)), sellerState: 'UP' });
+  assert.deepEqual(b.facts.state, { code: '27', name: 'Maharashtra', source: 'unicommerce' });
+  assert.ok(!b.notes.some(n => /charged/.test(n)));
+  const wrong = buildMyntraFacts({ ...myntra(myntraOrder({ addresses: [{ id: 1, state: 'UP', stateName: 'Uttar Pradesh' }] }), myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326)), sellerState: 'UP' });
+  assert.ok(wrong.notes.some(n => /charged IGST but the goods go to Uttar Pradesh/.test(n)));
+  assert.equal(buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000032', '2026-10-06T14:15:10', 1326))).facts.state, undefined);
 });

@@ -11,7 +11,8 @@
 //   Return Prime what it refunded and when, the return fee, whether the parcel arrived.
 //   Velocity     the delivery date of COD parcels (via cod_deliveries or its API).
 
-import type { Facts } from './ledger.ts';
+import type { Facts, PlaceOfSupply } from './ledger.ts';
+import { resolveState } from './gst-states.ts';
 import { parseNote } from './shipments.ts';
 
 type Return = NonNullable<Facts['returns']>[number];
@@ -36,6 +37,36 @@ const MANUAL_CREDIT_RANGE = 250;
 const REFUND_BEFORE_MS = 2 * 60_000;
 const REFUND_AFTER_MS = 10 * 60_000;
 
+// The state the goods go to. Shopify's shipping address first (it is the delivery address, spelled out); Unicommerce's order
+// address second (its invoices carry no state: the sale order's addresses do, `state` a short code and `stateName` the name;
+// the shipping address is the one that is not the billing address, and a Myntra order has just one).
+function ucPlace(ucOrder: any) {
+  const addresses: any[] = ucOrder?.addresses ?? [];
+  const billingId = ucOrder?.billingAddress?.id;
+  const ship = addresses.find(a => a && billingId != null && String(a.id) !== String(billingId)) ?? addresses[0] ?? ucOrder?.billingAddress;
+  return resolveState({ name: ship?.stateName, code: ship?.state });
+}
+export function placeOfSupply(shopify: any, ucOrder: any): PlaceOfSupply | null {
+  const ship = shopify?.shippingAddress;
+  const s = resolveState({ name: ship?.province, code: ship?.provinceCode });
+  if (s) return { ...s, source: 'shopify' };
+  const u = ucPlace(ucOrder);
+  return u ? { ...u, source: 'unicommerce' } : null;
+}
+// Notes about the state a person should know: Shopify and Unicommerce disagree, or the invoice charged the wrong kind of GST.
+function stateNotes(state: PlaceOfSupply | null, ucOrder: any, sellerCode: string | undefined, invoiceIgst: boolean | undefined): string[] {
+  const out: string[] = [];
+  if (!state) { out.push('no state found on the order: it cannot be exported to Tally'); return out; }
+  const u = state.source === 'shopify' ? ucPlace(ucOrder) : null;
+  if (u && u.code !== state.code) out.push(`Shopify delivers this to ${state.name} but Unicommerce has ${u.name}: ${state.name} is used`);
+  if (invoiceIgst !== undefined && sellerCode) {
+    const needsIgst = state.code !== sellerCode;
+    if (needsIgst !== invoiceIgst) out.push(`the sale invoice charged ${invoiceIgst ? 'IGST' : 'CGST and SGST'} but the goods go to ${state.name}, which needs ${needsIgst ? 'IGST' : 'CGST and SGST'}: check the invoice`);
+  }
+  return out;
+}
+const sellerCodeOf = (sellerState: string | undefined) => resolveState({ name: sellerState, code: sellerState })?.code;
+
 export type RawInputs = {
   sellerState: string;                         // province code of the warehouse, e.g. 'UP'
   today: string;                               // IST date, used when a return has no date yet
@@ -52,9 +83,13 @@ export type RawInputs = {
   remittance?: { utr: string; date: string; amount: number | null } | null;   // the COD money paid by the courier (UTR set)
   gatewayPayouts?: Array<{ date: string; utr: string; gross: number; fee: number; tax: number; net: number; ref?: string }>;   // GoKwik's settlement report rows for this order ([] = none yet; absent = not looked up)
   adjustments?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; approved_by: string }>;   // ledger_adjustments for this order
+  // The instant Unicommerce started (app_settings.uc_orders_from). An order placed from then on with no sale invoice waits for it
+  // (facts.waiting); without this, or for an older order, Shopify's own amounts are used as before.
+  ucFrom?: string;
 };
 
-// skip: not a sale (stored as such); ignore: nothing to store yet (a Myntra order Unicommerce has not invoiced).
+// skip: not a sale (stored as such); ignore: nothing to store (a Myntra order cancelled before it was invoiced).
+// An order Unicommerce has not invoiced yet is neither: it is stored with facts.waiting and no entries.
 export type Built = { facts: Facts; notes: string[]; skip?: string; ignore?: string };
 
 // What an invoice from Unicommerce says, in the ledger's terms (tax-inclusive).
@@ -79,19 +114,67 @@ export function buildFacts(inp: RawInputs): Built {
   const txs: any[] = o.transactions ?? [];
   const ucOrder = inp.uc?.order && inp.uc.order.status !== 'CANCELLED' ? inp.uc.order : null;
 
-  // An order cancelled before it shipped was never a sale: no invoice, nothing delivered.
+  const sellerCode = sellerCodeOf(inp.sellerState);
+
+  // An order cancelled before it shipped was never a sale: no invoice, nothing delivered, whatever the customer paid.
+  // What is left to decide is the money. Nothing paid, or store credit that all went back to the customer, leaves
+  // nothing to book. Money that went through a real gateway, or store credit that did not all come back, is NOT booked
+  // automatically: the order is an exception (order 37937 was once booked as a finished sale because it was paid with
+  // store credit, which counted as "money moved").
   const shipped = (o.fulfillments ?? []).some((f: any) => (f.trackingInfo ?? []).length) || !!inp.uc?.saleInvoice;
-  const movedMoney = txs.some(t => succeeded(t) && t.kind !== 'REFUND');
-  if (o.cancelledAt && !shipped && !movedMoney && !tags.includes('rto_delivered')) {
+  const refundedOut = sum(txs.filter(t => t.kind === 'REFUND' && t.status === 'SUCCESS').map(t => money(t.amountSet)));
+  const returnedToOrigin = tags.includes('rto_delivered') || parseNote(o.note).rto?.state === 'delivered';
+  if (o.cancelledAt && !shipped && !returnedToOrigin) {
+    const paidIn = txs.filter(t => succeeded(t) && !isCodGateway(t.gateway));
+    const viaGateway = [...new Set(paidIn.filter(t => !isStoreCredit(t.gateway)).map(t => String(t.gateway ?? 'gateway')))];
+    const paid = sum(paidIn.map(t => money(t.amountSet)));
+    const base = { order: String(o.name).replace(/^#/, ''), rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(o.createdAt) };
+    if (paid <= 0.005) {
+      return { facts: base, notes: ['cancelled before dispatch: never a sale'], skip: 'cancelled before dispatch' };
+    }
+    if (!viaGateway.length && refundedOut >= paid - 0.005) {
+      return {
+        facts: base,
+        notes: [`cancelled before dispatch: never a sale (${paid.toFixed(2)} of store credit was spent and credited back)`],
+        skip: 'cancelled before dispatch (store credit spent and credited back)',
+      };
+    }
+    const place = placeOfSupply(o, ucOrder);
     return {
-      facts: { order: String(o.name).replace(/^#/, ''), rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(o.createdAt) },
-      notes: ['cancelled before dispatch: never a sale'], skip: 'cancelled before dispatch',
+      facts: { ...base, ...(place ? { state: place } : {}), cancelled: { paid, refunded: refundedOut, via: viaGateway.length ? viaGateway : ['store credit'] } },
+      notes: ['cancelled before dispatch: never a sale, but the customer had paid'],
+    };
+  }
+
+  const state = placeOfSupply(o, ucOrder);
+  const sale = ucOrder ? inp.uc?.saleInvoice : undefined;
+
+  // ── Not invoiced yet: not a sale ───────────────────────────────────────────
+  // An order is a sale once Unicommerce has issued its invoice, and not before: until then its amounts are guesses (GST rate,
+  // tax type), it can still be cancelled or edited, and Tally needs the invoice number. It is stored with no entries so the
+  // Ledger page can list it; the sale is built (on the order date) when the invoice exists. Only orders placed from the
+  // instant Unicommerce started (ucFrom) wait: older ones were never in Unicommerce and keep Shopify's amounts below.
+  if (!sale && inp.ucFrom && Date.parse(o.createdAt) >= Date.parse(inp.ucFrom)) {
+    const gatewayPaid = sum(txs.filter(t => succeeded(t) && !isStoreCredit(t.gateway) && !isCodGateway(t.gateway)).map(t => money(t.amountSet)));
+    const creditPaid = sum(txs.filter(t => succeeded(t) && isStoreCredit(t.gateway)).map(t => money(t.amountSet)));
+    const amount = r2(money(o.subtotalPriceSet) + money(o.totalShippingPriceSet));
+    const paid = r2(gatewayPaid + creditPaid);
+    return {
+      facts: {
+        order: String(o.name).replace(/^#/, ''), ...(state ? { state } : {}), rate: 0.05, goods: 0, codFee: 0, saleDate: istDate(o.createdAt),
+        igst: state && sellerCode ? state.code !== sellerCode : true,
+        waiting: {
+          amount, paid, mode: paid <= 0.005 ? 'cod' : paid >= amount - 0.005 ? 'prepaid' : 'part paid',
+          inUnicommerce: !!inp.uc?.order, ...(shipped ? { shipped: true } : {}),
+          ...(inp.uc?.order?.status === 'CANCELLED' && !o.cancelledAt ? { cancelledInUnicommerce: true } : {}),
+        },
+      },
+      notes: ['waiting for the Unicommerce invoice: nothing is booked until it exists'],
     };
   }
 
   // ── The sale ───────────────────────────────────────────────────────────────
   let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined, invoiceDate: string | undefined, qty: number | undefined;
-  const sale = ucOrder ? inp.uc?.saleInvoice : undefined;
   if (sale) {
     const a = invoiceAmounts(sale);
     ({ rate, igst, codFee } = a);
@@ -113,7 +196,7 @@ export function buildFacts(inp: RawInputs): Built {
     goods = money(o.subtotalPriceSet);
     codFee = cod ? ship : 0;
     if (!cod && ship > 0) { goods = r2(goods + ship); notes.push('a shipping charge on a prepaid order is treated as part of the goods'); }
-    igst = (o.shippingAddress?.provinceCode ?? '') !== inp.sellerState;
+    igst = state && sellerCode ? state.code !== sellerCode : (o.shippingAddress?.provinceCode ?? '') !== inp.sellerState;
     saleDate = istDate(o.createdAt);
     const lines: any[] = o.lineItems?.nodes ?? [];
     qty = lines.length ? lines.reduce((n, l) => n + (Number(l.quantity) || 0), 0) : undefined;
@@ -242,9 +325,11 @@ export function buildFacts(inp: RawInputs): Built {
     returns.push({ kind: 'rto', date, goodsReturned: goods, qty, pending, uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee, qty: uc.qty } : undefined, storeCredit });
   }
 
+  notes.push(...stateNotes(state, ucOrder, sellerCode, sale ? igst : undefined));
+
   return {
     facts: {
-      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns,
+      order: String(o.name).replace(/^#/, ''), ...(state ? { state } : {}), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns, refundedOut,
       ...(inp.gatewayPayouts ? { gatewayPayouts: inp.gatewayPayouts } : {}),
       rtoOnTheWay: rtoOnTheWay ? { state: rtoOnTheWay.state, since: rtoOnTheWay.on || undefined } : undefined,
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
@@ -267,6 +352,7 @@ export function buildFacts(inp: RawInputs): Built {
 //   - Myntra's own customer charge (the "GT charge") is not ours and is not on the invoice.
 
 export type MyntraInputs = {
+  sellerState?: string;                 // province code of the warehouse, e.g. 'UP' (to check the invoice's kind of GST against the state)
   today: string;                        // IST date
   bookFrom: string;                     // first day of the books (accounting_start_date)
   uc: {
@@ -283,11 +369,25 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
   const sale = inp.uc.saleInvoice;
   const name = String(sale?.displayCode ?? (o.shippingPackages ?? []).find((p: any) => p?.invoiceDisplayCode)?.invoiceDisplayCode ?? '');
   const base: Facts = { order: name, channel: 'myntra', channelRef: code, rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(Number(o.displayOrderDateTime ?? o.created)) };
-  if (!name) return { facts: base, notes: ['no Unicommerce invoice yet: not a sale until it is invoiced'], ignore: 'not invoiced yet' };
+  if (!name) {
+    // Not invoiced yet: listed as waiting (named by its Unicommerce order code, it has no invoice number) unless it was cancelled
+    // first, when there is nothing to show.
+    if (o.status === 'CANCELLED') return { facts: base, notes: ['cancelled before it was invoiced: never a sale'], ignore: 'cancelled before it was invoiced' };
+    const ordered = base.saleDate;
+    const state = placeOfSupply(null, o);
+    return {
+      facts: {
+        ...base, order: code, ...(state ? { state } : {}), saleDate: ordered < inp.bookFrom ? inp.bookFrom : ordered,
+        waiting: { amount: r2(sum((o.saleOrderItems ?? []).map((i: any) => Number(i.sellingPrice ?? 0)))), paid: 0, mode: 'marketplace', inUnicommerce: true },
+      },
+      notes: ['waiting for the Unicommerce invoice: nothing is booked until it exists'],
+    };
+  }
   if (o.status === 'CANCELLED') return { facts: base, notes: ['cancelled: never a sale'], skip: 'cancelled' };
   if (!sale) return { facts: base, notes: [`invoice ${name} could not be read from Unicommerce`], ignore: 'invoice unreadable' };
 
   // ── The sale ───────────────────────────────────────────────────────────────
+  const state = placeOfSupply(null, o);
   const a = invoiceAmounts(sale);
   let goods = a.goods;
   if (a.shipping > 0) { notes.push(`the sale invoice has a shipping charge of ${a.shipping.toFixed(2)}; treated as part of the goods`); goods = r2(goods + a.shipping); }
@@ -318,8 +418,10 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
     });
   }
 
+  notes.push(...stateNotes(state, o, sellerCodeOf(inp.sellerState), a.igst));
+
   return {
-    facts: { ...base, rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, qty: a.qty, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
+    facts: { ...base, ...(state ? { state } : {}), rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, qty: a.qty, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
     notes,
   };
 }

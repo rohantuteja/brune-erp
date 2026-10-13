@@ -1,4 +1,4 @@
-// accounting-ledger v9
+// accounting-ledger v12
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. `order` and `report` write nothing. `sync` and `tick`
@@ -223,7 +223,8 @@ async function report(ctx: Ctx, body: any) {
     if (r.ledger.balanced) summary.balanced++;
     if (r.ledger.status === 'open') summary.open++;
     if (r.ledger.status === 'attention') summary.attention++;
-    for (const t of new Set(r.ledger.exceptions.map((e: any) => e.type))) (summary as any)[t as string]++;
+    if (r.ledger.status === 'waiting_invoice') (summary as any).waiting_invoice = ((summary as any).waiting_invoice ?? 0) + 1;
+    for (const t of new Set(r.ledger.exceptions.map((e: any) => e.type))) (summary as any)[t as string] = ((summary as any)[t as string] ?? 0) + 1;
     if (r.ledger.balancing.some((b: any) => b.type !== 'return_fee_invoice')) summary.needing_balancing_documents++;
     for (const b of r.ledger.balancing) {
       const t = (balancing[b.type] ??= { orders: 0, amount: 0 });
@@ -300,7 +301,7 @@ async function startRun(ctx: Ctx, kind: 'full' | 'incremental' | 'manual') {
       if (data?.[0]) { const d = istDate(Date.parse(data[0].started_at) - 2 * 86_400_000); since = d > cutoff ? d : cutoff; }
     }
     for (const id of await shopifyOrderIds(ctx, `updated_at:>=${since}`)) ids.add(id);
-    const { data: open } = await ctx.admin.from('ledger_orders').select('order_id, channel, channel_ref').in('status', ['open', 'attention']);
+    const { data: open } = await ctx.admin.from('ledger_orders').select('order_id, channel, channel_ref').in('status', ['open', 'attention', 'waiting_invoice']);      // a waiting order is looked at every run: its invoice may exist now
     for (const r of open ?? []) {
       if (r.channel === 'myntra' && r.channel_ref) myntra.add(String(r.channel_ref));
       else if (r.order_id != null) ids.add(Number(r.order_id));
@@ -333,6 +334,7 @@ async function advance(ctx: Ctx, run: any, budget: number) {
       const ids = chunk.filter((i): i is number => typeof i === 'number');
       const myntraChunk = chunk.filter((i): i is string => typeof i === 'string' && i.startsWith('M:')).map(i => i.slice(2));
       const rows: any[] = [];
+      const toClear: string[] = [];
       if (ids.length) {
         const page = await shopifyOrders(ctx, ids.map(i => `id:${i}`).join(' OR '), ids.length);
         const found = new Set(page.nodes.map(n => Number(n.legacyResourceId)));
@@ -345,16 +347,24 @@ async function advance(ctx: Ctx, run: any, budget: number) {
         const mine = await processMyntra(ctx, myntraChunk, shared);
         addHeld(mine.held);
         rows.push(...mine.results.map(r => ledgerRow(r, shared.cutoff)));
+        toClear.push(...mine.cleared);
       }
       const { error } = rows.length ? await ctx.admin.rpc('ledger_save_orders', { p_orders: rows }) : { error: null };
       if (error) throw new Error(`saving the ledger: ${error.message}`);
+      // A Myntra order waits under its Unicommerce order code and is saved under its invoice number once invoiced (or dropped if
+      // cancelled first): remove the waiting row. Only rows with this status and name, after the real row is saved.
+      if (toClear.length) {
+        const { error: delErr } = await ctx.admin.from('ledger_orders').delete().eq('channel', 'myntra').eq('status', 'waiting_invoice').in('order_name', toClear);
+        if (delErr) throw new Error(`clearing waiting orders: ${delErr.message}`);
+        toClear.length = 0;
+      }
       pos += chunk.length;
       await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing, held } }).eq('id', run.id);
     }
     const finished = pos >= run.total;
     if (finished) {
       const counts: Record<string, number> = {};
-      for (const st of ['complete', 'open', 'attention', 'not_a_sale']) {
+      for (const st of ['complete', 'open', 'attention', 'not_a_sale', 'waiting_invoice']) {
         const { count } = await ctx.admin.from('ledger_orders').select('order_name', { count: 'exact', head: true }).eq('status', st);
         counts[st] = count ?? 0;
       }
@@ -391,6 +401,9 @@ type Shared = Awaited<ReturnType<typeof sharedInputs>>;
 async function sharedInputs(ctx: Ctx) {
   const cutoff = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
   const sellerState = await setting(ctx.admin, 'seller_state', 'UP');
+  // Orders placed from this instant on are in Unicommerce and wait for its invoice; older ones keep Shopify's amounts (migration 032).
+  const ucFrom = await setting(ctx.admin, 'uc_orders_from', '2026-09-29T17:07:59Z');
+  const invoiceAlertDays = Number(await setting(ctx.admin, 'invoice_wait_alert_days', '3')) || 3;
   const today = istDate(Date.now());
   const rp = await returnPrimeByOrder(ctx);
   // The debits the ERP made to take back double store credit (store-credit-guard).
@@ -404,11 +417,11 @@ async function sharedInputs(ctx: Ctx) {
   const edge = async (asc: boolean) => (await ctx.admin.from('gokwik_payments').select('txn_date').order('txn_date', { ascending: asc }).limit(1)).data?.[0]?.txn_date as string | undefined;
   const [from, to] = [await edge(true), await edge(false)];
   const gatewayCoverage = from && to ? { from, to } : undefined;
-  return { cutoff, sellerState, today, rp, reversalIds, adjustments, gatewayCoverage };
+  return { cutoff, sellerState, ucFrom, invoiceAlertDays, today, rp, reversalIds, adjustments, gatewayCoverage };
 }
 
 async function process(ctx: Ctx, orders: any[], shared?: Shared) {
-  const { cutoff, sellerState, today, rp, reversalIds, adjustments, gatewayCoverage } = shared ?? await sharedInputs(ctx);
+  const { cutoff, sellerState, ucFrom, invoiceAlertDays, today, rp, reversalIds, adjustments, gatewayCoverage } = shared ?? await sharedInputs(ctx);
   const ids = orders.map(o => Number(o.legacyResourceId));
   // GoKwik's settlement report rows (amount, fee, GST, what reached the bank), by Shopify order number.
   const { data: gk } = await ctx.admin.from('gokwik_payments').select('order_name, payment_id, settlement_date, utr, amount, fee, tax, credit')
@@ -452,7 +465,7 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
       ? { utr: String(row.utr), date: String(row.remittance_date ?? row.delivered_on ?? ''), amount: row.cod_amount != null ? Number(row.cod_amount) : null }
       : v?.utr_no ? { utr: String(v.utr_no), date: String(v.remittance_date ?? ''), amount: v.cod_amount != null ? Number(v.cod_amount) : null } : null;
     const built = buildFacts({
-      sellerState, today, shopify: o, uc: ucBy.get(id) ?? null,
+      sellerState, ucFrom, today, shopify: o, uc: ucBy.get(id) ?? null,
       rpRequests: rp.get(String(o.name).replace(/^#/, '')) ?? [], reversalIds,
       adjustments: adjustments.get(String(o.name).replace(/^#/, '')) ?? [],
       codDeliveredOn: (row?.delivered_on as string | null) ?? null,
@@ -461,7 +474,7 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
       gatewayPayouts: payoutsBy.get(String(o.name).replace(/^#/, '')) ?? [],
     });
     if (held) built.notes.push(`${held}: this order is not saved, its last figures stay, and it is tried again`);
-    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, held, ledger: buildOrderLedger(built.facts, { cutoff, today, gatewayCoverage }) });
+    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, held, ledger: buildOrderLedger(built.facts, { cutoff, today, gatewayCoverage, requireState: true, invoiceAlertDays }) });
   }
   return out;
 }
@@ -495,6 +508,8 @@ async function myntraCodes(ctx: Ctx, fromDate: string, dateType: 'CREATED' | 'UP
 async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll = false) {
   const results: Array<{ order: string; orderId: number | null; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
   const held: Held[] = [];
+  // Codes that were read and are not waiting for an invoice (any more): a waiting row stored under the order code is deleted by advance().
+  const cleared: string[] = [];
   for (const code of codes) {
     let uc: RawInputs['uc'];
     try { uc = await unicommerce(ctx, code); }
@@ -504,11 +519,12 @@ async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll 
       continue;
     }
     if (!uc?.order) continue;
-    const built = buildMyntraFacts({ today: shared.today, bookFrom: shared.cutoff, uc });
+    const built = buildMyntraFacts({ sellerState: shared.sellerState, today: shared.today, bookFrom: shared.cutoff, uc });
+    if (!built.facts.waiting) cleared.push(code);
     if (built.ignore && !keepAll) continue;
-    results.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today }) });
+    results.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today, requireState: true, invoiceAlertDays: shared.invoiceAlertDays }) });
   }
-  return { results, held };
+  return { results, held, cleared };
 }
 
 async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string | null = null) {
@@ -516,7 +532,7 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
     orders(first: $first, after: $after, query: $q, sortKey: UPDATED_AT) {
       pageInfo { hasNextPage endCursor }
       nodes { id legacyResourceId name createdAt cancelledAt tags note paymentGatewayNames
-        subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode }
+        subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode province }
         transactions(first: 20) { id kind status gateway amountSet { shopMoney { amount } } processedAt }
         lineItems(first: 10) { nodes { quantity } }
         refunds { createdAt refundLineItems(first: 10) { nodes { quantity subtotalSet { shopMoney { amount } } } }
