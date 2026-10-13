@@ -1,4 +1,4 @@
-// accounting-ledger v10
+// accounting-ledger v11
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. `order` and `report` write nothing. `sync` and `tick`
@@ -223,7 +223,7 @@ async function report(ctx: Ctx, body: any) {
     if (r.ledger.balanced) summary.balanced++;
     if (r.ledger.status === 'open') summary.open++;
     if (r.ledger.status === 'attention') summary.attention++;
-    for (const t of new Set(r.ledger.exceptions.map((e: any) => e.type))) (summary as any)[t as string]++;
+    for (const t of new Set(r.ledger.exceptions.map((e: any) => e.type))) (summary as any)[t as string] = ((summary as any)[t as string] ?? 0) + 1;
     if (r.ledger.balancing.some((b: any) => b.type !== 'return_fee_invoice')) summary.needing_balancing_documents++;
     for (const b of r.ledger.balancing) {
       const t = (balancing[b.type] ??= { orders: 0, amount: 0 });

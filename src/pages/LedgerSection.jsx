@@ -52,6 +52,8 @@ const EXCEPTION_LABEL = {
   unexplained_residual: 'Unexplained',
   bad_facts: 'Bad data',
   no_state: 'No state on the order',
+  cancelled_after_payment: 'Cancelled but paid',
+  refund_not_booked: 'Refund not in the ledger',
 };
 
 const DOC_LABEL = {

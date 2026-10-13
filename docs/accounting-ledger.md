@@ -412,6 +412,29 @@ no disagreement between Shopify and Unicommerce, no invoice with the wrong tax t
 outside UP and carry IGST only, 19 ship inside UP and carry CGST + SGST only. Compared with a snapshot taken before the
 sync, all 428 orders kept the same status, amounts and sale date, and all 3,328 ledger entries were identical.
 
+## Cancelled orders, and refunds checked against Shopify (`accounting-ledger` v19)
+
+On 14 Oct 2026 order 37937 showed as a finished sale although Shopify had cancelled it 20 seconds after it was placed
+(paid ₹1,699 with store credit, credited straight back). The old rule ("cancelled before dispatch = never a sale") was
+switched off whenever any payment succeeded, and store credit counted as a payment. Now (`buildFacts`, tested in
+`order-facts.test.ts`):
+
+- **Cancelled before dispatch** means cancelled, no tracking number, no Unicommerce sale invoice, and not a returned-to-origin
+  order. Whatever was paid, it is **never a sale**; no sale is booked.
+- **Nothing paid** (a voided COD order), or **store credit only that was all credited back** (REFUND transactions at least
+  the amount paid): `not_a_sale`, nothing else to book.
+- **Anything that went through a real gateway**, or store credit that was not all credited back: the order is stored with no
+  entries and the exception `cancelled_after_payment` (status `attention`): the refund and GoKwik's payout are not booked
+  automatically, a person checks them. There is no such order yet; cancelling a UPI order is the case it is for.
+- **Reality check on every order:** `facts.refundedOut` is what Shopify refunded (successful REFUND transactions). If it is
+  more than the ledger shows going back to the customer (store credit issued plus cash refunds) by over ₹1, the order gets
+  `refund_not_booked` (attention). Only that direction: an approved goodwill credit puts more into the ledger than Shopify
+  refunded (37613, ₹159.90). Cash refunds to the original payment method are not modelled; this check is what would show one.
+- Checked on live data on 14 Oct 2026: 33 cancelled orders since 25 Sep (17 returns to origin and 8 voided COD orders
+  right, 37875 a real shipped sale returned, 37937 the only wrong one); all 21 other refunded orders match to the paisa;
+  Shopify has 370 orders updated since 1 Oct and the ledger 370 Shopify rows, none missing.
+- The `report` action counted exception types with `summary[t]++` and gave `NaN` for any type it did not list; fixed.
+
 ## Myntra orders (migration 027)
 
 Myntra orders (Unicommerce channel `MYNTRAPPMP`) live only in Unicommerce, so the ledger reads them from there and keeps

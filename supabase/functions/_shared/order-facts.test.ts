@@ -182,6 +182,90 @@ test('37740: cancelled by the customer before it shipped → never a sale', () =
   assert.equal(ledger(b).balanced, true);
 });
 
+// ── Cancelled before dispatch, but the customer had paid (order 37937, 14 Oct 2026) ───────────
+// It was paid with ₹1,699 of store credit and cancelled 20 seconds later by GoKwik's confirmation page, which credited the
+// ₹1,699 back. It was booked as a finished sale because store credit counted as "money moved".
+const cancelledPaid = (name: string, txs: any[], o: any = {}): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-14', uc: null, rpRequests: [],
+  shopify: { name, createdAt: '2026-10-13T19:32:21Z', cancelledAt: '2026-10-13T19:32:42Z', tags: ['Cancelled via GK Order confirmation page', 'StoreCredits', 'UPI'],
+    paymentGatewayNames: ['shopify_store_credit'], subtotalPriceSet: m(1699), totalShippingPriceSet: m(0), shippingAddress: { province: 'Haryana', provinceCode: 'HR' },
+    transactions: txs, fulfillments: [], refunds: [], customer: null, ...o },
+});
+const tx = (kind: string, gateway: string, amount: number, status = 'SUCCESS') => ({ id: `${kind}-${gateway}-${amount}`, kind, status, gateway, amountSet: m(amount), processedAt: '2026-10-13T19:32:30Z' });
+
+test('37937: paid with store credit, cancelled before dispatch, credit given back → never a sale', () => {
+  const b = buildFacts(cancelledPaid('37937', [tx('CAPTURE', 'Shopify Store Credits', 1699), tx('REFUND', 'Shopify Store Credits', 1699)]));
+  assert.equal(b.skip, 'cancelled before dispatch (store credit spent and credited back)');
+  assert.equal(ledger(b).entries.length, 0);
+});
+
+test('cancelled before dispatch, paid by UPI → no sale booked, but an exception a person must look at', () => {
+  const b = buildFacts(cancelledPaid('40001', [tx('CAPTURE', 'Gokwik UPI', 1699), tx('REFUND', 'Gokwik UPI', 1699)]));
+  assert.equal(b.skip, undefined);
+  assert.equal(b.facts.cancelled?.paid, 1699);
+  assert.deepEqual(b.facts.cancelled?.via, ['Gokwik UPI']);
+  const l = ledger(b);
+  assert.equal(l.entries.length, 0);                                  // nothing is booked on a guess
+  assert.equal(l.exceptions[0].type, 'cancelled_after_payment');
+  assert.equal(l.status, 'attention');
+  assert.equal(l.balanced, false);
+});
+
+test('cancelled before dispatch, paid by store credit that was NOT credited back → exception, not a sale', () => {
+  const l = ledger(buildFacts(cancelledPaid('40002', [tx('CAPTURE', 'Shopify Store Credits', 1699)])));
+  assert.equal(l.exceptions[0].type, 'cancelled_after_payment');
+  assert.equal(l.exceptions[0].amount, 1699);
+  assert.equal(l.status, 'attention');
+});
+
+test('cancelled before dispatch, part store credit and part UPI → exception (a gateway moved money)', () => {
+  const b = buildFacts(cancelledPaid('40003', [tx('CAPTURE', 'Gokwik UPI', 99), tx('CAPTURE', 'Shopify Store Credits', 1600), tx('REFUND', 'Shopify Store Credits', 1699)]));
+  assert.deepEqual(b.facts.cancelled?.via, ['Gokwik UPI']);
+  assert.equal(ledger(b).exceptions[0].type, 'cancelled_after_payment');
+});
+
+test('cancelled AFTER it shipped (tracking number) and paid with store credit → still a sale, as before (the RTO flow)', () => {
+  const b = buildFacts(cancelledPaid('40004', [tx('CAPTURE', 'Shopify Store Credits', 1699)], { fulfillments: [{ trackingInfo: [{ number: 'AWB1' }] }] }));
+  assert.equal(b.skip, undefined);
+  assert.equal(b.facts.cancelled, undefined);
+  assert.ok(ledger(b).entries.some(e => e.voucher === 'sale'));
+});
+
+test('Shopify refunds are read from the REFUND transactions', () => {
+  const b = buildFacts(cancelledPaid('40005', [tx('CAPTURE', 'Gokwik UPI', 500), tx('REFUND', 'shopify_store_credit', 300), tx('REFUND', 'shopify_store_credit', 150, 'FAILURE')], { cancelledAt: null }));
+  assert.equal(b.facts.refundedOut, 300);
+});
+
+// ── The reality check: money Shopify gave back must be visible in the ledger ────────────────
+const sold = (o: any = {}) => ({
+  order: 'X', rate: 0.05, igst: true, goods: 1000, codFee: 0, saleDate: '2026-10-05', state: { code: '27', name: 'Maharashtra', source: 'shopify' as const },
+  payments: [{ date: '2026-10-05', amount: 1000, ref: 'p', gateway: 'Gokwik UPI' }], ...o,
+});
+const returned = (credit: number) => [{ kind: 'customer' as const, date: '2026-10-08', goodsReturned: 400, qty: 1, pending: false, storeCredit: [{ date: '2026-10-08', amount: credit, ref: 'c' }] }];
+
+test('Shopify refunded money and the ledger shows none going back → refund_not_booked', () => {
+  const l = buildOrderLedger(sold({ refundedOut: 400 }), { cutoff: CUTOFF });
+  assert.equal(l.exceptions.at(-1)?.type, 'refund_not_booked');
+  assert.equal(l.exceptions.at(-1)?.amount, 400);
+  assert.equal(l.status, 'attention');
+});
+
+test('Shopify refund matches the store credit the ledger issued → no exception', () => {
+  const l = buildOrderLedger(sold({ refundedOut: 400, returns: returned(400) }), { cutoff: CUTOFF });
+  assert.deepEqual(l.exceptions, []);
+  assert.equal(l.balanced, true);
+});
+
+test('the ledger shows MORE going back than Shopify refunded (an approved goodwill credit) → not this check\'s business', () => {
+  const l = buildOrderLedger(sold({ refundedOut: 300, returns: returned(400) }), { cutoff: CUTOFF });
+  assert.ok(!l.exceptions.some(e => e.type === 'refund_not_booked'));
+});
+
+test('no refund in Shopify → the check stays quiet', () => {
+  assert.deepEqual(buildOrderLedger(sold({ refundedOut: 0 }), { cutoff: CUTOFF }).exceptions, []);
+  assert.deepEqual(buildOrderLedger(sold(), { cutoff: CUTOFF }).exceptions, []);
+});
+
 // ── Returns to origin before the ERP handled RTOs: credit a person gave by hand ──────────────
 const credit = (amount: number, createdAt: string) => ({ __typename: 'StoreCreditAccountCreditTransaction', amount: { amount: String(amount) }, createdAt });
 const debit = (amount: number, createdAt: string) => ({ __typename: 'StoreCreditAccountDebitTransaction', amount: { amount: String(-amount) }, createdAt });

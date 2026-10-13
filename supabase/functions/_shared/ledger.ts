@@ -50,6 +50,10 @@ export type Facts = {
   channel?: 'shopify' | 'myntra'; // where the order came from (default shopify)
   channelRef?: string;            // Myntra: the Unicommerce order code
   state?: PlaceOfSupply;          // absent = the state could not be found (the order cannot be exported)
+  // Cancelled before dispatch, so never a sale (no sale is booked), but the customer had paid through a gateway, or paid with
+  // store credit that did not all come back. Booking that money is not automatic: it is always an exception.
+  cancelled?: { paid: number; refunded: number; via: string[] };
+  refundedOut?: number;           // what Shopify says it refunded to the customer (successful REFUND transactions); checked against what the ledger shows going back
   rate: number;                   // GST rate, 0.05 for garments up to ₹2,500
   igst: boolean;                  // inter-state: IGST; otherwise CGST + SGST
   goods: number;                  // goods on the sale invoice, after discounts, tax-inclusive
@@ -333,6 +337,25 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     }
     const rz = openOf(RAZORPAY);
     if (Math.abs(rz) > 0.01) exceptions.push({ type: 'awaiting_payout', amount: rz, reason: 'paid through Razorpay; its payout is not matched yet' });
+  }
+  // Reality check against Shopify. Whatever the rules above did, money Shopify says it gave back to the customer must
+  // be visible in the ledger (store credit issued, or a cash refund). Only that direction is checked: a goodwill credit
+  // a person approved legitimately puts more into the ledger than Shopify refunded.
+  if (f.cancelled) {
+    const c = f.cancelled;
+    exceptions.push({
+      type: 'cancelled_after_payment', amount: r2(c.paid - c.refunded),
+      reason: `cancelled before dispatch, so never a sale, but the customer had paid ${c.paid.toFixed(2)} (${c.via.join(', ')}) and ${c.refunded.toFixed(2)} was refunded: this money is not booked automatically, check the refund and the payout`,
+    });
+  } else if (f.refundedOut) {
+    const booked = r2((f.returns ?? []).reduce((s, r) => s + sumOf(r.storeCredit) + (r.cashRefund?.amount ?? 0), 0));
+    const gap = r2(f.refundedOut - booked);
+    if (gap > 1.005) {
+      exceptions.push({
+        type: 'refund_not_booked', amount: gap,
+        reason: `Shopify refunded ${f.refundedOut.toFixed(2)} to the customer but the ledger shows only ${booked.toFixed(2)} going back (store credit or cash): ${gap.toFixed(2)} is not accounted for`,
+      });
+    }
   }
   if (opts.requireState && !f.state) exceptions.unshift({ type: 'no_state', amount: 0, reason: 'the state the goods go to is not on the order (Shopify shipping address or Unicommerce address): every voucher needs it, so this order cannot go to Tally' });
   const exportable = entries.filter(e => e.date >= opts.cutoff);

@@ -112,13 +112,33 @@ export function buildFacts(inp: RawInputs): Built {
 
   const sellerCode = sellerCodeOf(inp.sellerState);
 
-  // An order cancelled before it shipped was never a sale: no invoice, nothing delivered.
+  // An order cancelled before it shipped was never a sale: no invoice, nothing delivered, whatever the customer paid.
+  // What is left to decide is the money. Nothing paid, or store credit that all went back to the customer, leaves
+  // nothing to book. Money that went through a real gateway, or store credit that did not all come back, is NOT booked
+  // automatically: the order is an exception (order 37937 was once booked as a finished sale because it was paid with
+  // store credit, which counted as "money moved").
   const shipped = (o.fulfillments ?? []).some((f: any) => (f.trackingInfo ?? []).length) || !!inp.uc?.saleInvoice;
-  const movedMoney = txs.some(t => succeeded(t) && t.kind !== 'REFUND');
-  if (o.cancelledAt && !shipped && !movedMoney && !tags.includes('rto_delivered')) {
+  const refundedOut = sum(txs.filter(t => t.kind === 'REFUND' && t.status === 'SUCCESS').map(t => money(t.amountSet)));
+  const returnedToOrigin = tags.includes('rto_delivered') || parseNote(o.note).rto?.state === 'delivered';
+  if (o.cancelledAt && !shipped && !returnedToOrigin) {
+    const paidIn = txs.filter(t => succeeded(t) && !isCodGateway(t.gateway));
+    const viaGateway = [...new Set(paidIn.filter(t => !isStoreCredit(t.gateway)).map(t => String(t.gateway ?? 'gateway')))];
+    const paid = sum(paidIn.map(t => money(t.amountSet)));
+    const base = { order: String(o.name).replace(/^#/, ''), rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(o.createdAt) };
+    if (paid <= 0.005) {
+      return { facts: base, notes: ['cancelled before dispatch: never a sale'], skip: 'cancelled before dispatch' };
+    }
+    if (!viaGateway.length && refundedOut >= paid - 0.005) {
+      return {
+        facts: base,
+        notes: [`cancelled before dispatch: never a sale (${paid.toFixed(2)} of store credit was spent and credited back)`],
+        skip: 'cancelled before dispatch (store credit spent and credited back)',
+      };
+    }
+    const place = placeOfSupply(o, ucOrder);
     return {
-      facts: { order: String(o.name).replace(/^#/, ''), rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(o.createdAt) },
-      notes: ['cancelled before dispatch: never a sale'], skip: 'cancelled before dispatch',
+      facts: { ...base, ...(place ? { state: place } : {}), cancelled: { paid, refunded: refundedOut, via: viaGateway.length ? viaGateway : ['store credit'] } },
+      notes: ['cancelled before dispatch: never a sale, but the customer had paid'],
     };
   }
 
@@ -281,7 +301,7 @@ export function buildFacts(inp: RawInputs): Built {
 
   return {
     facts: {
-      order: String(o.name).replace(/^#/, ''), ...(state ? { state } : {}), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns,
+      order: String(o.name).replace(/^#/, ''), ...(state ? { state } : {}), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns, refundedOut,
       ...(inp.gatewayPayouts ? { gatewayPayouts: inp.gatewayPayouts } : {}),
       rtoOnTheWay: rtoOnTheWay ? { state: rtoOnTheWay.state, since: rtoOnTheWay.on || undefined } : undefined,
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
