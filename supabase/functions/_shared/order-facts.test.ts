@@ -346,3 +346,65 @@ test('the RTO tag alone, without a note, still means the parcel is on its way ba
   const b = buildFacts(codRaw({ codDeliveredOn: null, shopify: { ...codRaw().shopify, tags: ['rto_initiated'], note: null, transactions: [] } }));
   assert.equal(b.facts.rtoOnTheWay?.state, 'initiated');
 });
+
+// ── Which day a sale is booked on: the Shopify order date, not the Unicommerce invoice date ──
+const prepaidOrder = (name: string, createdAt: string, invoiceAt: string, doc: string): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-12',
+  shopify: {
+    name, createdAt, tags: ['UPI'], paymentGatewayNames: ['Gokwik UPI'], subtotalPriceSet: m(1349), totalShippingPriceSet: m(0),
+    shippingAddress: { provinceCode: 'DL' }, refunds: [], customer: null,
+    transactions: [{ id: 't1', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1349), processedAt: createdAt }],
+  },
+  uc: { order: { status: 'COMPLETE', returns: [] }, saleInvoice: ucInvoice(doc, Date.parse(invoiceAt), 1349, 64.24, 0), returnInvoices: {} },
+  rpRequests: [],
+});
+
+test('37729: ordered 30 Sep at 23:54 IST, invoiced by Unicommerce on 1 Oct → booked on 30 Sep (September, outside the ledger); the invoice keeps its number and amounts', () => {
+  const b = buildFacts(prepaidOrder('37729', '2026-09-30T18:24:28Z', '2026-10-01T02:50:59Z', 'INS0028'));
+  assert.equal(b.facts.saleDate, '2026-09-30');
+  assert.equal(b.facts.invoiceDate, '2026-10-01');
+  assert.equal(b.facts.saleDoc, 'INS0028');
+  assert.equal(b.facts.goods, 1349); assert.equal(b.facts.codFee, 0);
+  assert.ok(b.notes.some(n => /order date 2026-09-30.*INS0028.*2026-10-01/.test(n)), 'says why the dates differ');
+  const l = ledger(b);
+  assert.equal(l.entries.find(e => e.voucher === 'sale')?.doc, 'INS0028');
+  assert.equal(l.status, 'complete');
+  assert.equal(l.opening, 0);                    // the sale and the payment are both on 30 Sep: nothing is carried into October
+  assert.equal(l.exportable.length, 0);          // and nothing of it is October's
+});
+
+test('37730: ordered at 00:17 IST on 1 Oct (18:47 UTC on 30 Sep) is an October sale', () => {
+  const b = buildFacts(prepaidOrder('37730', '2026-09-30T18:47:47Z', '2026-10-01T02:50:54Z', 'INS0029'));
+  assert.equal(b.facts.saleDate, '2026-10-01');
+  assert.ok(!b.notes.some(n => /later month/.test(n)));
+  const l = ledger(b);
+  assert.equal(l.exportable.filter(e => e.voucher === 'sale' && e.date === '2026-10-01').length > 0, true);
+  assert.equal(l.opening, 0);
+});
+
+test('ordered and invoiced in the same month: booked on the order date, no note, amounts unchanged', () => {
+  const b = buildFacts(prepaidOrder('37733', '2026-10-01T10:00:00Z', '2026-10-03T06:00:00Z', 'INS0055'));
+  assert.equal(b.facts.saleDate, '2026-10-01'); assert.equal(b.facts.invoiceDate, '2026-10-03');
+  assert.ok(!b.notes.some(n => /later month/.test(n)));
+  assert.equal(ledger(b).entries.find(e => e.voucher === 'sale')?.date, '2026-10-01');
+  assert.equal(ledger(b).status, 'complete');
+});
+
+test('a COD order placed 30 Sep, invoiced 1 Oct and not delivered: the sale is September\'s opening receivable, and "invoiced N days ago" still counts from the invoice', () => {
+  const raw = prepaidOrder('37716', '2026-09-30T02:46:28Z', '2026-10-01T02:50:58Z', 'INS0018');
+  raw.shopify = { ...raw.shopify, tags: ['COD'], paymentGatewayNames: ['cash_on_delivery'], transactions: [{ id: 'x', kind: 'SALE', status: 'PENDING', gateway: 'cash_on_delivery', amountSet: m(1449), processedAt: '2026-09-30T02:46:29Z' }] };
+  raw.uc!.saleInvoice = ucInvoice('INS0018', Date.parse('2026-10-01T02:50:58Z'), 1449, 69, 100);
+  const b = buildFacts(raw);
+  assert.equal(b.facts.saleDate, '2026-09-30'); assert.equal(b.facts.invoiceDate, '2026-10-01');
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-11' });
+  assert.equal(l.opening, 1449);                 // September's receivable, carried in
+  assert.equal(l.exceptions[0].type, 'in_transit');
+  assert.match(l.exceptions[0].reason, /invoiced 10 days ago/);   // 1 Oct → 11 Oct, not 30 Sep → 11 Oct
+});
+
+test('no Unicommerce invoice (before 29 Sep): booked on the order date as before, and there is no invoice date', () => {
+  const raw = prepaidOrder('37500', '2026-09-20T10:00:00Z', '2026-09-20T10:00:00Z', 'X');
+  raw.uc = null;
+  const b = buildFacts(raw);
+  assert.equal(b.facts.saleDate, '2026-09-20'); assert.equal(b.facts.invoiceDate, undefined); assert.equal(b.facts.saleDoc, undefined);
+});

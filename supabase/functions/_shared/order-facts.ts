@@ -86,7 +86,7 @@ export function buildFacts(inp: RawInputs): Built {
   }
 
   // ── The sale ───────────────────────────────────────────────────────────────
-  let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined;
+  let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined, invoiceDate: string | undefined;
   const sale = ucOrder ? inp.uc?.saleInvoice : undefined;
   if (sale) {
     const a = invoiceAmounts(sale);
@@ -96,8 +96,12 @@ export function buildFacts(inp: RawInputs): Built {
       notes.push(`the sale invoice has a shipping charge of ${a.shipping.toFixed(2)}; treated as part of the goods`);
       goods = r2(goods + a.shipping);
     }
-    saleDate = istDate(Number(sale.created));
+    // The sale is booked on the day the customer ordered (Shopify, IST): that is the date Shopify's sales report, and so the
+    // returns filed from it, use. Unicommerce's invoice keeps its number and amounts here, and its own date is kept as invoiceDate.
+    saleDate = istDate(o.createdAt);
+    invoiceDate = istDate(Number(sale.created));
     saleDoc = sale.displayCode;
+    if (invoiceDate.slice(0, 7) !== saleDate.slice(0, 7)) notes.push(`sale booked on the order date ${saleDate}; the Unicommerce invoice ${saleDoc} is dated ${invoiceDate}, in a later month`);
   } else {
     const ship = money(o.totalShippingPriceSet);
     const cod = (o.paymentGatewayNames ?? []).some((g: string) => /cash_on_delivery|ppcod/i.test(g));
@@ -232,7 +236,7 @@ export function buildFacts(inp: RawInputs): Built {
 
   return {
     facts: {
-      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, delivered, payments, storeCreditUsed, returns,
+      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, invoiceDate, delivered, payments, storeCreditUsed, returns,
       rtoOnTheWay: rtoOnTheWay ? { state: rtoOnTheWay.state, since: rtoOnTheWay.on || undefined } : undefined,
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
       approved: (inp.adjustments ?? []).map(a => ({ kind: a.kind, amount: Number(a.amount), reason: a.reason, by: a.approved_by })),
