@@ -11,7 +11,7 @@
 // status: matched (proof, or the owner's own rule)  suggested (a guess to confirm)  needs_review  ignored (no entry needed)
 // Lines a person has decided are never touched (the caller leaves them out).
 
-import { VELOCITY_HANDLE, type TopUp } from './velocity-ledger.ts';
+import { VELOCITY_HANDLE, VELOCITY_RECHARGE_BUCKET, type TopUp } from './velocity-ledger.ts';
 
 export type Line = {
   key: string;                       // unique within the account
@@ -34,43 +34,63 @@ export type Classification = {
 
 export type Bucket = { name: string; kind: 'expense' | 'asset' | 'liability' | 'income' | 'transfer' | 'ignore' | 'review'; needs_bill: boolean; note: string };
 
-// Bucket names that exist in the owner's Tally (taken from the July P&L, spelling included) come first. The others
-// are bookkeeping buckets the accountant maps to a ledger. Every name here is a place a line can be filed.
+// A bucket IS a Tally ledger: its name is the ledger's name, so the Tally file needs no mapping (owner's decision,
+// 14 Oct 2026; the list is his tally-names-proposed.xlsx, spelling included: "Consumbale", "Miscelleneous", "Signapore").
+// Where one old bucket became several ledgers (salary, rent, software, telephone, travelling) the owner picks the
+// right one per payee. The three names below are not ledgers: lines that need no entry, and the payments of ₹5,000
+// and over, which settle the supplier's own ledger (one per payee) instead.
+export const SUPPLIER_BUCKET = "The supplier's own ledger (one per payee)";
+export const RETURNED_BUCKET = 'Returned or reversed (no entry)';
+export const FOUNDER_CARD_BUCKET = 'Founder card payment (no company entry)';
+// The ledgers the order ledger posts to as well (ledger.ts): a payout is the same ledger on both sides.
+export const GATEWAY_BUCKET = 'Easebuzz Private Limited';                    // GoKwik pays through Easebuzz
+export const COD_BUCKET = 'COD receivable (Velocity)';                         // Velocity's COD remittances
+export const RAZORPAY_BUCKET = 'Razorpay Payment Private Limited';
+export const META_BUCKET = 'Facebook India Online Services Private Limited';
+export const SUSPENSE_BUCKET = 'Suspense';                                     // parked until a person decides
+
 export const BUCKETS: Bucket[] = [
-  { name: 'Marketing Expenses', kind: 'expense', needs_bill: true, note: 'Advertising other than the Meta invoices' },
-  { name: 'Employee Benefit Expenses', kind: 'expense', needs_bill: false, note: 'Salaries, including the founders' },
-  { name: 'Labour Charges', kind: 'expense', needs_bill: false, note: 'Karigar piece-rate, cutting and marker work' },
-  { name: 'Rent Expenses', kind: 'expense', needs_bill: false, note: '' },
-  { name: 'Rent Sector 63 Noida', kind: 'expense', needs_bill: false, note: '' },
-  { name: 'Software Expenses', kind: 'expense', needs_bill: true, note: 'Subscriptions and software: needs the vendor GST invoice' },
-  { name: 'PAYMENT GATEWAY CHARGES', kind: 'expense', needs_bill: true, note: 'GoKwik and gateway fees' },
-  { name: 'Shipping Expenses', kind: 'expense', needs_bill: true, note: '' },
-  { name: 'Fabric and Consumbale', kind: 'expense', needs_bill: false, note: 'Trims, zippers and consumables (spelling as in Tally)' },
+  { name: 'Marketing Expenses', kind: 'expense', needs_bill: true, note: 'Advertising other than Meta' },
+  { name: 'Salary Payable', kind: 'liability', needs_bill: false, note: 'Staff salary: the expense is your month-end journal, each payment settles it' },
+  { name: 'Director Salary Payable- Rohan Tuteja', kind: 'liability', needs_bill: false, note: '₹50,000 a month' },
+  { name: 'Director Salary Payable- Adrija Halder', kind: 'liability', needs_bill: false, note: '₹50,000 a month' },
+  { name: 'Staff Welfare Expenses', kind: 'expense', needs_bill: false, note: '' },
+  { name: 'Labour Charges', kind: 'expense', needs_bill: false, note: 'Karigar piece-rate, cutting, marker' },
+  { name: 'Rent Payable', kind: 'liability', needs_bill: false, note: 'Rent to the Sector 63 landlord: the expense is your month-end journal to Rent Sector 63 Noida' },
+  { name: 'Rent - Director Resident', kind: 'expense', needs_bill: false, note: '' },
+  { name: 'Software Expenses @ 18%', kind: 'expense', needs_bill: true, note: 'Software with a GST invoice' },
+  { name: 'Software Expenses', kind: 'expense', needs_bill: false, note: 'No GST invoice, or foreign (ChatGPT, Claude)' },
+  { name: 'Subscription Charges', kind: 'expense', needs_bill: false, note: '' },
+  { name: 'Apps Charges', kind: 'expense', needs_bill: false, note: '' },
+  { name: 'Payment Gateway Expenses', kind: 'expense', needs_bill: true, note: 'Only fees paid outside a GoKwik payout; payout fees come from the order ledger' },
+  { name: 'Shipping Expenses @ 18%', kind: 'expense', needs_bill: true, note: '' },
+  { name: 'Fabric and Consumbale', kind: 'expense', needs_bill: false, note: 'Petty fabric, trims, zippers under ₹5,000' },
   { name: 'Packaging Expenses', kind: 'expense', needs_bill: false, note: '' },
-  { name: 'Travelling Expenses', kind: 'expense', needs_bill: false, note: 'Includes fuel' },
+  { name: 'Travelling Expenses', kind: 'expense', needs_bill: false, note: '' },
+  { name: 'Car Fuel Expenses', kind: 'expense', needs_bill: false, note: 'Fuel' },
+  { name: 'CAR SERVICE EXPENSES', kind: 'expense', needs_bill: false, note: '' },
   { name: 'Repair & Maintenance', kind: 'expense', needs_bill: false, note: '' },
   { name: 'MAINTENANCE-DIR RESIDENCE', kind: 'expense', needs_bill: false, note: '' },
-  { name: 'FREIGHT INWARD NON GST', kind: 'expense', needs_bill: false, note: 'Transport and porter charges' },
+  { name: 'FREIGHT INWARD NON GST', kind: 'expense', needs_bill: false, note: 'Transport and porter' },
   { name: 'Cleaning Expenses Factory', kind: 'expense', needs_bill: false, note: '' },
   { name: 'Electricity Expenses', kind: 'expense', needs_bill: false, note: '' },
-  { name: 'Telephone & Internet Expenses', kind: 'expense', needs_bill: true, note: '' },
-  { name: 'Bank Charges GST', kind: 'expense', needs_bill: false, note: 'Bank and card charges with their GST' },
-  { name: 'FINANCE COST', kind: 'expense', needs_bill: false, note: 'Interest' },
-  { name: 'Miscellaneous Expenses', kind: 'expense', needs_bill: false, note: '' },
-  { name: 'Purchase Accounts', kind: 'expense', needs_bill: true, note: 'Fabric purchases: needs the supplier bill' },
-  { name: 'GoKwik payout', kind: 'transfer', needs_bill: false, note: 'Clears what GoKwik owes for prepaid orders' },
-  { name: 'Velocity COD remittance', kind: 'transfer', needs_bill: false, note: 'Clears the COD cash Velocity collected' },
-  { name: 'Velocity wallet recharge', kind: 'asset', needs_bill: false, note: 'Advance with Velocity, used up by freight charges' },
-  { name: 'Meta ads (invoice payment)', kind: 'liability', needs_bill: false, note: 'Pays a Meta tax invoice booked as marketing expense and input GST' },
-  { name: 'Customer receipts (other gateway)', kind: 'transfer', needs_bill: false, note: 'For example Razorpay' },
-  { name: 'Returned or reversed (no entry)', kind: 'ignore', needs_bill: false, note: 'A payment the bank returned, or a card charge reversed: nets to zero' },
-  { name: 'Founder card payment (no company entry)', kind: 'ignore', needs_bill: false, note: "The founder paying his own card bill" },
-  { name: 'To confirm: personal or business', kind: 'review', needs_bill: false, note: '' },
-  { name: 'To confirm: capital or loan', kind: 'review', needs_bill: false, note: 'Money in from an owner, investor or lender' },
-  { name: 'To confirm: cash deposit', kind: 'review', needs_bill: false, note: '' },
-  { name: 'To confirm: machinery (asset)', kind: 'review', needs_bill: true, note: 'A machine is a fixed asset, not an expense' },
-  { name: 'To confirm: employee advance', kind: 'review', needs_bill: false, note: '' },
-  { name: 'To confirm: other', kind: 'review', needs_bill: false, note: '' },
+  { name: 'Telephone and Internet Expenses GST', kind: 'expense', needs_bill: true, note: 'With a GST bill' },
+  { name: 'Telephone & Internet Expenses', kind: 'expense', needs_bill: false, note: 'Without GST' },
+  { name: 'Bank Charges', kind: 'expense', needs_bill: false, note: 'Bank and card charges, GST included' },
+  { name: 'Miscelleneous Expenses', kind: 'expense', needs_bill: false, note: 'Spelled as in Tally today' },
+  { name: SUPPLIER_BUCKET, kind: 'liability', needs_bill: true, note: 'Payments of ₹5,000 and over: you book the supplier invoice, the payment settles it. Each payee is linked to a ledger once.' },
+  { name: GATEWAY_BUCKET, kind: 'transfer', needs_bill: false, note: 'GoKwik payout: the receipt comes from the order ledger, one per payout; the bank line only proves it' },
+  { name: COD_BUCKET, kind: 'transfer', needs_bill: false, note: 'Velocity COD remittance: the receipt comes from the order ledger, one per payout; the bank line only proves it' },
+  { name: RAZORPAY_BUCKET, kind: 'transfer', needs_bill: false, note: 'Customer receipts through another gateway: the receipt comes from the order ledger' },
+  { name: VELOCITY_RECHARGE_BUCKET, kind: 'asset', needs_bill: false, note: 'Wallet top-up: an advance, used up by freight charges' },
+  { name: META_BUCKET, kind: 'liability', needs_bill: false, note: 'Settles the Meta invoice by its number' },
+  { name: 'Shopify Commerce Signapore Pte. Ltd.', kind: 'liability', needs_bill: false, note: 'Shopify subscription' },
+  { name: 'Goexcelsior Private Limited', kind: 'liability', needs_bill: true, note: 'KwikChat; also the card item that reads GoKwik' },
+  { name: RETURNED_BUCKET, kind: 'ignore', needs_bill: false, note: 'A payment the bank returned, or a card charge reversed: nets to zero' },
+  { name: FOUNDER_CARD_BUCKET, kind: 'ignore', needs_bill: false, note: 'The founder paying his own card bill' },
+  { name: 'CASH AT POS DELHI', kind: 'transfer', needs_bill: false, note: 'Cash deposited (your wholesale vertical): Dr ICICI Bank / Cr this ledger' },
+  { name: 'Sewing Machine GST', kind: 'asset', needs_bill: true, note: 'A machine is a fixed asset. Other machines need their own ledger: tell me which' },
+  { name: SUSPENSE_BUCKET, kind: 'review', needs_bill: false, note: 'Parked until a person decides (Unsecured Loans From Directors when it is a director)' },
 ];
 const BUCKET_NAMES = new Set(BUCKETS.map(b => b.name));
 export const needsBill = (bucket: string | null) => !!bucket && !!BUCKETS.find(b => b.name === bucket)?.needs_bill;
@@ -80,18 +100,18 @@ const dayNum = (d: string) => Math.round(Date.parse(`${d}T00:00:00Z`) / 86_400_0
 const near = (a: number, b: number, tol = 0.011) => Math.abs(a - b) <= tol;
 
 // ── Built-in guesses ─────────────────────────────────────────────────────────────────────────
-const NOTE_BUCKET: Record<string, string> = {
-  fabric: 'Purchase Accounts', fabricadv: 'Purchase Accounts', purchase: 'Purchase Accounts',
+export const NOTE_BUCKET: Record<string, string> = {
+  fabric: SUPPLIER_BUCKET, fabricadv: SUPPLIER_BUCKET, purchase: SUPPLIER_BUCKET,
   trims: 'Fabric and Consumbale', zipper: 'Fabric and Consumbale',
   cutting: 'Labour Charges', pcrate: 'Labour Charges', marker: 'Labour Charges',
   transport: 'FREIGHT INWARD NON GST', cleaning: 'Cleaning Expenses Factory',
   maintenance: 'Repair & Maintenance', servicing: 'Repair & Maintenance',
-  machine: 'To confirm: machinery (asset)',
-  software: 'Software Expenses', kwikchat: 'Software Expenses',
-  velocity: 'Velocity wallet recharge',
-  rent: 'Rent Expenses', rentneb: 'Rent Expenses', ebbill: 'Electricity Expenses',
-  salary: 'Employee Benefit Expenses', fsalary: 'Employee Benefit Expenses', advance: 'To confirm: employee advance',
-  card: 'To confirm: other',
+  machine: 'Sewing Machine GST',
+  software: 'Software Expenses @ 18%', kwikchat: 'Goexcelsior Private Limited',
+  velocity: VELOCITY_RECHARGE_BUCKET,
+  rent: 'Rent Payable', rentneb: 'Rent Payable', ebbill: 'Electricity Expenses',
+  salary: 'Salary Payable', fsalary: 'Salary Payable', advance: SUSPENSE_BUCKET,
+  card: SUSPENSE_BUCKET,
 };
 // ── Who was paid, and what the owner wrote ───────────────────────────────────────────────────
 const squash = (s: string) => s.replace(/\d+/g, '').replace(/@.*$/, '').replace(/[^a-z]/gi, '').toLowerCase();
@@ -115,16 +135,20 @@ export function parseRemarks(remarks: string): { type: string; note: string; pay
 
 const has = (remarks: string, re: RegExp) => re.test(remarks);
 
-const MERCHANTS: Array<[RegExp, string, string]> = [
-  [/GOOGLE WORKSPACE|GSUITE/i, 'Software Expenses', 'Google Workspace subscription'],
-  [/ANTHROPIC|OPENAI|CHATGPT|CLAUDE/i, 'Software Expenses', 'foreign software subscription (GST under reverse charge: ask the accountant)'],
-  [/GOKWIK/i, 'PAYMENT GATEWAY CHARGES', 'GoKwik charge'],
-  [/YOUTUBE|GOOGLE PLAY|AMAZON/i, 'To confirm: personal or business', 'could be a personal subscription'],
-  [/SHOPIFY/i, 'Software Expenses', 'Shopify subscription'],
-  [/UNICOMMERCE|UNIWARE/i, 'Software Expenses', 'Unicommerce subscription'],
-  [/AIRTEL|JIO\b/i, 'Telephone & Internet Expenses', 'telephone / internet'],
-  [/RAZORPAY/i, 'Customer receipts (other gateway)', 'Razorpay settlement'],
+// [pattern, bucket, why, only]: `only` limits a guess to the bank or to the card.
+export const MERCHANTS: Array<[RegExp, string, string, ('bank' | 'card')?]> = [
+  [/GOOGLE WORKSPACE|GSUITE/i, 'Software Expenses @ 18%', 'Google Workspace subscription'],
+  [/ANTHROPIC|OPENAI|CHATGPT|CLAUDE/i, 'Software Expenses', 'foreign software subscription (no GST invoice)'],
+  [/GOKWIK/i, 'Goexcelsior Private Limited', 'KwikChat, billed by Goexcelsior Private Limited', 'card'],
+  [/GOKWIK/i, 'Payment Gateway Expenses', 'GoKwik charge', 'bank'],
+  [/YOUTUBE|GOOGLE PLAY/i, SUSPENSE_BUCKET, 'could be a personal subscription: your September journal leaves YouTube and Google Play out'],
+  [/AMAZON/i, 'Subscription Charges', 'Amazon: a business subscription, as in your September journal'],
+  [/SHOPIFY/i, 'Shopify Commerce Signapore Pte. Ltd.', 'Shopify subscription'],
+  [/UNICOMMERCE|UNIWARE/i, 'Software Expenses @ 18%', 'Unicommerce subscription'],
+  [/AIRTEL|JIO\b/i, 'Telephone and Internet Expenses GST', 'telephone / internet'],
+  [/RAZORPAY/i, RAZORPAY_BUCKET, 'Razorpay settlement'],
 ];
+const merchantFor = (remarks: string, account: 'bank' | 'card') => MERCHANTS.find(([re, , , only]) => re.test(remarks) && (!only || only === account));
 
 function result(c: Partial<Classification> & Pick<Classification, 'status' | 'kind' | 'reason'>, payee: string | null): Classification {
   const bucket = c.bucket ?? null;
@@ -149,8 +173,8 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
     paired.add(ret.key); paired.add(other.key);
     const bank = ret.account_kind === 'bank';
     const kind = bank ? 'returned_payment' : 'reversed_charge';
-    out.set(ret.key, result({ status: 'ignored', kind, bucket: 'Returned or reversed (no entry)', match_ref: other.key, reason: bank ? `The bank returned this on ${ret.txn_date}: it undoes the payment on ${other.txn_date}` : `Reversal of the charge on ${other.txn_date}` }, null));
-    out.set(other.key, result({ status: 'ignored', kind, bucket: 'Returned or reversed (no entry)', match_ref: ret.key, reason: bank ? `Paid, then returned by the bank on ${ret.txn_date}: nets to zero, no entry` : `Charge reversed on ${ret.txn_date}: nets to zero, no entry` }, null));
+    out.set(ret.key, result({ status: 'ignored', kind, bucket: RETURNED_BUCKET, match_ref: other.key, reason: bank ? `The bank returned this on ${ret.txn_date}: it undoes the payment on ${other.txn_date}` : `Reversal of the charge on ${other.txn_date}` }, null));
+    out.set(other.key, result({ status: 'ignored', kind, bucket: RETURNED_BUCKET, match_ref: ret.key, reason: bank ? `Paid, then returned by the bank on ${ret.txn_date}: nets to zero, no entry` : `Charge reversed on ${ret.txn_date}: nets to zero, no entry` }, null));
   }
 
   const usedPayout = new Set<string>();
@@ -177,43 +201,43 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
 
     // The founder's card: his own payment of the bill needs no company entry; every purchase is a company expense he paid.
     if (l.account_kind === 'card' && l.credit > 0 && /PAYMENT RECEIVED/i.test(l.remarks)) {
-      done(result({ status: 'ignored', kind: 'card_payment', bucket: 'Founder card payment (no company entry)', reason: "The founder paid his card bill from his own account: no company entry. The purchases on the card are the company's expenses, owed to him until he is repaid" }, null));
+      done(result({ status: 'ignored', kind: 'card_payment', bucket: FOUNDER_CARD_BUCKET, reason: "The founder paid his card bill from his own account: no company entry. The purchases on the card are the company's expenses, owed to him until he is repaid" }, null));
       continue;
     }
 
     // 2. Proof from another system.
     if (l.account_kind === 'bank' && l.credit > 0 && has(l.remarks, /EASEBUZZ/i)) {
       const p = payoutFor('gokwik', l.credit, l.txn_date);
-      done(p ? result({ status: 'matched', kind: 'gokwik_payout', bucket: 'GoKwik payout', match_ref: `UTR ${p.utr}`, reason: `GoKwik settled ${p.payments} payment${p.payments === 1 ? '' : 's'} (₹${p.amount.toFixed(2)}) in this transfer` }, null)
-        : result({ status: 'suggested', kind: 'gokwik_payout', bucket: 'GoKwik payout', reason: 'An Easebuzz credit (GoKwik\'s payout) with no matching GoKwik settlement yet: upload the GoKwik report that covers it' }, null));
+      done(p ? result({ status: 'matched', kind: 'gokwik_payout', bucket: GATEWAY_BUCKET, match_ref: `UTR ${p.utr}`, reason: `GoKwik settled ${p.payments} payment${p.payments === 1 ? '' : 's'} (₹${p.amount.toFixed(2)}) in this transfer` }, null)
+        : result({ status: 'suggested', kind: 'gokwik_payout', bucket: GATEWAY_BUCKET, reason: 'An Easebuzz credit (GoKwik\'s payout) with no matching GoKwik settlement yet: upload the GoKwik report that covers it' }, null));
       continue;
     }
     if (l.account_kind === 'bank' && l.credit > 0 && has(l.remarks, /WHITE WIZARD/i)) {
       const p = payoutFor('velocity', l.credit, l.txn_date);
-      done(p ? result({ status: 'matched', kind: 'velocity_remittance', bucket: 'Velocity COD remittance', match_ref: `UTR ${p.utr}`, reason: `Velocity paid ${p.payments} COD parcel${p.payments === 1 ? '' : 's'} (₹${p.amount.toFixed(2)}) in this transfer` }, null)
-        : result({ status: 'suggested', kind: 'velocity_remittance', bucket: 'Velocity COD remittance', reason: 'A credit from Velocity (White Wizard Technologies) that no COD payout in the ledger accounts for' }, null));
+      done(p ? result({ status: 'matched', kind: 'velocity_remittance', bucket: COD_BUCKET, match_ref: `UTR ${p.utr}`, reason: `Velocity paid ${p.payments} COD parcel${p.payments === 1 ? '' : 's'} (₹${p.amount.toFixed(2)}) in this transfer` }, null)
+        : result({ status: 'suggested', kind: 'velocity_remittance', bucket: COD_BUCKET, reason: 'A credit from Velocity (White Wizard Technologies) that no COD payout in the ledger accounts for' }, null));
       continue;
     }
     if (l.account_kind === 'bank' && l.debit > 0 && has(l.remarks, /FACEBOOK|META PLATFORMS/i)) {
       const no = (l.remarks.split('/').map(p => p.trim()).filter(p => /^\d{8,}$/.test(p)).pop()) ?? null;
       const inv = no ? ctx.invoices.find(i => i.invoice_no === no) : undefined;
       if (inv && near(inv.total, l.debit)) {
-        done(result({ status: 'matched', kind: 'meta_invoice', bucket: 'Meta ads (invoice payment)', match_ref: `Invoice ${inv.invoice_no}`, reason: `Pays invoice ${inv.invoice_no}${inv.period ? ` (${inv.period})` : ''}: ₹${inv.subtotal.toFixed(2)} + GST ₹${inv.tax.toFixed(2)}. The full invoice total was paid: no TDS was deducted` }, null));
+        done(result({ status: 'matched', kind: 'meta_invoice', bucket: META_BUCKET, match_ref: `Invoice ${inv.invoice_no}`, reason: `Pays invoice ${inv.invoice_no}${inv.period ? ` (${inv.period})` : ''}: ₹${inv.subtotal.toFixed(2)} + GST ₹${inv.tax.toFixed(2)}. The full invoice total was paid: no TDS was deducted` }, null));
         continue;
       }
       if (inv && near(r2(inv.total - inv.subtotal * 0.02), l.debit, 0.05)) {
-        done(result({ status: 'matched', kind: 'meta_invoice', bucket: 'Meta ads (invoice payment)', match_ref: `Invoice ${inv.invoice_no}`, reason: `Pays invoice ${inv.invoice_no} less 2% TDS of ₹${r2(inv.subtotal * 0.02).toFixed(2)}` }, null));
+        done(result({ status: 'matched', kind: 'meta_invoice', bucket: META_BUCKET, match_ref: `Invoice ${inv.invoice_no}`, reason: `Pays invoice ${inv.invoice_no} less 2% TDS of ₹${r2(inv.subtotal * 0.02).toFixed(2)}` }, null));
         continue;
       }
-      done(result({ status: inv ? 'needs_review' : 'suggested', kind: 'meta_invoice', bucket: 'Meta ads (invoice payment)', match_ref: no ? `Invoice ${no}` : null,
+      done(result({ status: inv ? 'needs_review' : 'suggested', kind: 'meta_invoice', bucket: META_BUCKET, match_ref: no ? `Invoice ${no}` : null,
         reason: inv ? `Invoice ${inv.invoice_no} is ₹${inv.total.toFixed(2)} but ₹${l.debit.toFixed(2)} was paid` : `A payment to Meta${no ? ` for invoice ${no}` : ''}: upload that invoice so it can be checked` }, null));
       continue;
     }
 
     if (l.account_kind === 'bank' && l.debit > 0 && VELOCITY_HANDLE.test(l.remarks)) {
       const t = topupFor(l.debit, l.txn_date);
-      done(t ? result({ status: 'matched', kind: 'velocity_recharge', bucket: 'Velocity wallet recharge', match_ref: `Wallet recharge ${t.at}`, reason: `Velocity's wallet ledger shows ₹${t.amount.toFixed(2)} added on ${t.date}: this payment funded it` }, payee)
-        : result({ status: 'suggested', kind: 'velocity_recharge', bucket: 'Velocity wallet recharge', reason: "A payment to a Velocity wallet handle with no matching top-up in Velocity's ledger yet: upload the ledger report that covers it" }, payee));
+      done(t ? result({ status: 'matched', kind: 'velocity_recharge', bucket: VELOCITY_RECHARGE_BUCKET, match_ref: `Wallet recharge ${t.at}`, reason: `Velocity's wallet ledger shows ₹${t.amount.toFixed(2)} added on ${t.date}: this payment funded it` }, payee)
+        : result({ status: 'suggested', kind: 'velocity_recharge', bucket: VELOCITY_RECHARGE_BUCKET, reason: "A payment to a Velocity wallet handle with no matching top-up in Velocity's ledger yet: upload the ledger report that covers it" }, payee));
       continue;
     }
 
@@ -228,16 +252,16 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
     if (l.account_kind === 'bank') {
       const bucket = NOTE_BUCKET[note.replace(/\s+/g, '')];
       if (bucket) { done(result({ status: 'suggested', kind: 'note', bucket, reason: `You wrote "${note.trim()}" on this payment` }, payee)); continue; }
-      const m = MERCHANTS.find(([re]) => re.test(l.remarks));
+      const m = merchantFor(l.remarks, 'bank');
       if (m && (l.debit > 0 || /RAZORPAY/i.test(l.remarks))) { done(result({ status: 'suggested', kind: 'merchant', bucket: m[1], reason: m[2] }, payee)); continue; }
-      if (l.debit > 0 && has(l.remarks, /\bchgs?\b|charges|^GIB\//i)) { done(result({ status: 'suggested', kind: 'bank_charge', bucket: 'Bank Charges GST', reason: 'Looks like a bank charge (or the GST on one)' }, payee)); continue; }
-      if (l.credit > 0 && has(l.remarks, /^CAM\b.*CASH DEP|CASH DEP/i)) { done(result({ status: 'suggested', kind: 'cash_deposit', bucket: 'To confirm: cash deposit', reason: 'A cash deposit: what was the cash from?' }, payee)); continue; }
-      if (l.credit > 0 && /^RTGS/i.test(l.remarks)) { done(result({ status: 'suggested', kind: 'rtgs_in', bucket: 'To confirm: capital or loan', reason: 'A large transfer in that is not a sale payout' }, payee)); continue; }
+      if (l.debit > 0 && has(l.remarks, /\bchgs?\b|charges|^GIB\//i)) { done(result({ status: 'suggested', kind: 'bank_charge', bucket: 'Bank Charges', reason: 'Looks like a bank charge (or the GST on one)' }, payee)); continue; }
+      if (l.credit > 0 && has(l.remarks, /^CAM\b.*CASH DEP|CASH DEP/i)) { done(result({ status: 'suggested', kind: 'cash_deposit', bucket: 'CASH AT POS DELHI', reason: 'A cash deposit: what was the cash from?' }, payee)); continue; }
+      if (l.credit > 0 && /^RTGS/i.test(l.remarks)) { done(result({ status: 'suggested', kind: 'rtgs_in', bucket: SUSPENSE_BUCKET, reason: 'A large transfer in that is not a sale payout' }, payee)); continue; }
     } else {
-      if (l.section === 'fee') { done(result({ status: 'suggested', kind: 'card_fee', bucket: 'Bank Charges GST', reason: 'GST or fee charged by the card issuer' }, payee)); continue; }
-      const m = MERCHANTS.find(([re]) => re.test(l.remarks));
+      if (l.section === 'fee') { done(result({ status: 'suggested', kind: 'card_fee', bucket: 'Bank Charges', reason: 'GST or fee charged by the card issuer' }, payee)); continue; }
+      const m = merchantFor(l.remarks, 'card');
       if (m) { done(result({ status: 'suggested', kind: 'merchant', bucket: m[1], reason: m[2] }, payee)); continue; }
-      if (l.category === 'Fuel') { done(result({ status: 'suggested', kind: 'category', bucket: 'Travelling Expenses', reason: 'Fuel: a business expense' }, payee)); continue; }
+      if (l.category === 'Fuel') { done(result({ status: 'suggested', kind: 'category', bucket: 'Car Fuel Expenses', reason: 'Fuel: a business expense' }, payee)); continue; }
     }
 
     // 5. Nothing matched.

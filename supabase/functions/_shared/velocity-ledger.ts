@@ -131,8 +131,11 @@ export function balanceCheck(lines: WalletLine[]): { check: Check; opening: numb
 /** The payee Velocity's top-ups go to on the bank statement (four Cashfree handles seen: shipfast.cf, cf.shipfast, a masked "…t.cf", a masked "…fast@cashfre"). */
 export const VELOCITY_HANDLE = /shipfast|\.cf@|velocity|fast@cashf/i;
 
+/** The bank bucket, and Tally ledger, a wallet top-up is filed under. */
+export const VELOCITY_RECHARGE_BUCKET = 'Velocity Prepaid Recharge Account';
+
 export type TopUp = { key: string; at: string; date: string; amount: number };
-// `filed`: a person filed this bank line under the Velocity wallet recharge bucket, so it counts whatever the payee looks like.
+// `filed`: a person filed this bank line under the wallet recharge bucket (VELOCITY_RECHARGE_BUCKET), so it counts whatever the payee looks like.
 export type BankDebit = { id: number; date: string; amount: number; remarks: string; filed?: boolean };
 
 const dayNum = (d: string) => Math.round(Date.parse(`${d}T00:00:00Z`) / 86_400_000);
