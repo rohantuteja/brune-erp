@@ -37,9 +37,10 @@ export type Bucket = { name: string; kind: 'expense' | 'asset' | 'liability' | '
 // A bucket IS a Tally ledger: its name is the ledger's name, so the Tally file needs no mapping (owner's decision,
 // 14 Oct 2026; the list is his tally-names-proposed.xlsx, spelling included: "Consumbale", "Miscelleneous", "Signapore").
 // Where one old bucket became several ledgers (salary, rent, software, telephone, travelling) the owner picks the
-// right one per payee. The three names below are not ledgers: lines that need no entry, and the payments of ₹5,000
-// and over, which settle the supplier's own ledger (one per payee) instead.
-export const SUPPLIER_BUCKET = "The supplier's own ledger (one per payee)";
+// right one per payee. Three names are not ledgers: the two that need no entry, and `Purchase Accounts` (a Tally
+// group, kept by the owner's decision of 14 Oct 2026 as the bucket for fabric and supplier-bill payments; the
+// supplier's own ledger is linked per payee when the Tally file is built).
+export const PURCHASE_BUCKET = 'Purchase Accounts';
 export const RETURNED_BUCKET = 'Returned or reversed (no entry)';
 export const FOUNDER_CARD_BUCKET = 'Founder card payment (no company entry)';
 // The ledgers the order ledger posts to as well (ledger.ts): a payout is the same ledger on both sides.
@@ -47,6 +48,7 @@ export const GATEWAY_BUCKET = 'Easebuzz Private Limited';                    // 
 export const COD_BUCKET = 'COD receivable (Velocity)';                         // Velocity's COD remittances
 export const RAZORPAY_BUCKET = 'Razorpay Payment Private Limited';
 export const META_BUCKET = 'Facebook India Online Services Private Limited';
+export const MYNTRA_BUCKET = 'Myntra receivable (order control)';              // Myntra's payouts: what it collected for us
 export const SUSPENSE_BUCKET = 'Suspense';                                     // parked until a person decides
 
 export const BUCKETS: Bucket[] = [
@@ -77,11 +79,13 @@ export const BUCKETS: Bucket[] = [
   { name: 'Telephone and Internet Expenses GST', kind: 'expense', needs_bill: true, note: 'With a GST bill' },
   { name: 'Telephone & Internet Expenses', kind: 'expense', needs_bill: false, note: 'Without GST' },
   { name: 'Bank Charges', kind: 'expense', needs_bill: false, note: 'Bank and card charges, GST included' },
+  { name: 'FINANCE COST', kind: 'expense', needs_bill: false, note: 'Interest and other finance costs' },
   { name: 'Miscelleneous Expenses', kind: 'expense', needs_bill: false, note: 'Spelled as in Tally today' },
-  { name: SUPPLIER_BUCKET, kind: 'liability', needs_bill: true, note: 'Payments of ₹5,000 and over: you book the supplier invoice, the payment settles it. Each payee is linked to a ledger once.' },
+  { name: PURCHASE_BUCKET, kind: 'expense', needs_bill: true, note: 'Fabric purchases and supplier bills of ₹5,000 and over: needs the supplier bill, and this payment settles it' },
   { name: GATEWAY_BUCKET, kind: 'transfer', needs_bill: false, note: 'GoKwik payout: the receipt comes from the order ledger, one per payout; the bank line only proves it' },
   { name: COD_BUCKET, kind: 'transfer', needs_bill: false, note: 'Velocity COD remittance: the receipt comes from the order ledger, one per payout; the bank line only proves it' },
   { name: RAZORPAY_BUCKET, kind: 'transfer', needs_bill: false, note: 'Customer receipts through another gateway: the receipt comes from the order ledger' },
+  { name: MYNTRA_BUCKET, kind: 'transfer', needs_bill: false, note: "Myntra's payouts: the money Myntra collected for us, paid net of its fees, TCS and TDS; the receipt comes from the order ledger" },
   { name: VELOCITY_RECHARGE_BUCKET, kind: 'asset', needs_bill: false, note: 'Wallet top-up: an advance, used up by freight charges' },
   { name: META_BUCKET, kind: 'liability', needs_bill: false, note: 'Settles the Meta invoice by its number' },
   { name: 'Shopify Commerce Signapore Pte. Ltd.', kind: 'liability', needs_bill: false, note: 'Shopify subscription' },
@@ -101,7 +105,7 @@ const near = (a: number, b: number, tol = 0.011) => Math.abs(a - b) <= tol;
 
 // ── Built-in guesses ─────────────────────────────────────────────────────────────────────────
 export const NOTE_BUCKET: Record<string, string> = {
-  fabric: SUPPLIER_BUCKET, fabricadv: SUPPLIER_BUCKET, purchase: SUPPLIER_BUCKET,
+  fabric: PURCHASE_BUCKET, fabricadv: PURCHASE_BUCKET, purchase: PURCHASE_BUCKET,
   trims: 'Fabric and Consumbale', zipper: 'Fabric and Consumbale',
   cutting: 'Labour Charges', pcrate: 'Labour Charges', marker: 'Labour Charges',
   transport: 'FREIGHT INWARD NON GST', cleaning: 'Cleaning Expenses Factory',
