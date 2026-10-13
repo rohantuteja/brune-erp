@@ -1,4 +1,4 @@
-// accounting-ledger v6
+// accounting-ledger v9
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. `order` and `report` write nothing. `sync` and `tick`
@@ -11,9 +11,11 @@
 //                 return invoices with their real amounts (invoice/details/get)
 //   Return Prime  its refunds: amount, date, return fee, whether the parcel arrived
 //   cod_deliveries / Velocity   the delivery date of COD parcels and the remittance (UTR) that paid them
+//   GoKwik        its settlement report (gokwik_payments, uploaded by hand): what it paid out per order, its fee and the GST on it
 // and, for Myntra orders (channel MYNTRAPPMP, which live only in Unicommerce): the order, its sale invoice and its
-// return invoices. Myntra owes the money, so those orders sit on a "Myntra receivable" account and stay open until its
-// settlement is matched (later). A Myntra order enters the ledger once Unicommerce has invoiced it.
+// return invoices. Myntra is a marketplace: the invoice is to the end customer (B2C), but Myntra collects the payment and
+// pays us later, so those orders sit on a "Myntra receivable" clearing account and stay open until its settlement is
+// matched (later). A Myntra order enters the ledger once Unicommerce has invoiced it.
 // then _shared/order-facts.ts turns that into facts and _shared/ledger.ts into entries.
 // The rules and their tests: docs/accounting-ledger.md.
 //
@@ -39,7 +41,14 @@
 //            incremental one those updated since the last run plus every open order.
 //   tick   — what the schedule calls every 10 minutes. Does nothing unless
 //            app_settings.ledger_sync_mode is "live"; then it continues a part-done run, or
-//            starts a full run (each night) or an incremental one (each hour).
+//            starts a full run (each night) or an incremental one (each hour), or retries the
+//            orders the last run held back (a run of kind "manual" holding only those).
+//
+// An order whose inputs could not be had (Unicommerce or Velocity unreachable) is HELD BACK: not saved, its last
+// rows kept, and recorded in ledger_runs.summary.held as { key, order, why }. The next run queues those orders
+// again, and the tick retries them ten minutes later. See _shared/upstream.ts.
+// For testing that, any action takes { simulate_down: "velocity" | "unicommerce" }: that system then answers
+// like a 503. It changes nothing by itself; a `sync` with it just holds the affected orders back.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -47,7 +56,10 @@ import { buildFacts, buildMyntraFacts, istDate, type RawInputs } from '../_share
 import { buildOrderLedger } from '../_shared/ledger.ts';
 import { decideTick, ledgerRow } from '../_shared/ledger-store.ts';
 import { ucErrorText, ucPost } from '../_shared/unicommerce.ts';
-import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
+import { CORS, type Ctx as BaseCtx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
+import { Unreachable, type Held, type VelocityRec, heldKeys, lookupVelocity, partitionHeld, ucUnreachable } from '../_shared/upstream.ts';
+
+type Ctx = BaseCtx & { sim?: 'velocity' | 'unicommerce' };
 
 const RP_API = 'https://api.returnprime.co';
 const RP_PAGES = 30;
@@ -68,7 +80,7 @@ serve(async (req) => {
       const denied = await requireAdmin(admin, req);
       if (denied) return denied;
     }
-    const ctx = await loadCtx(admin);
+    const ctx: Ctx = { ...(await loadCtx(admin)), sim: body.simulate_down === 'velocity' || body.simulate_down === 'unicommerce' ? body.simulate_down : undefined };
     switch (body.action) {
       case 'order':  return json(await oneOrder(ctx, String(body.order ?? '').replace(/^#/, '')));
       case 'report': return json(await report(ctx, body));
@@ -97,7 +109,9 @@ async function oneOrder(ctx: Ctx, name: string) {
       code = String(data.channel_ref);
     }
     const shared = await sharedInputs(ctx);
-    const [res] = await processMyntra(ctx, [code], shared, true);
+    const mine = await processMyntra(ctx, [code], shared, true);
+    if (mine.held.length) return { error: mine.held[0].why };
+    const [res] = mine.results;
     return res ? { ...res, entries: res.ledger.entries } : { error: `Myntra order ${code} not found, or not invoiced yet` };
   }
   const nodes = await shopifyOrders(ctx, `name:${name}`, 5);
@@ -167,7 +181,8 @@ async function velocityGap(ctx: Ctx, body: any) {
   const { data: known } = await ctx.admin.from('ledger_orders').select('order_name').in('order_name', found.map(f => f.name));
   const inLedger = new Set((known ?? []).map(r => String(r.order_name)));
   const todo = found.filter(f => !inLedger.has(f.name) && !f.rto && !f.cancelled);
-  const v = await velocityLookup(ctx, todo.map(f => f.awb));
+  const looked = await velocityLookup(ctx, todo.map(f => f.awb));
+  const v = looked.recs;
   const rows = todo.map(f => ({ ...f, v: v.get(f.awb) }));
   const paidAfter = rows.filter(r => r.v?.utr_no && String(r.v.remittance_date) >= cutoff);
   const paidBefore = rows.filter(r => r.v?.utr_no && String(r.v.remittance_date) < cutoff);
@@ -176,7 +191,7 @@ async function velocityGap(ctx: Ctx, body: any) {
   const sum = (xs: typeof rows) => Math.round(xs.reduce((a, r) => a + Number(r.v?.cod_amount ?? 0), 0) * 100) / 100;
   const age = (d: string) => Math.round((Date.parse(today) - Date.parse(d)) / 86_400_000);
   return {
-    cutoff, from, cod_orders_checked: todo.length, already_in_ledger: found.filter(f => inLedger.has(f.name)).length,
+    cutoff, from, cod_orders_checked: todo.length, velocity_unreachable: looked.unreachable.size, already_in_ledger: found.filter(f => inLedger.has(f.name)).length,
     paid_on_or_after_start: { orders: paidAfter.length, amount: sum(paidAfter), by_date: Object.fromEntries([...new Set(paidAfter.map(r => String(r.v!.remittance_date)))].sort().map(d => [d, { orders: paidAfter.filter(r => r.v!.remittance_date === d).length, amount: sum(paidAfter.filter(r => r.v!.remittance_date === d)) }])), list: paidAfter.map(r => ({ order: r.name, delivered: r.v!.delivery_date, remitted: r.v!.remittance_date, amount: r.v!.cod_amount, utr: r.v!.utr_no })) },
     paid_before_start: { orders: paidBefore.length, amount: sum(paidBefore) },
     delivered_never_paid: { orders: unpaid.length, amount: sum(unpaid), list: unpaid.map(r => ({ order: r.name, delivered: r.v!.delivery_date, days_ago: age(String(r.v!.delivery_date)), amount: r.v!.cod_amount, scheduled: r.v!.remittance_date })) },
@@ -220,7 +235,7 @@ async function report(ctx: Ctx, body: any) {
     .filter(r => !body.only_issues || !r.ledger.balanced || r.ledger.balancing.some((b: any) => b.type !== 'return_fee_invoice'))
     .map(r => ({
       order: r.order, status: r.ledger.status, balanced: r.ledger.balanced, net: r.ledger.net, opening: r.ledger.opening,
-      exceptions: r.ledger.exceptions, balancing: r.ledger.balancing, notes: r.notes,
+      exceptions: r.ledger.exceptions, balancing: r.ledger.balancing, notes: r.notes, held: r.held ?? null,
     }));
   return { cutoff, from, summary, balancing, next, seconds: Math.round((Date.now() - started) / 1000), orders: rows };
 }
@@ -239,7 +254,7 @@ async function latestRunning(ctx: Ctx) {
 
 async function sync(ctx: Ctx, body: any) {
   const running = await latestRunning(ctx);
-  const run = running ?? await startRun(ctx, body.kind === 'incremental' ? 'incremental' : 'full');
+  const run = running ?? await startRun(ctx, body.kind === 'incremental' ? 'incremental' : body.kind === 'retry' ? 'manual' : 'full');
   return advance(ctx, run, budgetMs(body));
 }
 
@@ -247,44 +262,58 @@ async function tick(ctx: Ctx, body: any) {
   const mode = await setting(ctx.admin, 'ledger_sync_mode', 'off');
   if (mode !== 'live') return { mode, did: 'off' };
   const running = await latestRunning(ctx);
-  const { data: done } = await ctx.admin.from('ledger_runs').select('kind, started_at').eq('status', 'done').order('started_at', { ascending: false }).limit(50);
+  // Retry runs ("manual") are not on the schedule: leaving them out keeps the hourly and nightly runs on time.
+  const { data: done } = await ctx.admin.from('ledger_runs').select('kind, started_at').eq('status', 'done').neq('kind', 'manual').order('started_at', { ascending: false }).limit(50);
+  const { data: latest } = await ctx.admin.from('ledger_runs').select('started_at, summary').eq('status', 'done').order('started_at', { ascending: false }).limit(1);
   const at = (r?: { started_at: string }) => r ? Date.parse(r.started_at) : null;
+  const heldCount = heldKeys(latest?.[0]?.summary).length;
   const did = decideTick(
     Date.now(),
     running ? { kind: running.kind, status: running.status, startedAt: Date.parse(running.started_at), updatedAt: Date.parse(running.updated_at) } : null,
     at(done?.[0]), at(done?.find(r => r.kind === 'full')),
+    heldCount ? { startedAt: at(latest![0])!, count: heldCount } : null,
   );
   if (did === 'busy' || did === 'wait') return { mode, did };
-  const run = did === 'continue' ? running! : await startRun(ctx, did);
+  const run = did === 'continue' ? running! : await startRun(ctx, did === 'retry' ? 'manual' : did);
   return { mode, did, ...(await advance(ctx, run, budgetMs(body))) };
 }
 
 // The queue: every order updated since the start date (full) or since the last run (incremental),
 // plus every order that is still open or needs attention, because those change without Shopify
 // noticing (a parcel arrives, a courier delivers, Unicommerce issues an invoice).
-async function startRun(ctx: Ctx, kind: 'full' | 'incremental') {
+async function startRun(ctx: Ctx, kind: 'full' | 'incremental' | 'manual') {
   const cutoff = await setting(ctx.admin, 'accounting_start_date', '2026-10-01');
-  let since = cutoff;
-  if (kind === 'incremental') {
-    const { data } = await ctx.admin.from('ledger_runs').select('started_at').eq('status', 'done').order('started_at', { ascending: false }).limit(1);
-    if (data?.[0]) { const d = istDate(Date.parse(data[0].started_at) - 2 * 86_400_000); since = d > cutoff ? d : cutoff; }
-  }
-  const ids = new Set<number>(await shopifyOrderIds(ctx, `updated_at:>=${since}`));
-  const { data: open } = await ctx.admin.from('ledger_orders').select('order_id, channel, channel_ref').in('status', ['open', 'attention']);
+  // The orders the last finished run held back are queued again, whatever kind of run this is.
+  const { data: prev } = await ctx.admin.from('ledger_runs').select('summary').eq('status', 'done').order('started_at', { ascending: false }).limit(1);
+  const retry = heldKeys(prev?.[0]?.summary);
+  const ids = new Set<number>();
   const myntra = new Set<string>();
-  for (const r of open ?? []) {
-    if (r.channel === 'myntra' && r.channel_ref) myntra.add(String(r.channel_ref));
-    else if (r.order_id != null) ids.add(Number(r.order_id));
-  }
-  // Myntra orders: a full run reads every one since Myntra went live in Unicommerce; an incremental run those changed since the last run.
-  const myntraFrom = await setting(ctx.admin, 'myntra_ledger_from', '2026-09-20');
-  // A Unicommerce problem finding Myntra orders must not stop the Shopify orders: it is recorded on the run instead.
+  for (const k of retry) { if (typeof k === 'number') ids.add(k); else myntra.add(k.slice(2)); }
+
+  let since = cutoff;
   let myntraError: string | null = null;
-  try {
-    for (const c of await myntraCodes(ctx, kind === 'full' || since < myntraFrom ? myntraFrom : since, kind === 'full' ? 'CREATED' : 'UPDATED')) myntra.add(c);
-  } catch (err) { myntraError = err instanceof Error ? err.message : String(err); }
+  // A "manual" run is the retry of held orders only: nothing else is listed.
+  if (kind !== 'manual') {
+    if (kind === 'incremental') {
+      // The window starts at the last scheduled run: a retry run says nothing about what changed since.
+      const { data } = await ctx.admin.from('ledger_runs').select('started_at').eq('status', 'done').neq('kind', 'manual').order('started_at', { ascending: false }).limit(1);
+      if (data?.[0]) { const d = istDate(Date.parse(data[0].started_at) - 2 * 86_400_000); since = d > cutoff ? d : cutoff; }
+    }
+    for (const id of await shopifyOrderIds(ctx, `updated_at:>=${since}`)) ids.add(id);
+    const { data: open } = await ctx.admin.from('ledger_orders').select('order_id, channel, channel_ref').in('status', ['open', 'attention']);
+    for (const r of open ?? []) {
+      if (r.channel === 'myntra' && r.channel_ref) myntra.add(String(r.channel_ref));
+      else if (r.order_id != null) ids.add(Number(r.order_id));
+    }
+    // Myntra orders: a full run reads every one since Myntra went live in Unicommerce; an incremental run those changed since the last run.
+    const myntraFrom = await setting(ctx.admin, 'myntra_ledger_from', '2026-09-20');
+    // A Unicommerce problem finding Myntra orders must not stop the Shopify orders: it is recorded on the run instead.
+    try {
+      for (const c of await myntraCodes(ctx, kind === 'full' || since < myntraFrom ? myntraFrom : since, kind === 'full' ? 'CREATED' : 'UPDATED')) myntra.add(c);
+    } catch (err) { myntraError = err instanceof Error ? err.message : String(err); }
+  }
   const queue: Array<number | string> = [...ids, ...[...myntra].map(c => `M:${c}`)];
-  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [], ...(myntraError ? { myntra_error: myntraError.slice(0, 300) } : {}) } }).select('*').single();
+  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [], held: [], retried: retry.length, ...(myntraError ? { myntra_error: myntraError.slice(0, 300) } : {}) } }).select('*').single();
   if (error) throw new Error(`could not start a run: ${error.message}`);
   return data;
 }
@@ -293,6 +322,9 @@ async function advance(ctx: Ctx, run: any, budget: number) {
   const started = Date.now();
   const queue: Array<number | string> = run.queue ?? [];       // Shopify order ids, and "M:<code>" for Myntra orders
   const missing: number[] = run.summary?.missing ?? [];
+  // Orders left as they were because Unicommerce or Velocity could not be reached; the next run tries them again.
+  const held: Held[] = run.summary?.held ?? [];
+  const addHeld = (more: Held[]) => { for (const h of more) if (!held.some(x => x.key === h.key)) held.push(h); };
   let pos: number = run.pos;
   try {
     const shared = await sharedInputs(ctx);
@@ -305,13 +337,19 @@ async function advance(ctx: Ctx, run: any, budget: number) {
         const page = await shopifyOrders(ctx, ids.map(i => `id:${i}`).join(' OR '), ids.length);
         const found = new Set(page.nodes.map(n => Number(n.legacyResourceId)));
         for (const i of ids) if (!found.has(i)) missing.push(i);
-        rows.push(...(await process(ctx, page.nodes, shared)).map(r => ledgerRow(r, shared.cutoff)));
+        const part = partitionHeld(await process(ctx, page.nodes, shared));
+        addHeld(part.held);
+        rows.push(...part.save.map(r => ledgerRow(r, shared.cutoff)));
       }
-      if (myntraChunk.length) rows.push(...(await processMyntra(ctx, myntraChunk, shared)).map(r => ledgerRow(r, shared.cutoff)));
+      if (myntraChunk.length) {
+        const mine = await processMyntra(ctx, myntraChunk, shared);
+        addHeld(mine.held);
+        rows.push(...mine.results.map(r => ledgerRow(r, shared.cutoff)));
+      }
       const { error } = rows.length ? await ctx.admin.rpc('ledger_save_orders', { p_orders: rows }) : { error: null };
       if (error) throw new Error(`saving the ledger: ${error.message}`);
       pos += chunk.length;
-      await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing } }).eq('id', run.id);
+      await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing, held } }).eq('id', run.id);
     }
     const finished = pos >= run.total;
     if (finished) {
@@ -320,9 +358,9 @@ async function advance(ctx: Ctx, run: any, budget: number) {
         const { count } = await ctx.admin.from('ledger_orders').select('order_name', { count: 'exact', head: true }).eq('status', st);
         counts[st] = count ?? 0;
       }
-      await ctx.admin.from('ledger_runs').update({ status: 'done', finished_at: new Date().toISOString(), updated_at: new Date().toISOString(), summary: { ...run.summary, missing, orders: counts } }).eq('id', run.id);
+      await ctx.admin.from('ledger_runs').update({ status: 'done', finished_at: new Date().toISOString(), updated_at: new Date().toISOString(), summary: { ...run.summary, missing, held, orders: counts } }).eq('id', run.id);
     }
-    return { run: run.id, kind: run.kind, finished, processed: pos, total: run.total, missing: missing.length, seconds: Math.round((Date.now() - started) / 1000) };
+    return { run: run.id, kind: run.kind, finished, processed: pos, total: run.total, missing: missing.length, held: held.length, seconds: Math.round((Date.now() - started) / 1000) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await ctx.admin.from('ledger_runs').update({ status: 'failed', error: message.slice(0, 500), updated_at: new Date().toISOString() }).eq('id', run.id);
@@ -362,18 +400,37 @@ async function sharedInputs(ctx: Ctx) {
   const { data: adj } = await ctx.admin.from('ledger_adjustments').select('order_name, kind, amount, reason, approved_by');
   const adjustments = new Map<string, any[]>();
   for (const a of adj ?? []) adjustments.set(String(a.order_name), [...(adjustments.get(String(a.order_name)) ?? []), a]);
-  return { cutoff, sellerState, today, rp, reversalIds, adjustments };
+  // The transaction dates GoKwik's uploaded reports cover (an order paid inside that range but missing from it is a problem).
+  const edge = async (asc: boolean) => (await ctx.admin.from('gokwik_payments').select('txn_date').order('txn_date', { ascending: asc }).limit(1)).data?.[0]?.txn_date as string | undefined;
+  const [from, to] = [await edge(true), await edge(false)];
+  const gatewayCoverage = from && to ? { from, to } : undefined;
+  return { cutoff, sellerState, today, rp, reversalIds, adjustments, gatewayCoverage };
 }
 
 async function process(ctx: Ctx, orders: any[], shared?: Shared) {
-  const { cutoff, sellerState, today, rp, reversalIds, adjustments } = shared ?? await sharedInputs(ctx);
+  const { cutoff, sellerState, today, rp, reversalIds, adjustments, gatewayCoverage } = shared ?? await sharedInputs(ctx);
   const ids = orders.map(o => Number(o.legacyResourceId));
+  // GoKwik's settlement report rows (amount, fee, GST, what reached the bank), by Shopify order number.
+  const { data: gk } = await ctx.admin.from('gokwik_payments').select('order_name, payment_id, settlement_date, utr, amount, fee, tax, credit')
+    .in('order_name', orders.map(o => String(o.name).replace(/^#/, '')));
+  const payoutsBy = new Map<string, NonNullable<RawInputs['gatewayPayouts']>>();
+  for (const r of gk ?? []) {
+    const list = payoutsBy.get(String(r.order_name)) ?? [];
+    list.push({ date: String(r.settlement_date), utr: String(r.utr), gross: Number(r.amount), fee: Number(r.fee), tax: Number(r.tax), net: Number(r.credit), ref: String(r.payment_id) });
+    payoutsBy.set(String(r.order_name), list);
+  }
   const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on, utr, remittance_date, cod_amount').in('order_id', ids);
   const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r]));
 
   // Unicommerce: the order, then its sale invoice and return invoices.
+  // An order Unicommerce cannot be asked about is held back, not read as "Unicommerce has nothing".
   const ucBy = new Map<number, RawInputs['uc']>();
-  for (const o of orders) ucBy.set(Number(o.legacyResourceId), await unicommerce(ctx, Number(o.legacyResourceId)));
+  const ucDown = new Map<number, string>();
+  for (const o of orders) {
+    const id = Number(o.legacyResourceId);
+    try { ucBy.set(id, await unicommerce(ctx, id)); }
+    catch (err) { if (err instanceof Unreachable) ucDown.set(id, err.message); else throw err; }
+  }
 
   // Velocity's view of every COD parcel that has not been paid out yet: when it was delivered and whether the
   // money has been remitted (UTR). Parcels already paid out are known from cod_deliveries.
@@ -383,12 +440,13 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
     && /cash_on_delivery|ppcod/i.test((o.paymentGatewayNames ?? []).join(' ')));
   const velocity = await velocityLookup(ctx, needVelocity.map(awbOf).filter(Boolean) as string[]);
 
-  const out: Array<{ order: string; orderId: number; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
+  const out: Array<{ order: string; orderId: number; facts: any; notes: string[]; skip?: string; held?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
   for (const o of orders) {
     const id = Number(o.legacyResourceId);
     const awb = awbOf(o);
     const row = codBy.get(id);
-    const v = awb ? velocity.get(awb) : undefined;
+    const v = awb ? velocity.recs.get(awb) : undefined;
+    const held = ucDown.get(id) ?? (awb && velocity.unreachable.has(awb) ? 'Velocity could not be reached' : undefined);
     // The money the courier paid out: from the delivery row when it has recorded the UTR, else Velocity's answer.
     const remittance = row?.utr
       ? { utr: String(row.utr), date: String(row.remittance_date ?? row.delivered_on ?? ''), amount: row.cod_amount != null ? Number(row.cod_amount) : null }
@@ -400,8 +458,10 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
       codDeliveredOn: (row?.delivered_on as string | null) ?? null,
       velocityDeliveredOn: v?.delivery_date ?? null,
       remittance: remittance && remittance.date ? remittance : null,
+      gatewayPayouts: payoutsBy.get(String(o.name).replace(/^#/, '')) ?? [],
     });
-    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, ledger: buildOrderLedger(built.facts, { cutoff, today }) });
+    if (held) built.notes.push(`${held}: this order is not saved, its last figures stay, and it is tried again`);
+    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, held, ledger: buildOrderLedger(built.facts, { cutoff, today, gatewayCoverage }) });
   }
   return out;
 }
@@ -430,17 +490,25 @@ async function myntraCodes(ctx: Ctx, fromDate: string, dateType: 'CREATED' | 'UP
 }
 
 // Myntra orders → ledger results. An order Unicommerce has not invoiced yet is left out (it is not a sale yet).
-// With `keepAll` (the single-order action) a result is returned even for a skipped order.
+// With `keepAll` (the single-order action) a result is returned even for a skipped order. An order Unicommerce
+// could not be asked about comes back in `held`, to be left as it was.
 async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll = false) {
-  const out: Array<{ order: string; orderId: number | null; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
+  const results: Array<{ order: string; orderId: number | null; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
+  const held: Held[] = [];
   for (const code of codes) {
-    const uc = await unicommerce(ctx, code);
+    let uc: RawInputs['uc'];
+    try { uc = await unicommerce(ctx, code); }
+    catch (err) {
+      if (!(err instanceof Unreachable)) throw err;
+      held.push({ key: `M:${code}`, order: code, why: err.message });
+      continue;
+    }
     if (!uc?.order) continue;
     const built = buildMyntraFacts({ today: shared.today, bookFrom: shared.cutoff, uc });
     if (built.ignore && !keepAll) continue;
-    out.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today }) });
+    results.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today }) });
   }
-  return out;
+  return { results, held };
 }
 
 async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string | null = null) {
@@ -450,7 +518,8 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
       nodes { id legacyResourceId name createdAt cancelledAt tags note paymentGatewayNames
         subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode }
         transactions(first: 20) { id kind status gateway amountSet { shopMoney { amount } } processedAt }
-        refunds { createdAt refundLineItems(first: 10) { nodes { subtotalSet { shopMoney { amount } } } }
+        lineItems(first: 10) { nodes { quantity } }
+        refunds { createdAt refundLineItems(first: 10) { nodes { quantity subtotalSet { shopMoney { amount } } } }
           transactions(first: 5) { nodes { kind gateway amountSet { shopMoney { amount } } } } }
         fulfillments(first: 3) { trackingInfo { number } }
         customer { id storeCreditAccounts(first: 1) { nodes { id transactions(first: 50, reverse: true) { nodes { __typename ... on Node { id } amount { amount } createdAt } } } } } }
@@ -460,18 +529,26 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
   return { nodes: conn.nodes as any[], hasNext: !!conn.pageInfo.hasNextPage, cursor: conn.pageInfo.endCursor as string | null };
 }
 
+// The order with its sale and return invoices. Throws Unreachable when Unicommerce does not answer; an answer of
+// "no such order" (INVALID_SALE_ORDER_CODE, every order from before 29 Sep) is a null, as before.
 async function unicommerce(ctx: Ctx, orderId: number | string): Promise<RawInputs['uc']> {
-  const so = await ucPost(ctx.admin, '/services/rest/v1/oms/saleorder/get', { code: String(orderId) });
+  const call = async (path: string, body: unknown) => {
+    const r = ctx.sim === 'unicommerce' ? { successful: false, errors: [{ description: 'HTTP 503: simulated outage' }] } : await ucPost(ctx.admin, path, body);
+    const down = ucUnreachable(r);
+    if (down) throw new Unreachable('Unicommerce', down);
+    return r;
+  };
+  const so = await call('/services/rest/v1/oms/saleorder/get', { code: String(orderId) });
   if (!so?.successful || !so.saleOrderDTO) return null;
   const order = so.saleOrderDTO;
   if (order.status === 'CANCELLED') return { order, returnInvoices: {} };
   const pkg: string | undefined = (order.shippingPackages ?? [])[0]?.code;
   const out: NonNullable<RawInputs['uc']> = { order, returnInvoices: {} };
   if (!pkg) return out;
-  out.saleInvoice = (await ucPost(ctx.admin, '/services/rest/v1/invoice/details/get', { shippingPackageCode: pkg, return: false }))?.invoice;
+  out.saleInvoice = (await call('/services/rest/v1/invoice/details/get', { shippingPackageCode: pkg, return: false }))?.invoice;
   for (const r of order.returns ?? []) {
     if (!r.returnInvoiceDisplayCode) continue;
-    const inv = (await ucPost(ctx.admin, '/services/rest/v1/invoice/details/get', { shippingPackageCode: pkg, return: true }))?.invoice;
+    const inv = (await call('/services/rest/v1/invoice/details/get', { shippingPackageCode: pkg, return: true }))?.invoice;
     if (inv) out.returnInvoices[r.code] = inv;
   }
   return out;
@@ -497,26 +574,22 @@ async function returnPrimeByOrder(ctx: Ctx): Promise<Map<string, any[]>> {
 
 // Velocity's COD remittance API: delivery date, COD amount, and the remittance (UTR set once paid), by AWB.
 // 100 parcels a call, 5 calls a minute, so calls are spaced 13 s apart even across separate lookups.
-type VelocityRec = { delivery_date: string | null; cod_amount: number | null; remittance_date: string | null; utr_no: string | null };
+// `unreachable` holds the parcels whose answer could not be had (Velocity down, rate-limited, no token): an order
+// on one of them is held back (_shared/upstream.ts), not rewritten as "no delivery, no payout".
 let lastVelocityCall = 0;
-async function velocityLookup(ctx: Ctx, awbs: string[]): Promise<Map<string, VelocityRec>> {
-  const out = new Map<string, VelocityRec>();
+async function velocityLookup(ctx: Ctx, awbs: string[]) {
   const list = [...new Set(awbs)];
-  if (!list.length) return out;
-  const token = (await secrets(ctx.admin, ['velocity_api_token'])).velocity_api_token;
-  if (!token) return out;
-  for (let i = 0; i < list.length; i += 100) {
+  if (!list.length) return { recs: new Map<string, VelocityRec>(), unreachable: new Set<string>() };
+  const token = ctx.sim === 'velocity' ? undefined : (await secrets(ctx.admin, ['velocity_api_token'])).velocity_api_token;
+  if (!token) return { recs: new Map<string, VelocityRec>(), unreachable: new Set(list) };
+  const ask = async (batch: string[]) => {
     const wait = 13_000 - (Date.now() - lastVelocityCall);
     if (wait > 0) await sleep(wait);
     lastVelocityCall = Date.now();
-    let res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
-    if (res.status === 429) {
-      await sleep(30_000); lastVelocityCall = Date.now();
-      res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
-    }
-    if (!res.ok) continue;
-    const body = await res.json().catch(() => ({}));
-    for (const r of body.data ?? []) out.set(String(r.tracking_number), { delivery_date: r.delivery_date ?? null, cod_amount: r.cod_amount ?? null, remittance_date: r.remittance_date ?? null, utr_no: r.utr_no ?? null });
-  }
-  return out;
+    try {
+      const res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: batch }) });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    } catch { return { status: 0, body: null }; }
+  };
+  return lookupVelocity(list, ask, sleep);
 }

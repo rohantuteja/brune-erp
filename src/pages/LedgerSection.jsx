@@ -7,8 +7,9 @@ import { RefreshCw, AlertCircle, ChevronDown, ChevronRight, Search, X, ExternalL
 // Analytics → Ledger. Shows the stored order ledger (ledger_orders / ledger_entries,
 // written by the accounting-ledger function): which orders net to zero, which are
 // still travelling, which need a person, and the documents the ERP has to issue.
-// Shopify and Myntra orders share the list (Myntra orders come from Unicommerce, are named by their invoice number and are
-// owed by Myntra); the Channel filter separates them. Design and rules: docs/accounting-ledger.md.
+// Shopify and Myntra orders share the list (Myntra orders come from Unicommerce, are named by their invoice number and
+// are invoiced to the end customer; Myntra collects the payment and pays us later); the Channel filter separates them.
+// Design and rules: docs/accounting-ledger.md.
 
 const SHOP_ADMIN = 'https://admin.shopify.com/store/supply-rethought/orders';
 
@@ -20,7 +21,7 @@ const CHANNELS = [
   { id: 'myntra',  label: 'Myntra' },
 ];
 const channelOf = (o) => o.channel || 'shopify';
-const SHOPIFY_ONLY = new Set(['in_transit', 'rto_on_the_way', 'with_courier']);       // COD and courier states a Myntra order never has
+const SHOPIFY_ONLY = new Set(['in_transit', 'rto_on_the_way', 'with_courier', 'awaiting_payout']);       // COD, courier and gateway states a Myntra order never has
 
 const STATUS_FILTERS = [
   { id: 'all',             label: 'All' },
@@ -29,6 +30,7 @@ const STATUS_FILTERS = [
   { id: 'rto_on_the_way',  label: 'RTO on the way' },
   { id: 'awaiting_return', label: 'Waiting for parcel' },
   { id: 'awaiting_settlement', label: 'Awaiting Myntra payment' },
+  { id: 'awaiting_payout', label: 'Awaiting GoKwik payout' },
   { id: 'with_courier',    label: 'COD with Velocity' },
   { id: 'needs_docs',      label: 'ERP issues a document' },
   { id: 'complete',        label: 'Complete' },
@@ -40,6 +42,9 @@ const EXCEPTION_LABEL = {
   rto_on_the_way: 'RTO on the way',
   awaiting_return: 'Waiting for returned parcel',
   awaiting_settlement: 'Awaiting Myntra payment',
+  awaiting_payout: 'Awaiting GoKwik payout',
+  payout_missing: 'Not in GoKwik report',
+  payout_differs: 'GoKwik paid a different amount',
   refund_due: 'Refund due',
   remittance_overdue: 'Velocity payment overdue',
   remittance_differs: 'Velocity paid a different amount',
@@ -94,6 +99,7 @@ const IN_FILTER = {
   rto_on_the_way: o => o.exception_type === 'rto_on_the_way',
   awaiting_return: o => o.exception_type === 'awaiting_return',
   awaiting_settlement: o => o.exception_type === 'awaiting_settlement',
+  awaiting_payout: o => (o.exceptions || []).some(e => e.type === 'awaiting_payout'),
 };
 const SORT_KEY = {
   order: o => (/^\d+$/.test(o.order_name) ? Number(o.order_name) : o.order_name),
@@ -108,7 +114,7 @@ function EntriesTable({ orderName }) {
   useEffect(() => {
     let live = true;
     supabase.from('ledger_entries')
-      .select('seq, entry_date, voucher, account, debit, credit, doc, issued_by, memo, exportable')
+      .select('seq, entry_date, voucher, account, debit, credit, doc, issued_by, memo, exportable, part, qty')
       .eq('order_name', orderName).order('seq')
       .then(({ data, error: err }) => {
         if (!live) return;
@@ -143,7 +149,7 @@ function EntriesTable({ orderName }) {
               <td className="py-1 px-2 text-right tabular-nums">{Number(e.debit) ? inr(e.debit, 2) : ''}</td>
               <td className="py-1 px-2 text-right tabular-nums">{Number(e.credit) ? inr(e.credit, 2) : ''}</td>
               <td className="py-1 px-2 whitespace-nowrap">{e.issued_by.replace('_', ' ')}</td>
-              <td className="py-1 px-2 text-stone-500">{e.memo}</td>
+              <td className="py-1 px-2 text-stone-500">{e.memo}{e.part ? ` · ${e.part.replace('_', ' ')}` : ''}{e.qty != null ? ` · ${Number(e.qty)} pc` : ''}</td>
             </tr>
           ))}
         </tbody>
@@ -236,6 +242,7 @@ export default function LedgerSection({ showToast }) {
 
   const [orders, setOrders] = useState([]);
   const [run, setRun] = useState(null);
+  const [held, setHeld] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openOrder, setOpenOrder] = useState(null);
@@ -245,16 +252,18 @@ export default function LedgerSection({ showToast }) {
     const all = [];
     for (let from = 0; ; from += 1000) {
       const { data, error: err } = await supabase.from('ledger_orders')
-        .select('order_name, order_id, channel, status, net, opening, cod_open, sale_date, exception_type, exceptions, balancing, notes, computed_at')
+        .select('order_name, order_id, channel, status, net, opening, cod_open, gateway_open, sale_date, exception_type, exceptions, balancing, notes, computed_at')
         .order('sale_date', { ascending: false, nullsFirst: false }).order('order_name', { ascending: false }).range(from, from + 999);
       if (err) { setError('Could not load the ledger'); showToast?.('Could not load the ledger', 'error'); setLoading(false); return; }
       all.push(...(data || []));
       if (!data || data.length < 1000) break;
     }
     const { data: runs } = await supabase.from('ledger_runs')
-      .select('id, kind, status, pos, total, error, started_at, finished_at, updated_at')
-      .order('started_at', { ascending: false }).limit(1);
-    setOrders(all); setRun(runs?.[0] ?? null); setLoading(false);
+      .select('id, kind, status, pos, total, error, started_at, finished_at, updated_at, summary')
+      .order('started_at', { ascending: false }).limit(5);
+    // Orders the last finished run could not read all their inputs for (an outage): they keep their last figures.
+    const finished = (runs || []).find(r => r.status === 'done');
+    setOrders(all); setRun(runs?.[0] ?? null); setHeld(Array.isArray(finished?.summary?.held) ? finished.summary.held : []); setLoading(false);
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
 
@@ -266,7 +275,7 @@ export default function LedgerSection({ showToast }) {
   const scoped = useMemo(() => channel === 'all' ? dated : dated.filter(o => channelOf(o) === channel), [dated, channel]);
 
   const stats = useMemo(() => {
-    const s = { complete: 0, not_a_sale: 0, in_transit: 0, rto: 0, awaiting_return: 0, settlement: 0, attention: 0, transitAmount: 0, rtoAmount: 0, awaitingAmount: 0, settlementAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0 };
+    const s = { complete: 0, not_a_sale: 0, in_transit: 0, rto: 0, awaiting_return: 0, settlement: 0, payout: 0, attention: 0, transitAmount: 0, rtoAmount: 0, awaitingAmount: 0, settlementAmount: 0, payoutAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0 };
     for (const o of scoped) {
       if (Number(o.cod_open) > 0) { s.courier++; s.courierAmount += Number(o.cod_open); }
       if (o.exception_type === 'remittance_overdue') s.courierOverdue++;
@@ -275,6 +284,7 @@ export default function LedgerSection({ showToast }) {
       else if (o.status === 'attention') { s.attention++; s.attentionAmount += Number(o.net); }
       else if (o.exception_type === 'awaiting_return') { s.awaiting_return++; s.awaitingAmount += Number(o.net); }
       else if (o.exception_type === 'awaiting_settlement') { s.settlement++; s.settlementAmount += Number(o.net); }
+      else if (o.exception_type === 'awaiting_payout') { s.payout++; s.payoutAmount += Number(o.gateway_open); }
       else if (o.exception_type === 'rto_on_the_way') { s.rto++; s.rtoAmount += Number(o.net); }
       else if (o.exception_type === 'in_transit') { s.in_transit++; s.transitAmount += Number(o.net); }
     }
@@ -345,6 +355,13 @@ export default function LedgerSection({ showToast }) {
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
+      {held.length > 0 && (
+        <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          <b>{held.length} {held.length === 1 ? 'order is' : 'orders are'} held back</b> because {[...new Set(held.map(h => String(h.why).split(' could not')[0]))].join(' and ')} could not be reached. They keep their last figures and are tried again every 10 minutes.
+          <span className="text-amber-800"> {held.slice(0, 8).map(h => h.order).join(', ')}{held.length > 8 ? ` and ${held.length - 8} more` : ''}.</span>
+        </div>
+      )}
+
       {orders.length === 0 && !error && <div className="bg-white rounded-lg border border-stone-200 p-4 text-sm text-stone-600">Nothing stored yet. The first sync fills this in.</div>}
 
       {orders.length > 0 && (
@@ -352,7 +369,8 @@ export default function LedgerSection({ showToast }) {
           <Collapsible id="ledger-help" title="How this page works" icon={<Info className="w-4 h-4 text-stone-400" />}>
             <ul className="list-disc pl-5 space-y-1 text-xs text-stone-600">
               <li>Every order since the accounting start date, built from Shopify, Unicommerce, Return Prime and Velocity. A finished order nets to zero.</li>
-              <li><b>Myntra</b> orders come from Unicommerce and are named by their invoice number. Myntra, not the customer, owes the money, so they stay <i>Awaiting Myntra payment</i> until its settlement is matched. Use the Channel filter to look at one channel.</li>
+              <li><b>Myntra</b> orders come from Unicommerce and are named by their invoice number. They are invoiced to the customer, but Myntra collects the payment and pays us later, so they stay <i>Awaiting Myntra payment</i> until its settlement is matched. Use the Channel filter to look at one channel.</li>
+              <li><b>Prepaid orders</b> stay <i>Awaiting GoKwik payout</i> until GoKwik's settlement report (uploaded on the Bank &amp; card page) shows the payout. The payout entry books the bank receipt, GoKwik's fee and the GST on the fee.</li>
               <li><b>Open amount</b> is what is still owed on the order (money to collect, or a sale still to be reversed). <b>COD with Velocity</b> is cash the courier collected and has not yet paid into the bank.</li>
               <li>Where Unicommerce's documents fall short, the ERP issues the credit note or invoice itself (<i>ERP issues a document</i>), so Tally always receives balanced orders.</li>
               <li>The date filter is the date of sale. Open an order to see its double-entry lines; grey lines are dated before the accounting start date and are never exported.</li>
@@ -371,10 +389,11 @@ export default function LedgerSection({ showToast }) {
               channel !== 'myntra' && <StatCard key="rto" label="RTO on the way" value={stats.rto} sub={`${inr(stats.rtoAmount)} to reverse when back`} tone="text-sky-800" active={p.lstatus === 'rto_on_the_way'} onClick={() => goTo('rto_on_the_way')} />,
               <StatCard key="waiting" label="Waiting for parcel" value={stats.awaiting_return} sub={channel === 'myntra' ? `${inr(stats.awaitingAmount)} sold, parcel not back` : `${inr(stats.awaitingAmount)} refunded, goods not back`} tone="text-sky-800" active={p.lstatus === 'awaiting_return'} onClick={() => goTo('awaiting_return')} />,
               hasMyntra && channel !== 'shopify' && <StatCard key="settle" label="Awaiting Myntra payment" value={stats.settlement} sub={`${inr(stats.settlementAmount)} owed by Myntra`} tone="text-sky-800" active={p.lstatus === 'awaiting_settlement'} onClick={() => goTo('awaiting_settlement')} />,
+              channel !== 'myntra' && <StatCard key="payout" label="Awaiting GoKwik payout" value={stats.payout} sub={stats.payout ? `${inr(stats.payoutAmount)} held by GoKwik` : 'nothing waiting'} tone="text-sky-800" active={p.lstatus === 'awaiting_payout'} onClick={() => goTo('awaiting_payout')} />,
               channel !== 'myntra' && <StatCard key="courier" label="COD with Velocity" value={stats.courier} sub={stats.courier ? `${inr(stats.courierAmount)} collected, not yet paid in${stats.courierOverdue ? ` · ${stats.courierOverdue} overdue` : ''}` : 'nothing waiting'} tone={stats.courierOverdue ? 'text-amber-800' : 'text-sky-800'} active={p.lstatus === 'with_courier'} onClick={() => goTo('with_courier')} />,
               <StatCard key="attention" label="Needs attention" value={stats.attention} sub={stats.attention ? `${inr(Math.abs(stats.attentionAmount))} net` : 'nothing to do'} tone={stats.attention ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'attention'} onClick={() => goTo('attention')} />,
             ].filter(Boolean);
-            const cols = { 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6', 7: 'xl:grid-cols-7' }[cardsShown.length];
+            const cols = { 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6', 7: 'xl:grid-cols-7', 8: 'xl:grid-cols-8' }[cardsShown.length];
             return <div className={`grid grid-cols-2 lg:grid-cols-3 ${cols} gap-3`}>{cardsShown}</div>;
           })()}
 

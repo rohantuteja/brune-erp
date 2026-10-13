@@ -29,6 +29,9 @@ design makes the ERP the place where every order is reconciled, and produces a f
 Sales are inclusive of 5% IGST (garments up to ₹2,500). Control = the order's customer account,
 debit-positive.
 
+The worked examples below use plain account names (Sales, Output IGST, Bank, Gateway clearing, Store credit
+liability). The ledger itself uses the Tally ledger names: see "Account names, the prepaid payout and Gateway clearing".
+
 ### A. Prepaid return (order 37807: ₹1,399 − ₹259.85 prepaid discount, paid ₹1,139.15 by UPI)
 
 | Event | Source | Dr | Cr | Control |
@@ -290,6 +293,7 @@ call, 5 calls a minute, so calls are spaced 13 s apart across the whole function
   remittance October (exported).
 - Velocity does not deduct its charges from a remittance (they come from the wallet or the monthly invoice), so the
   remittance equals the COD amount exactly.
+- **If Velocity cannot be reached,** the order is held back: see "When Velocity or Unicommerce cannot be reached" below.
 
 **First reading, 11 Oct 2026** (81 delivered COD orders in the ledger): 57 remitted, none with a different amount; the
 other 24 (delivered 6 to 11 Oct, ₹37,201.90) are still with Velocity and none is overdue. Remittances found:
@@ -320,6 +324,66 @@ After the resync of 11 Oct 2026: 15 orders `rto_on_the_way` (₹24,956.20 owed o
 was 50), debits equal credits at ₹11,68,025.75. A prepaid RTO nets to zero while it travels and stays `complete` until
 the return documents are due; the Shipments screen lists it.
 
+## Account names, the prepaid payout and Gateway clearing (migration 028, `accounting-ledger` v15)
+
+**The account names are the Tally ledger names** (the owner's `tally-names-proposed.xlsx`, 13 Oct 2026), so the Tally
+file needs no mapping: `ICICI Bank`, `GST SALES` (goods, COD charge and return fee are the `part` of the entry, not
+separate accounts), `GST SALES RETURN`, `IGST OUTPUT UP` / `CGST Output UP` / `SGST Output UP`, `STORE CREDIT BY SHOPIFY`,
+`Easebuzz Private Limited` (GoKwik's settlement bank; Razorpay is `Razorpay Payment Private Limited`),
+`Payment Gateway Expenses`, `IGST Input  UP` (two spaces, as in Tally), `ROUND OFF`. The three control accounts
+(`Customer (order control)`, `Myntra receivable (order control)`, `COD receivable (Velocity)`, plus `Goodwill credits`)
+are the ERP's own and are not posted to Tally as ledgers of their own. Each sale and credit-note line carries the
+**piece count** (`qty`) so the file can name the stock item; `part` says which line of the sale it is.
+
+**The prepaid payout.** A prepaid order is paid into the gateway, and GoKwik later pays the bank the amount less its fee
+and GST, one UTR for the batch. The sale side was always booked (Dr gateway account on payment); the missing half is
+now booked from GoKwik's `rawSettlementReport` (table `gokwik_payments`, one row per Shopify payment, uploaded on
+Analytics → Bank & card):
+
+| Event | Entry | Date |
+|---|---|---|
+| Customer pays | Dr Easebuzz Private Limited, Cr Customer (order control) | Shopify payment date |
+| GoKwik pays out | Dr ICICI Bank (amount − fee − GST), Dr Payment Gateway Expenses (fee), Dr IGST Input (GST on the fee), Cr Easebuzz Private Limited (amount); document = UTR | settlement date = the bank credit date (38 of 38 UTRs) |
+
+Fee + GST by settlement month equals Easebuzz's monthly invoice to the paisa. The gateway account is outside the
+customer control, so an order still nets to zero for the customer; what is open is `ledger_orders.gateway_open`.
+
+- `awaiting_payout` (open, normal): paid, and GoKwik's report does not list it yet, or the payment is newer than the
+  last report. 44 of the 210 prepaid orders on 14 Oct 2026, ₹60,386.10.
+- `payout_missing` (needs a person): paid at least 5 days before the last day the uploaded reports cover and still not
+  listed. Payments dated before the first report are not flagged.
+- `payout_differs` (needs a person): GoKwik paid out a different amount than it took for the order.
+- Razorpay-paid orders (none seen so far) stay `awaiting_payout` until a Razorpay import exists.
+
+**Check (14 Oct 2026, full sync against a before-snapshot):** 165 payout vouchers (₹2,08,471.70 gross, ₹4,299.57 fee,
+₹774.33 GST, ₹2,03,397.80 to the bank), 44 awaiting, none missing or different; every other total equal to before
+under the renames; Myntra unchanged.
+
+## When Velocity or Unicommerce cannot be reached (`accounting-ledger` v17)
+
+The ledger is rebuilt from scratch on every sync, so a call that failed must never be read as "no data". On 13 Oct 2026
+Velocity's COD API answered 503, the lookup skipped it silently, and a full sync saved 56 delivered COD orders
+(₹87,058.70) without their remittances. Now (`supabase/functions/_shared/upstream.ts`, tested in `upstream.test.ts`):
+
+- **Velocity** is unreachable for a batch of parcels when the call fails, is refused, or comes back without a `data`
+  list (an error body is not an answer). A 429 is retried once. A parcel Velocity answers for with an error ("is a
+  prepaid order") is an answer.
+- **Unicommerce** is unreachable when `ucPost` reports an HTTP failure or there is no readable body. "No such order"
+  (`INVALID_SALE_ORDER_CODE`, every order from before 29 Sep) and "no invoice yet" are answers: those orders keep
+  Shopify's amounts as before. This covers the order, the sale invoice and every return invoice.
+- An order with an unreachable input is **held back**: not saved, its last rows kept, and recorded in
+  `ledger_runs.summary.held` as `{ key, order, why }` (`key` = the Shopify order id, or `M:<code>` for Myntra).
+- **Retried automatically.** Every later run queues the orders the last finished run held back, and the tick starts a
+  retry run (`kind = manual`, only those orders) ten minutes after a run that held any. Retry runs are not part of the
+  hourly / nightly schedule: they neither delay it nor move the window an incremental run looks back over.
+  `sync` with `{ "kind": "retry" }` starts one by hand.
+- **Visible.** The Ledger page shows an amber "N orders held back" line with the reason while the last finished run has
+  any; the single-order and report actions show the reason in the order's notes and `held`.
+- **Test seam.** Any action takes `{ "simulate_down": "velocity" | "unicommerce" }`: that system then answers like a 503.
+
+Checked live on 14 Oct 2026: an incremental sync with Velocity simulated down held 46 COD orders and left every one of
+them, and every other order, exactly as it was.
+
 ## Myntra orders (migration 027)
 
 Myntra orders (Unicommerce channel `MYNTRAPPMP`) live only in Unicommerce, so the ledger reads them from there and keeps
@@ -336,14 +400,18 @@ them next to the Shopify orders (`ledger_orders.channel` = `shopify` | `myntra`;
 - **Booked on Myntra's order time (IST),** like a Shopify order is booked on its order date, but **never before the
   books started** (`accounting_start_date`): September's books had no Myntra sales, so the four orders placed in
   September (₹6,530 incl. ₹310.94 GST) are booked on 1 Oct. Returns are dated by the return invoice.
-- **Control account:** `Myntra receivable (order control)`, not the customer account, because Myntra owes the money.
-  Sale: Dr Myntra receivable / Cr Sales + Output IGST (or CGST + SGST for an in-state order); a return invoice reverses
-  it. The "GT charge" Myntra collects from the customer is Myntra's, not ours, and is on no invoice.
+- **Myntra is a marketplace, not our customer.** We invoice the **end customer** (B2C) through Unicommerce, and Myntra
+  collects the price from the customer. Myntra invoices us only its own fees (commission, fixed fee, return fees) and
+  deducts TCS and TDS from what it pays us; so there is no GSTIN on a Myntra sale, and Myntra is flagged as the
+  e-commerce operator in the Tally file. `Myntra receivable (order control)` is therefore a **clearing account for the
+  money Myntra collected for us and has not paid yet**, not a debtor.
+  Sale: Dr Myntra receivable / Cr GST SALES + IGST OUTPUT UP (or CGST + SGST for an in-state order); a return invoice
+  reverses it. The "GT charge" Myntra collects from the customer is Myntra's, not ours, and is on no invoice.
 - **Stages:** a sold order with no settlement matched is `awaiting_settlement` (open, normal); a customer return the
   warehouse has not received is `awaiting_return`; a courier return (RTO) not yet received is pending the same way.
   When the return invoice exists the credit note is Unicommerce's; any shortfall is balanced by the ERP like Shopify.
-- **Not done yet (the second step):** matching Myntra's settlement (payout) to the orders. A payout is the invoice value
-  less commission, the ₹59 fixed fee, TCS 0.5% and TDS 0.1% (and, on a return, the return-fee tier ₹106/127/182 + 18%
+- **Not done yet (the second step):** matching Myntra's settlement (payout) to the orders. A payout is what Myntra
+  collected (the invoice value) less commission, the ₹59 fixed fee, TCS 0.5% and TDS 0.1% (and, on a return, the return-fee tier ₹106/127/182 + 18%
   GST; commission, TCS and TDS come back, the fixed fee does not). Until then every sale stays open, and the receivable
   control account is the list of what Myntra still owes. First payout is expected 19-25 Oct 2026; the settlement step
   is built once it arrives, from Myntra's order-flow and settlement reports for the same dates.
@@ -355,9 +423,7 @@ them next to the Shopify orders (`ledger_orders.channel` = `shopify` | `myntra`;
 
 1. **Control-ledger report**: done (stored ledger and Analytics → Ledger above). Still to do: orders delivered with
    no remittance after 10 days (needs the Velocity remittance matching).
-2. **GoKwik settlement import** (upload screen; the `settlement_v2` and `rawSettlementReport`
-   downloads carry the same payments, the raw one adds `Remark`, `PG Transaction Type`, `Origin`).
-   Match on `Platform Order Id` (the Shopify order number); post per UTR.
+2. **GoKwik settlement import**: done (Analytics → Bank & card; payouts are ledger entries, see "the prepaid payout").
 3. **Velocity charges**: per-parcel freight and COD fee from the `shipping-charges` API against the
    monthly invoice. (Remittances are done: see Velocity above.)
 4. **Tally import file** from all of the above (sales and return vouchers from Unicommerce, so the

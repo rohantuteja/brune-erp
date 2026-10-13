@@ -202,7 +202,7 @@ test('37370: prepaid by UPI, returned, customer given ₹1,260 by hand → balan
   assert.equal(b.facts.returns![0].date, '2026-10-03');                        // dated by the courier's note, not today
   assert.ok(b.notes.some(n => /given by hand on 2026-10-09/.test(n)));
   const ro = l.entries.filter(e => e.voucher === 'round_off');
-  assert.deepEqual(ro.map(e => [e.account, e.debit, e.credit]), [['Round off', 0.9, 0], ['Customer (order control)', 0, 0.9]].map(([a, d, c]) => [a, d, c]));
+  assert.deepEqual(ro.map(e => [e.account, e.debit, e.credit]), [['ROUND OFF', 0.9, 0], ['Customer (order control)', 0, 0.9]].map(([a, d, c]) => [a, d, c]));
 });
 
 test('37535: ₹1,300 store credit spent on a COD order, returned, ₹1,300 credited by hand → balanced; an older credit is not mistaken for it', () => {
@@ -431,10 +431,10 @@ test('Myntra: an invoiced order is booked on Myntra\'s order day, named by its i
   const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-13' });
   const sale = l.entries.filter(e => e.voucher === 'sale');
   assert.equal(sale.find(e => e.account === MYNTRA)?.debit, 1326);
-  assert.equal(sale.find(e => e.account === 'Sales')?.credit, 1262.86); assert.equal(sale.find(e => e.account === 'Output IGST')?.credit, 63.14);
+  assert.equal(sale.find(e => e.account === 'GST SALES' && e.part === 'goods')?.credit, 1262.86); assert.equal(sale.find(e => e.account === 'IGST OUTPUT UP')?.credit, 63.14);
   assert.ok(!l.entries.some(e => e.account === CUSTOMER), 'never the customer account');
   assert.equal(l.net, 1326); assert.equal(l.status, 'open'); assert.equal(l.exceptions[0].type, 'awaiting_settlement');
-  assert.match(l.exceptions[0].reason, /Myntra owes 1326\.00/);
+  assert.match(l.exceptions[0].reason, /Myntra collected 1326\.00/);
   assert.equal(l.exportable.length, sale.length);
 });
 
@@ -501,5 +501,42 @@ test('Myntra: a two-item order with one item returned credits only that item; in
   const intra = buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000018', '2026-10-06T14:15:10', 1326, false)));
   assert.equal(intra.facts.igst, false);
   const l = buildOrderLedger(intra.facts, { cutoff: CUTOFF, today: '2026-10-13' });
-  assert.ok(l.entries.some(e => e.account === 'Output CGST') && l.entries.some(e => e.account === 'Output SGST') && !l.entries.some(e => e.account === 'Output IGST'));
+  assert.ok(l.entries.some(e => e.account === 'CGST Output UP') && l.entries.some(e => e.account === 'SGST Output UP') && !l.entries.some(e => e.account === 'IGST OUTPUT UP'));
+});
+
+// ── Pieces, gateway names and GoKwik payouts ─────────────────────────────────────────────────────────────
+test('pieces come from the Unicommerce invoice items (an item without a quantity counts as one)', () => {
+  const raw = prepaidOrder('37950', '2026-10-09T10:00:00Z', '2026-10-09T12:00:00Z', 'INS0900');
+  raw.uc!.saleInvoice.invoiceItems = [{ quantity: 2, integratedGstPercentage: 5 }, { integratedGstPercentage: 5 }];
+  assert.equal(buildFacts(raw).facts.qty, 3);
+  assert.equal(buildFacts(prepaidOrder('37951', '2026-10-09T10:00:00Z', '2026-10-09T12:00:00Z', 'INS0901')).facts.qty, 1);
+});
+
+test('without a Unicommerce invoice the pieces come from the Shopify line items', () => {
+  const raw = prepaidOrder('37500', '2026-09-20T10:00:00Z', '2026-09-20T10:00:00Z', 'X');
+  raw.uc = null; raw.shopify.lineItems = { nodes: [{ quantity: 2 }, { quantity: 1 }] };
+  assert.equal(buildFacts(raw).facts.qty, 3);
+});
+
+test('a payment remembers its gateway, and GoKwik\'s payout rows are passed through only when they were looked up', () => {
+  const raw = prepaidOrder('37952', '2026-10-09T10:00:00Z', '2026-10-09T12:00:00Z', 'INS0902');
+  const without = buildFacts(raw).facts;
+  assert.equal(without.payments![0].gateway, 'Gokwik UPI'); assert.equal('gatewayPayouts' in without, false);
+  const rows = [{ date: '2026-10-11', utr: 'U1', gross: 1349, fee: 27.8, tax: 5, net: 1316.2, ref: 'p1' }];
+  assert.deepEqual(buildFacts({ ...raw, gatewayPayouts: rows }).facts.gatewayPayouts, rows);
+  assert.deepEqual(buildFacts({ ...raw, gatewayPayouts: [] }).facts.gatewayPayouts, []);
+});
+
+test('an RTO sends all the pieces back', () => {
+  const raw = prepaidOrder('37953', '2026-10-01T10:00:00Z', '2026-10-01T12:00:00Z', 'INS0903');
+  raw.uc!.saleInvoice.invoiceItems = [{ quantity: 2, integratedGstPercentage: 5 }];
+  raw.shopify = { ...raw.shopify, tags: ['rto_delivered'], cancelledAt: '2026-10-07T10:00:00Z' };
+  const r = buildFacts(raw).facts.returns![0];
+  assert.equal(r.kind, 'rto'); assert.equal(r.qty, 2);
+});
+
+test('a Myntra order carries its pieces on the sale and on the return', () => {
+  const o = myntraOrder({ returns: [{ code: 'RET9', type: 'Customer Returned', statusCode: 'COURIER_ALLOCATED', returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
+  const b = buildMyntraFacts(myntra(o, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
+  assert.equal(b.facts.qty, 1); assert.equal(b.facts.returns![0].qty, 1);
 });

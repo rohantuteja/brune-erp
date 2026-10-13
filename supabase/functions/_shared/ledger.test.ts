@@ -8,7 +8,7 @@ const CUTOFF = '2026-10-01';
 const base = { rate: 0.05, igst: true };
 const sum = (l: ReturnType<typeof buildOrderLedger>, key: 'debit' | 'credit') => Math.round(l.entries.reduce((s, e) => s + e[key], 0) * 100) / 100;
 const tax = (l: ReturnType<typeof buildOrderLedger>, voucher: string) =>
-  Math.round(l.entries.filter(e => e.voucher === voucher && /GST/.test(e.account)).reduce((s, e) => s + e.credit - e.debit, 0) * 100) / 100;
+  Math.round(l.entries.filter(e => e.voucher === voucher && /OUTPUT/i.test(e.account)).reduce((s, e) => s + e.credit - e.debit, 0) * 100) / 100;
 const types = (l: ReturnType<typeof buildOrderLedger>) => l.balancing.map(b => b.type).sort();
 
 test('37807: prepaid return, Unicommerce invoice complete → nets to zero, only the ₹99 fee is the ERP\'s', () => {
@@ -53,8 +53,8 @@ test('37707: COD return to origin, Unicommerce reverses goods only → the ERP c
   assert.deepEqual(types(l), ['credit_note_cod_fee']);
   assert.equal(l.balancing[0].amount, 100);
   const cn = l.entries.filter(e => e.voucher === 'credit_note' && e.by === 'erp');
-  assert.equal(cn.find(e => e.account === 'COD charge income')?.debit, 95.24);
-  assert.equal(cn.find(e => e.account === 'Output IGST')?.debit, 4.76);
+  assert.equal(cn.find(e => e.account === 'GST SALES' && e.part === 'cod_charge')?.debit, 95.24);
+  assert.equal(cn.find(e => e.account === 'IGST OUTPUT UP')?.debit, 4.76);
 });
 
 test('COD return to origin when Unicommerce reverses everything → nothing to add', () => {
@@ -144,8 +144,8 @@ test('status: complete when it nets to zero, open while travelling, attention fo
 test('intra-state sale splits the tax into CGST and SGST that add back up', () => {
   const l = buildOrderLedger({ rate: 0.05, igst: false, order: 'X4', goods: 1399, codFee: 0, saleDate: '2026-10-02',
     payments: [{ date: '2026-10-02', amount: 1399, ref: 'p' }] }, { cutoff: CUTOFF });
-  const cgst = l.entries.find(e => e.account === 'Output CGST')!.credit;
-  const sgst = l.entries.find(e => e.account === 'Output SGST')!.credit;
+  const cgst = l.entries.find(e => e.account === 'CGST Output UP')!.credit;
+  const sgst = l.entries.find(e => e.account === 'SGST Output UP')!.credit;
   assert.equal(Math.round((cgst + sgst) * 100) / 100, 66.62);
   assert.equal(l.net, 0);
 });
@@ -196,7 +196,7 @@ test('COD delivered and remitted in full → the courier receivable is cleared i
   const l = buildOrderLedger(codOrder({ remitted: { date: '2026-10-09', amount: 1499, utr: 'UTR123' } }), { cutoff: CUTOFF, today: '2026-10-12' });
   assert.equal(l.status, 'complete'); assert.equal(l.net, 0); assert.equal(l.codOpen, 0);
   const r = l.entries.filter(e => e.voucher === 'remittance');
-  assert.deepEqual(r.map(e => [e.account, e.debit, e.credit]), [['Bank', 1499, 0], ['COD receivable (Velocity)', 0, 1499]]);
+  assert.deepEqual(r.map(e => [e.account, e.debit, e.credit]), [['ICICI Bank', 1499, 0], ['COD receivable (Velocity)', 0, 1499]]);
   assert.equal(r[0].doc, 'UTR123'); assert.equal(r[0].date, '2026-10-09');
 });
 
@@ -258,4 +258,94 @@ test('a prepaid parcel coming back nets to zero for now: the refund is due once 
   const f: Facts = { ...base, order: 'R3', goods: 1499, codFee: 0, saleDate: '2026-10-02', payments: [{ date: '2026-10-02', amount: 1499, ref: 'p' }], rtoOnTheWay: { state: 'in_transit', since: '2026-10-10' } };
   const l = buildOrderLedger(f, { cutoff: CUTOFF, today: '2026-10-12' });
   assert.equal(l.net, 0); assert.equal(l.status, 'complete');
+});
+
+// ── The gateway's payout: bank receipt, GoKwik's fee and the GST on it ────────────────────────────────────
+const prepaid = (over: Partial<Facts> = {}): Facts => ({ ...base, order: 'P1', goods: 1449, codFee: 0, saleDate: '2026-10-02', saleDoc: 'INS0777', qty: 1,
+  payments: [{ date: '2026-10-02', amount: 1449, ref: 'KWIK1', gateway: 'Gokwik UPI' }], ...over });
+const payout = (over: Record<string, unknown> = {}) => ({ date: '2026-10-04', utr: 'UTR1', gross: 1449, fee: 29.85, tax: 5.37, net: 1413.78, ref: 'KWIK1', ...over });
+const COVER = { from: '2026-09-01', to: '2026-10-09' };
+
+test('a payout books the bank receipt, the fee and its GST, and clears what the gateway held: the order is complete', () => {
+  const l = buildOrderLedger(prepaid({ gatewayPayouts: [payout()] }), { cutoff: CUTOFF, today: '2026-10-10', gatewayCoverage: COVER });
+  assert.equal(l.status, 'complete'); assert.deepEqual(l.exceptions, []); assert.equal(l.net, 0); assert.equal(l.gatewayOpen, 0);
+  const p = l.entries.filter(e => e.voucher === 'payout');
+  assert.deepEqual(p.map(e => [e.account, e.debit, e.credit]), [['ICICI Bank', 1413.78, 0], ['Payment Gateway Expenses', 29.85, 0], ['IGST Input  UP', 5.37, 0], ['Easebuzz Private Limited', 0, 1449]]);
+  assert.ok(p.every(e => e.doc === 'UTR1' && e.date === '2026-10-04' && e.by === 'gateway'));
+  assert.equal(sum(l, 'debit'), sum(l, 'credit'));
+});
+
+test('no payout yet and the uploaded reports stop before this payment: open, waiting for GoKwik (or for the next report)', () => {
+  const l = buildOrderLedger(prepaid({ gatewayPayouts: [] }), { cutoff: CUTOFF, today: '2026-10-03', gatewayCoverage: { from: '2026-09-01', to: '2026-10-01' } });
+  assert.equal(l.status, 'open'); assert.equal(l.exceptions[0].type, 'awaiting_payout'); assert.equal(l.exceptions[0].amount, 1449);
+  assert.equal(l.gatewayOpen, 1449); assert.equal(l.net, 0);
+  assert.match(l.exceptions[0].reason, /uploaded up to 2026-10-01/);
+});
+
+test('paid within 5 days of where the reports end: still just waiting. Older than that and absent from a report that covers it: needs a person', () => {
+  const soon = buildOrderLedger(prepaid({ gatewayPayouts: [] }), { cutoff: CUTOFF, today: '2026-10-08', gatewayCoverage: { from: '2026-09-01', to: '2026-10-05' } });
+  assert.equal(soon.exceptions[0].type, 'awaiting_payout'); assert.equal(soon.status, 'open');
+  const missing = buildOrderLedger(prepaid({ gatewayPayouts: [] }), { cutoff: CUTOFF, today: '2026-10-12', gatewayCoverage: COVER });
+  assert.equal(missing.exceptions[0].type, 'payout_missing'); assert.equal(missing.status, 'attention'); assert.equal(missing.exceptions[0].amount, 1449);
+  assert.match(missing.exceptions[0].reason, /do not list this payment/);
+});
+
+test('paid before the earliest report we hold: nothing can be said, so nothing is flagged', () => {
+  const l = buildOrderLedger(prepaid({ payments: [{ date: '2026-08-26', amount: 1449, ref: 'K', gateway: 'Gokwik UPI' }], saleDate: '2026-08-26', gatewayPayouts: [] }), { cutoff: CUTOFF, today: '2026-10-10', gatewayCoverage: COVER });
+  assert.deepEqual(l.exceptions, []); assert.equal(l.status, 'complete');
+});
+
+test('GoKwik paid out a different amount than it took: needs a person, with the difference', () => {
+  const l = buildOrderLedger(prepaid({ gatewayPayouts: [payout({ gross: 1000, fee: 20.6, tax: 3.71, net: 975.69 })] }), { cutoff: CUTOFF, today: '2026-10-10', gatewayCoverage: COVER });
+  assert.equal(l.exceptions[0].type, 'payout_differs'); assert.equal(l.exceptions[0].amount, 449); assert.equal(l.status, 'attention');
+  assert.match(l.exceptions[0].reason, /paid out 1000\.00 but took 1449\.00/);
+});
+
+test('a Razorpay payment goes to the Razorpay ledger and waits (its payouts are not matched yet)', () => {
+  const l = buildOrderLedger(prepaid({ payments: [{ date: '2026-10-02', amount: 1449, ref: 'R1', gateway: 'Razorpay' }], gatewayPayouts: [] }), { cutoff: CUTOFF, today: '2026-10-12', gatewayCoverage: COVER });
+  assert.ok(l.entries.some(e => e.voucher === 'payment' && e.account === 'Razorpay Payment Private Limited' && e.debit === 1449));
+  assert.equal(l.exceptions[0].type, 'awaiting_payout'); assert.match(l.exceptions[0].reason, /Razorpay/); assert.equal(l.gatewayOpen, 1449);
+});
+
+test('when the payouts were not looked up at all, nothing is checked (an old caller sees no new exceptions)', () => {
+  const l = buildOrderLedger(prepaid(), { cutoff: CUTOFF, today: '2026-10-12' });
+  assert.deepEqual(l.exceptions, []); assert.equal(l.status, 'complete'); assert.equal(l.gatewayOpen, 1449);
+});
+
+test('a September sale paid out in October: the payout is an October entry that clears a balance carried in from September', () => {
+  const l = buildOrderLedger(prepaid({ saleDate: '2026-09-30', payments: [{ date: '2026-09-30', amount: 1449, ref: 'K', gateway: 'Gokwik UPI' }], gatewayPayouts: [payout({ date: '2026-10-01' })] }), { cutoff: CUTOFF, today: '2026-10-10', gatewayCoverage: COVER });
+  assert.equal(l.status, 'complete');
+  assert.deepEqual(l.exportable.map(e => e.voucher), ['payout', 'payout', 'payout', 'payout']);       // only the payout is October's
+  assert.equal(l.exportable.filter(e => e.account === 'Easebuzz Private Limited').reduce((s, e) => s + e.debit - e.credit, 0), -1449);
+});
+
+// ── Which part of the sale a line is, and how many pieces ───────────────────────────────────────────────
+test('sale lines say which part they are (goods, COD charge) and the pieces; the credit note carries the pieces back', () => {
+  const f: Facts = { ...base, order: 'Q1', goods: 2799, codFee: 100, saleDate: '2026-10-02', saleDoc: 'INS1', qty: 2, delivered: { date: '2026-10-04', amount: 2899 },
+    returns: [{ kind: 'customer', date: '2026-10-08', goodsReturned: 1399.5, qty: 1, uc: { doc: 'ISR1', goods: 1399.5, codFee: 0, qty: 1 } }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF });
+  const sale = l.entries.filter(e => e.voucher === 'sale');
+  assert.deepEqual(sale.filter(e => e.account === 'GST SALES').map(e => [e.part, e.qty ?? null]), [['goods', 2], ['cod_charge', null]]);
+  const cn = l.entries.find(e => e.voucher === 'credit_note' && e.account === 'GST SALES RETURN')!;
+  assert.equal(cn.part, 'goods'); assert.equal(cn.qty, 1);
+});
+
+test('the ERP\'s own credit note carries only the pieces Unicommerce\'s return invoice leaves out', () => {
+  const f: Facts = { ...base, order: 'Q2', goods: 3000, codFee: 0, saleDate: '2026-10-02', saleDoc: 'INS2', qty: 3, payments: [{ date: '2026-10-02', amount: 3000, ref: 'K', gateway: 'Gokwik UPI' }],
+    returns: [{ kind: 'customer', date: '2026-10-08', goodsReturned: 3000, qty: 3, uc: { doc: 'ISR2', goods: 1000, codFee: 0, qty: 1 }, storeCredit: [{ date: '2026-10-07', amount: 3000, ref: 'r' }] }] };
+  const l = buildOrderLedger(f, { cutoff: CUTOFF });
+  const lines = l.entries.filter(e => e.voucher === 'credit_note' && e.account === 'GST SALES RETURN');
+  assert.deepEqual(lines.map(e => [e.by, e.qty]), [['unicommerce', 1], ['erp', 2]]);
+});
+
+test('the COD charge and the return fee post to GST SALES, marked as such', () => {
+  const rto: Facts = { ...base, order: 'Q3', goods: 1399, codFee: 100, saleDate: '2026-10-02', qty: 1,
+    returns: [{ kind: 'rto', date: '2026-10-07', goodsReturned: 1399, qty: 1, uc: { doc: 'ISR3', goods: 1399, codFee: 0, qty: 1 } }] };
+  const l = buildOrderLedger(rto, { cutoff: CUTOFF });
+  const cod = l.entries.find(e => e.by === 'erp' && e.voucher === 'credit_note')!;
+  assert.equal(cod.account, 'GST SALES'); assert.equal(cod.part, 'cod_charge'); assert.equal(cod.debit, 95.24);
+  const fee: Facts = { ...base, order: 'Q4', goods: 1139.15, codFee: 0, saleDate: '2026-10-05', saleDoc: 'INS4', qty: 1, payments: [{ date: '2026-10-05', amount: 1139.15, ref: 'k', gateway: 'Gokwik UPI' }],
+    returns: [{ kind: 'customer', date: '2026-10-11', goodsReturned: 1139.15, qty: 1, uc: { doc: 'ISR4', goods: 1139.15, codFee: 0, qty: 1 }, storeCredit: [{ date: '2026-10-07', amount: 1040.15, ref: 'r' }], returnFee: 99 }] };
+  const f = buildOrderLedger(fee, { cutoff: CUTOFF }).entries.find(e => e.voucher === 'invoice' && e.account === 'GST SALES')!;
+  assert.equal(f.part, 'return_fee'); assert.equal(f.credit, 94.29);
 });

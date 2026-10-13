@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildOrderLedger, type Facts } from './ledger.ts';
-import { decideTick, ledgerRow, BUSY_MS, FULL_EVERY_MS, INCREMENTAL_EVERY_MS } from './ledger-store.ts';
+import { decideTick, ledgerRow, BUSY_MS, FULL_EVERY_MS, INCREMENTAL_EVERY_MS, RETRY_HELD_EVERY_MS } from './ledger-store.ts';
 
 const CUTOFF = '2026-10-01';
 const base = { rate: 0.05, igst: true };
@@ -69,4 +69,20 @@ test('tick: a full run each day, an incremental one each hour, otherwise wait', 
   assert.equal(decideTick(now, null, now - 10 * 60_000, fullAt), 'wait');
   assert.equal(decideTick(now, null, now - INCREMENTAL_EVERY_MS, fullAt), 'incremental');
   assert.equal(decideTick(now, null, now - 10 * 60_000, now - FULL_EVERY_MS), 'full');
+});
+
+test('tick: orders a run held back are retried after ten minutes, and only then', () => {
+  const fullAt = now - 2 * 3_600_000;
+  const done = now - 20 * 60_000;
+  assert.equal(decideTick(now, null, done, fullAt, { startedAt: now - RETRY_HELD_EVERY_MS + 1, count: 3 }), 'wait');
+  assert.equal(decideTick(now, null, done, fullAt, { startedAt: now - RETRY_HELD_EVERY_MS, count: 3 }), 'retry');
+  assert.equal(decideTick(now, null, done, fullAt, { startedAt: now - 3_600_000, count: 0 }), 'wait');
+  assert.equal(decideTick(now, null, done, fullAt, null), 'wait');
+});
+
+test('tick: a scheduled run that is due comes before a retry, and a running run before both', () => {
+  const held = { startedAt: now - 30 * 60_000, count: 2 };
+  assert.equal(decideTick(now, null, now - INCREMENTAL_EVERY_MS, now - 3_600_000, held), 'incremental');
+  assert.equal(decideTick(now, null, now - 20 * 60_000, now - FULL_EVERY_MS, held), 'full');
+  assert.equal(decideTick(now, { kind: 'manual', status: 'running', startedAt: now - 60_000, updatedAt: now - 10_000 }, now - 20 * 60_000, now - 3_600_000, held), 'busy');
 });
