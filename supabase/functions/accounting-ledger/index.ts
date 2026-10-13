@@ -1,4 +1,4 @@
-// accounting-ledger v6
+// accounting-ledger v8
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. `order` and `report` write nothing. `sync` and `tick`
@@ -11,9 +11,11 @@
 //                 return invoices with their real amounts (invoice/details/get)
 //   Return Prime  its refunds: amount, date, return fee, whether the parcel arrived
 //   cod_deliveries / Velocity   the delivery date of COD parcels and the remittance (UTR) that paid them
+//   GoKwik        its settlement report (gokwik_payments, uploaded by hand): what it paid out per order, its fee and the GST on it
 // and, for Myntra orders (channel MYNTRAPPMP, which live only in Unicommerce): the order, its sale invoice and its
-// return invoices. Myntra owes the money, so those orders sit on a "Myntra receivable" account and stay open until its
-// settlement is matched (later). A Myntra order enters the ledger once Unicommerce has invoiced it.
+// return invoices. Myntra is a marketplace: the invoice is to the end customer (B2C), but Myntra collects the payment and
+// pays us later, so those orders sit on a "Myntra receivable" clearing account and stay open until its settlement is
+// matched (later). A Myntra order enters the ledger once Unicommerce has invoiced it.
 // then _shared/order-facts.ts turns that into facts and _shared/ledger.ts into entries.
 // The rules and their tests: docs/accounting-ledger.md.
 //
@@ -167,7 +169,7 @@ async function velocityGap(ctx: Ctx, body: any) {
   const { data: known } = await ctx.admin.from('ledger_orders').select('order_name').in('order_name', found.map(f => f.name));
   const inLedger = new Set((known ?? []).map(r => String(r.order_name)));
   const todo = found.filter(f => !inLedger.has(f.name) && !f.rto && !f.cancelled);
-  const v = await velocityLookup(ctx, todo.map(f => f.awb));
+  const v = (await velocityLookup(ctx, todo.map(f => f.awb))).recs;
   const rows = todo.map(f => ({ ...f, v: v.get(f.awb) }));
   const paidAfter = rows.filter(r => r.v?.utr_no && String(r.v.remittance_date) >= cutoff);
   const paidBefore = rows.filter(r => r.v?.utr_no && String(r.v.remittance_date) < cutoff);
@@ -284,7 +286,7 @@ async function startRun(ctx: Ctx, kind: 'full' | 'incremental') {
     for (const c of await myntraCodes(ctx, kind === 'full' || since < myntraFrom ? myntraFrom : since, kind === 'full' ? 'CREATED' : 'UPDATED')) myntra.add(c);
   } catch (err) { myntraError = err instanceof Error ? err.message : String(err); }
   const queue: Array<number | string> = [...ids, ...[...myntra].map(c => `M:${c}`)];
-  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [], ...(myntraError ? { myntra_error: myntraError.slice(0, 300) } : {}) } }).select('*').single();
+  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [], held: [], ...(myntraError ? { myntra_error: myntraError.slice(0, 300) } : {}) } }).select('*').single();
   if (error) throw new Error(`could not start a run: ${error.message}`);
   return data;
 }
@@ -293,6 +295,8 @@ async function advance(ctx: Ctx, run: any, budget: number) {
   const started = Date.now();
   const queue: Array<number | string> = run.queue ?? [];       // Shopify order ids, and "M:<code>" for Myntra orders
   const missing: number[] = run.summary?.missing ?? [];
+  // Orders left as they were because Velocity could not be reached; the next run tries them again.
+  const held: string[] = run.summary?.held ?? [];
   let pos: number = run.pos;
   try {
     const shared = await sharedInputs(ctx);
@@ -305,13 +309,15 @@ async function advance(ctx: Ctx, run: any, budget: number) {
         const page = await shopifyOrders(ctx, ids.map(i => `id:${i}`).join(' OR '), ids.length);
         const found = new Set(page.nodes.map(n => Number(n.legacyResourceId)));
         for (const i of ids) if (!found.has(i)) missing.push(i);
-        rows.push(...(await process(ctx, page.nodes, shared)).map(r => ledgerRow(r, shared.cutoff)));
+        const results = await process(ctx, page.nodes, shared);
+        for (const r of results) if (r.held) held.push(r.order);
+        rows.push(...results.filter(r => !r.held).map(r => ledgerRow(r, shared.cutoff)));
       }
       if (myntraChunk.length) rows.push(...(await processMyntra(ctx, myntraChunk, shared)).map(r => ledgerRow(r, shared.cutoff)));
       const { error } = rows.length ? await ctx.admin.rpc('ledger_save_orders', { p_orders: rows }) : { error: null };
       if (error) throw new Error(`saving the ledger: ${error.message}`);
       pos += chunk.length;
-      await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing } }).eq('id', run.id);
+      await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing, held } }).eq('id', run.id);
     }
     const finished = pos >= run.total;
     if (finished) {
@@ -320,9 +326,9 @@ async function advance(ctx: Ctx, run: any, budget: number) {
         const { count } = await ctx.admin.from('ledger_orders').select('order_name', { count: 'exact', head: true }).eq('status', st);
         counts[st] = count ?? 0;
       }
-      await ctx.admin.from('ledger_runs').update({ status: 'done', finished_at: new Date().toISOString(), updated_at: new Date().toISOString(), summary: { ...run.summary, missing, orders: counts } }).eq('id', run.id);
+      await ctx.admin.from('ledger_runs').update({ status: 'done', finished_at: new Date().toISOString(), updated_at: new Date().toISOString(), summary: { ...run.summary, missing, held, orders: counts } }).eq('id', run.id);
     }
-    return { run: run.id, kind: run.kind, finished, processed: pos, total: run.total, missing: missing.length, seconds: Math.round((Date.now() - started) / 1000) };
+    return { run: run.id, kind: run.kind, finished, processed: pos, total: run.total, missing: missing.length, held: held.length, seconds: Math.round((Date.now() - started) / 1000) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await ctx.admin.from('ledger_runs').update({ status: 'failed', error: message.slice(0, 500), updated_at: new Date().toISOString() }).eq('id', run.id);
@@ -362,12 +368,25 @@ async function sharedInputs(ctx: Ctx) {
   const { data: adj } = await ctx.admin.from('ledger_adjustments').select('order_name, kind, amount, reason, approved_by');
   const adjustments = new Map<string, any[]>();
   for (const a of adj ?? []) adjustments.set(String(a.order_name), [...(adjustments.get(String(a.order_name)) ?? []), a]);
-  return { cutoff, sellerState, today, rp, reversalIds, adjustments };
+  // The transaction dates GoKwik's uploaded reports cover (an order paid inside that range but missing from it is a problem).
+  const edge = async (asc: boolean) => (await ctx.admin.from('gokwik_payments').select('txn_date').order('txn_date', { ascending: asc }).limit(1)).data?.[0]?.txn_date as string | undefined;
+  const [from, to] = [await edge(true), await edge(false)];
+  const gatewayCoverage = from && to ? { from, to } : undefined;
+  return { cutoff, sellerState, today, rp, reversalIds, adjustments, gatewayCoverage };
 }
 
 async function process(ctx: Ctx, orders: any[], shared?: Shared) {
-  const { cutoff, sellerState, today, rp, reversalIds, adjustments } = shared ?? await sharedInputs(ctx);
+  const { cutoff, sellerState, today, rp, reversalIds, adjustments, gatewayCoverage } = shared ?? await sharedInputs(ctx);
   const ids = orders.map(o => Number(o.legacyResourceId));
+  // GoKwik's settlement report rows (amount, fee, GST, what reached the bank), by Shopify order number.
+  const { data: gk } = await ctx.admin.from('gokwik_payments').select('order_name, payment_id, settlement_date, utr, amount, fee, tax, credit')
+    .in('order_name', orders.map(o => String(o.name).replace(/^#/, '')));
+  const payoutsBy = new Map<string, NonNullable<RawInputs['gatewayPayouts']>>();
+  for (const r of gk ?? []) {
+    const list = payoutsBy.get(String(r.order_name)) ?? [];
+    list.push({ date: String(r.settlement_date), utr: String(r.utr), gross: Number(r.amount), fee: Number(r.fee), tax: Number(r.tax), net: Number(r.credit), ref: String(r.payment_id) });
+    payoutsBy.set(String(r.order_name), list);
+  }
   const { data: cod } = await ctx.admin.from('cod_deliveries').select('order_id, delivered_on, utr, remittance_date, cod_amount').in('order_id', ids);
   const codBy = new Map((cod ?? []).map(r => [Number(r.order_id), r]));
 
@@ -383,12 +402,13 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
     && /cash_on_delivery|ppcod/i.test((o.paymentGatewayNames ?? []).join(' ')));
   const velocity = await velocityLookup(ctx, needVelocity.map(awbOf).filter(Boolean) as string[]);
 
-  const out: Array<{ order: string; orderId: number; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
+  const out: Array<{ order: string; orderId: number; facts: any; notes: string[]; skip?: string; held?: boolean; ledger: ReturnType<typeof buildOrderLedger> }> = [];
   for (const o of orders) {
     const id = Number(o.legacyResourceId);
     const awb = awbOf(o);
     const row = codBy.get(id);
-    const v = awb ? velocity.get(awb) : undefined;
+    const v = awb ? velocity.recs.get(awb) : undefined;
+    const held = !!awb && velocity.unreachable.has(awb);
     // The money the courier paid out: from the delivery row when it has recorded the UTR, else Velocity's answer.
     const remittance = row?.utr
       ? { utr: String(row.utr), date: String(row.remittance_date ?? row.delivered_on ?? ''), amount: row.cod_amount != null ? Number(row.cod_amount) : null }
@@ -400,8 +420,10 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
       codDeliveredOn: (row?.delivered_on as string | null) ?? null,
       velocityDeliveredOn: v?.delivery_date ?? null,
       remittance: remittance && remittance.date ? remittance : null,
+      gatewayPayouts: payoutsBy.get(String(o.name).replace(/^#/, '')) ?? [],
     });
-    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, ledger: buildOrderLedger(built.facts, { cutoff, today }) });
+    if (held) built.notes.push("Velocity could not be reached: this parcel's delivery and payout are unknown, so the order is not saved");
+    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, held, ledger: buildOrderLedger(built.facts, { cutoff, today, gatewayCoverage }) });
   }
   return out;
 }
@@ -450,7 +472,8 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
       nodes { id legacyResourceId name createdAt cancelledAt tags note paymentGatewayNames
         subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode }
         transactions(first: 20) { id kind status gateway amountSet { shopMoney { amount } } processedAt }
-        refunds { createdAt refundLineItems(first: 10) { nodes { subtotalSet { shopMoney { amount } } } }
+        lineItems(first: 10) { nodes { quantity } }
+        refunds { createdAt refundLineItems(first: 10) { nodes { quantity subtotalSet { shopMoney { amount } } } }
           transactions(first: 5) { nodes { kind gateway amountSet { shopMoney { amount } } } } }
         fulfillments(first: 3) { trackingInfo { number } }
         customer { id storeCreditAccounts(first: 1) { nodes { id transactions(first: 50, reverse: true) { nodes { __typename ... on Node { id } amount { amount } createdAt } } } } } }
@@ -497,26 +520,31 @@ async function returnPrimeByOrder(ctx: Ctx): Promise<Map<string, any[]>> {
 
 // Velocity's COD remittance API: delivery date, COD amount, and the remittance (UTR set once paid), by AWB.
 // 100 parcels a call, 5 calls a minute, so calls are spaced 13 s apart even across separate lookups.
+// `unreachable` holds the parcels whose answer could not be had (Velocity down, rate-limited, no token): an order on
+// one of them must not be rewritten with "no delivery, no payout", which a silent skip used to do.
 type VelocityRec = { delivery_date: string | null; cod_amount: number | null; remittance_date: string | null; utr_no: string | null };
 let lastVelocityCall = 0;
-async function velocityLookup(ctx: Ctx, awbs: string[]): Promise<Map<string, VelocityRec>> {
-  const out = new Map<string, VelocityRec>();
+async function velocityLookup(ctx: Ctx, awbs: string[]): Promise<{ recs: Map<string, VelocityRec>; unreachable: Set<string> }> {
+  const recs = new Map<string, VelocityRec>();
+  const unreachable = new Set<string>();
   const list = [...new Set(awbs)];
-  if (!list.length) return out;
+  if (!list.length) return { recs, unreachable };
   const token = (await secrets(ctx.admin, ['velocity_api_token'])).velocity_api_token;
-  if (!token) return out;
+  if (!token) return { recs, unreachable: new Set(list) };
   for (let i = 0; i < list.length; i += 100) {
+    const batch = list.slice(i, i + 100);
+    const ask = () => fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: batch }) });
     const wait = 13_000 - (Date.now() - lastVelocityCall);
     if (wait > 0) await sleep(wait);
     lastVelocityCall = Date.now();
-    let res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
+    let res = await ask();
     if (res.status === 429) {
       await sleep(30_000); lastVelocityCall = Date.now();
-      res = await fetch(VELOCITY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ awbs: list.slice(i, i + 100) }) });
+      res = await ask();
     }
-    if (!res.ok) continue;
-    const body = await res.json().catch(() => ({}));
-    for (const r of body.data ?? []) out.set(String(r.tracking_number), { delivery_date: r.delivery_date ?? null, cod_amount: r.cod_amount ?? null, remittance_date: r.remittance_date ?? null, utr_no: r.utr_no ?? null });
+    const body = res.ok ? await res.json().catch(() => null) : null;
+    if (!body) { for (const a of batch) unreachable.add(a); continue; }
+    for (const r of body.data ?? []) recs.set(String(r.tracking_number), { delivery_date: r.delivery_date ?? null, cod_amount: r.cod_amount ?? null, remittance_date: r.remittance_date ?? null, utr_no: r.utr_no ?? null });
   }
-  return out;
+  return { recs, unreachable };
 }

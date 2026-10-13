@@ -50,6 +50,7 @@ export type RawInputs = {
   codDeliveredOn?: string | null;              // cod_deliveries.delivered_on
   velocityDeliveredOn?: string | null;         // Velocity cod-remittance delivery_date
   remittance?: { utr: string; date: string; amount: number | null } | null;   // the COD money paid by the courier (UTR set)
+  gatewayPayouts?: Array<{ date: string; utr: string; gross: number; fee: number; tax: number; net: number; ref?: string }>;   // GoKwik's settlement report rows for this order ([] = none yet; absent = not looked up)
   adjustments?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; approved_by: string }>;   // ledger_adjustments for this order
 };
 
@@ -66,7 +67,9 @@ function invoiceAmounts(inv: any) {
   const shipping = r2((Number(inv.shippingCharges ?? 0) + Number(inv.shippingMethodCharges ?? 0)) * (1 + rate));
   const total = Number(inv.total ?? 0);
   const igst = Number(inv.integratedGst ?? 0) > 0 || Number(inv.centralGst ?? 0) + Number(inv.stateGst ?? 0) === 0;
-  return { rate, codFee, shipping, goods: r2(total - codFee - shipping), igst };
+  const items: any[] = inv.invoiceItems ?? [];
+  const qty = items.reduce((n, i) => n + (Number(i.quantity) || 1), 0);      // pieces; an item without a quantity counts as one
+  return { rate, codFee, shipping, goods: r2(total - codFee - shipping), igst, qty };
 }
 
 export function buildFacts(inp: RawInputs): Built {
@@ -87,11 +90,12 @@ export function buildFacts(inp: RawInputs): Built {
   }
 
   // ── The sale ───────────────────────────────────────────────────────────────
-  let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined, invoiceDate: string | undefined;
+  let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined, invoiceDate: string | undefined, qty: number | undefined;
   const sale = ucOrder ? inp.uc?.saleInvoice : undefined;
   if (sale) {
     const a = invoiceAmounts(sale);
     ({ rate, igst, codFee } = a);
+    qty = a.qty;
     goods = a.goods;
     if (a.shipping > 0) {
       notes.push(`the sale invoice has a shipping charge of ${a.shipping.toFixed(2)}; treated as part of the goods`);
@@ -111,12 +115,14 @@ export function buildFacts(inp: RawInputs): Built {
     if (!cod && ship > 0) { goods = r2(goods + ship); notes.push('a shipping charge on a prepaid order is treated as part of the goods'); }
     igst = (o.shippingAddress?.provinceCode ?? '') !== inp.sellerState;
     saleDate = istDate(o.createdAt);
+    const lines: any[] = o.lineItems?.nodes ?? [];
+    qty = lines.length ? lines.reduce((n, l) => n + (Number(l.quantity) || 0), 0) : undefined;
     notes.push('no Unicommerce invoice: amounts from Shopify, GST rate assumed 5%');
   }
 
   // ── How it was settled ─────────────────────────────────────────────────────
   const payments = txs.filter(t => succeeded(t) && !isStoreCredit(t.gateway) && !isCodGateway(t.gateway))
-    .map(t => ({ date: istDate(t.processedAt), amount: money(t.amountSet), ref: String(t.id ?? t.gateway) }));
+    .map(t => ({ date: istDate(t.processedAt), amount: money(t.amountSet), ref: String(t.id ?? t.gateway), gateway: String(t.gateway ?? '') }));
   const storeCreditUsed = txs.filter(t => succeeded(t) && isStoreCredit(t.gateway))
     .map(t => ({ date: istDate(t.processedAt), amount: money(t.amountSet) }));
 
@@ -143,14 +149,14 @@ export function buildFacts(inp: RawInputs): Built {
   const acctTx: any[] = account?.transactions?.nodes ?? [];
   const ucReturns: any[] = (ucOrder?.returns ?? []).filter((r: any) => r.statusCode !== 'CANCELLED');
   const usedReturns = new Set<string>();
-  const ucReturnInvoice = (): { doc: string; goods: number; codFee: number; date: string } | undefined => {
+  const ucReturnInvoice = (): { doc: string; goods: number; codFee: number; qty: number; date: string } | undefined => {
     for (const r of ucReturns) {
       if (usedReturns.has(r.code) || !r.returnInvoiceDisplayCode) continue;
       const inv = inp.uc?.returnInvoices[r.code];
       if (!inv) continue;
       usedReturns.add(r.code);
       const a = invoiceAmounts(inv);
-      return { doc: inv.displayCode ?? r.returnInvoiceDisplayCode, goods: a.goods, codFee: a.codFee, date: istDate(Number(inv.created)) };
+      return { doc: inv.displayCode ?? r.returnInvoiceDisplayCode, goods: a.goods, codFee: a.codFee, qty: a.qty, date: istDate(Number(inv.created)) };
     }
     return undefined;
   };
@@ -171,6 +177,7 @@ export function buildFacts(inp: RawInputs): Built {
     const near = refunds.filter(r => { const t = Date.parse(r.createdAt); return t >= at - REFUND_BEFORE_MS && t <= at + REFUND_AFTER_MS; });
     const goodsFromShopify = sum(near.flatMap(r => (r.refundLineItems?.nodes ?? []).map((n: any) => money(n.subtotalSet))));
     const goodsReturned = goodsFromShopify > 0 ? goodsFromShopify : r2(rpRefunded + returnFee);
+    const pcsReturned = near.flatMap(r => r.refundLineItems?.nodes ?? []).reduce((n: number, l: any) => n + (Number(l.quantity) || 0), 0);
     if (goodsFromShopify <= 0) notes.push(`return ${rq.request_number}: no Shopify refund on the order, goods returned taken from Return Prime's refund plus fee`);
     // Store credit actually on the account for this return, and anything since taken back.
     const storeCredit: Array<{ date: string; amount: number; ref: string }> = [];
@@ -192,8 +199,8 @@ export function buildFacts(inp: RawInputs): Built {
     const pending = uc ? false : ucOrder ? ucOpenReturn() || !receivedAt : !receivedAt;
     const date = uc?.date ?? (receivedAt ? istDate(receivedAt) : istDate(rpAt));
     returns.push({
-      kind: 'customer', date, goodsReturned, pending, refundedOn: istDate(rpAt), returnFee: returnFee || undefined,
-      uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee } : undefined, storeCredit,
+      kind: 'customer', date, goodsReturned, qty: pcsReturned || undefined, pending, refundedOn: istDate(rpAt), returnFee: returnFee || undefined,
+      uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee, qty: uc.qty } : undefined, storeCredit,
     });
   }
 
@@ -232,12 +239,13 @@ export function buildFacts(inp: RawInputs): Built {
         notes.push(`store credit of ${Number(t.amount.amount).toFixed(2)} was given by hand on ${istDate(t.createdAt)}`);
       }
     }
-    returns.push({ kind: 'rto', date, goodsReturned: goods, pending, uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee } : undefined, storeCredit });
+    returns.push({ kind: 'rto', date, goodsReturned: goods, qty, pending, uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee, qty: uc.qty } : undefined, storeCredit });
   }
 
   return {
     facts: {
-      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, invoiceDate, delivered, payments, storeCreditUsed, returns,
+      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns,
+      ...(inp.gatewayPayouts ? { gatewayPayouts: inp.gatewayPayouts } : {}),
       rtoOnTheWay: rtoOnTheWay ? { state: rtoOnTheWay.state, since: rtoOnTheWay.on || undefined } : undefined,
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
       approved: (inp.adjustments ?? []).map(a => ({ kind: a.kind, amount: Number(a.amount), reason: a.reason, by: a.approved_by })),
@@ -248,9 +256,10 @@ export function buildFacts(inp: RawInputs): Built {
 
 // ── Myntra ────────────────────────────────────────────────────────────────────────────────────
 // A Myntra order lives only in Unicommerce (channel MYNTRAPPMP). Everything comes from there: the sale invoice (number,
-// amounts, tax) and, when a parcel comes back, the return invoice. Myntra, not the end customer, owes the money, so the
-// order's control account is "Myntra receivable"; what Myntra then pays (net of its fees, TCS and TDS) is matched later
-// from its settlement reports, so until then a sold order stays open ("awaiting settlement").
+// amounts, tax) and, when a parcel comes back, the return invoice. Myntra is a marketplace: the invoice is to the END CUSTOMER
+// (B2C; the customer's state decides IGST or CGST+SGST), but Myntra collects the payment and pays us later, so the order's
+// control account is "Myntra receivable", a clearing account like a gateway's. What Myntra then pays (net of its own fees,
+// TCS and TDS) is matched later from its settlement reports, so until then a sold order stays open ("awaiting settlement").
 //   - Booked on Myntra's own order time (displayOrderDateTime, IST), like a Shopify order is booked on its order date,
 //     but never before `bookFrom` (the first day of the books): September's books had no Myntra sales, so the few
 //     orders placed before it are booked on that day.
@@ -303,14 +312,14 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
     returns.push({
       kind: /courier/i.test(String(r.type)) ? 'rto' : 'customer',
       date: uc ? istDate(Number(inv.created)) : inp.today,
-      goodsReturned, pending: !uc,
-      uc: uc ? { doc: String(inv.displayCode), goods: uc.goods, codFee: uc.codFee } : undefined,
+      goodsReturned, qty: uc?.qty ?? (returned.length || items.length), pending: !uc,
+      uc: uc ? { doc: String(inv.displayCode), goods: uc.goods, codFee: uc.codFee, qty: uc.qty } : undefined,
       storeCredit: [],
     });
   }
 
   return {
-    facts: { ...base, rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
+    facts: { ...base, rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, qty: a.qty, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
     notes,
   };
 }
