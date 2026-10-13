@@ -1,10 +1,10 @@
 // Made-up names and amounts, shaped like the real bank and card statements.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { BUCKETS, MERCHANTS, NOTE_BUCKET, COD_BUCKET, GATEWAY_BUCKET, META_BUCKET, RAZORPAY_BUCKET, SUPPLIER_BUCKET, SUSPENSE_BUCKET, classify, parseRemarks, type Ctx, type Line } from './bank-match.ts';
+import { readdirSync, readFileSync } from 'node:fs';
+import { BUCKETS, MERCHANTS, NOTE_BUCKET, COD_BUCKET, GATEWAY_BUCKET, META_BUCKET, RAZORPAY_BUCKET, MYNTRA_BUCKET, PURCHASE_BUCKET, SUSPENSE_BUCKET, classify, parseRemarks, type Ctx, type Line } from './bank-match.ts';
 import { VELOCITY_RECHARGE_BUCKET } from './velocity-ledger.ts';
-import { BANK, COD_RECEIVABLE, GATEWAY, GATEWAY_FEE, RAZORPAY } from './ledger.ts';
+import { BANK, COD_RECEIVABLE, GATEWAY, GATEWAY_FEE, MYNTRA, RAZORPAY } from './ledger.ts';
 
 let n = 0;
 const bank = (date: string, remarks: string, o: { debit?: number; credit?: number } = {}): Line => ({ key: `b${++n}`, account_kind: 'bank', txn_date: date, remarks, debit: o.debit ?? 0, credit: o.credit ?? 0 });
@@ -97,7 +97,7 @@ test('the note you type on a payment becomes a suggested bucket', () => {
   const t = (rem: string, debit: number) => one(bank('2026-10-02', rem, { debit }));
   assert.equal(t('UPI/1/trims/a@ybl//I', 500).bucket, 'Fabric and Consumbale');
   assert.equal(t('UPI/1/pcrate/a@ybl//I', 4000).bucket, 'Labour Charges');
-  assert.equal(t('UPI/1/fabric/a@ybl//I', 40000).bucket, "The supplier's own ledger (one per payee)");
+  assert.equal(t('UPI/1/fabric/a@ybl//I', 40000).bucket, 'Purchase Accounts');
   assert.equal(t('UPI/1/transport/a@ybl//I', 300).bucket, 'FREIGHT INWARD NON GST');
   assert.equal(t('UPI/1/machine/a@ybl//I', 56700).bucket, 'Sewing Machine GST');
   assert.equal(t('UPI/1/velocity/a@ybl//I', 10000).bucket, 'Velocity Prepaid Recharge Account');
@@ -170,8 +170,9 @@ test('the buckets that share a ledger with the order ledger carry exactly its ac
   assert.equal(GATEWAY_BUCKET, GATEWAY);
   assert.equal(COD_BUCKET, COD_RECEIVABLE);
   assert.equal(RAZORPAY_BUCKET, RAZORPAY);
+  assert.equal(MYNTRA_BUCKET, MYNTRA);
   assert.equal(BUCKETS.find(b => b.name === GATEWAY_FEE)?.kind, 'expense');
-  for (const name of [GATEWAY, COD_RECEIVABLE, RAZORPAY, GATEWAY_FEE]) assert.ok(BUCKETS.some(b => b.name === name), `${name} is a bucket`);
+  for (const name of [GATEWAY, COD_RECEIVABLE, RAZORPAY, MYNTRA, GATEWAY_FEE]) assert.ok(BUCKETS.some(b => b.name === name), `${name} is a bucket`);
   assert.ok(!BUCKETS.some(b => b.name === BANK), 'the bank itself is never a bucket');
 });
 
@@ -179,16 +180,18 @@ test('every bucket the engine can suggest exists, and none is one of the old nam
   const names = new Set(BUCKETS.map(b => b.name));
   for (const [note, bucket] of Object.entries(NOTE_BUCKET)) assert.ok(names.has(bucket), `note "${note}" points at ${bucket}`);
   for (const [, bucket] of MERCHANTS) assert.ok(names.has(bucket), `merchant guess points at ${bucket}`);
-  for (const b of [GATEWAY_BUCKET, COD_BUCKET, RAZORPAY_BUCKET, META_BUCKET, SUPPLIER_BUCKET, SUSPENSE_BUCKET, VELOCITY_RECHARGE_BUCKET]) assert.ok(names.has(b), b);
+  for (const b of [GATEWAY_BUCKET, COD_BUCKET, RAZORPAY_BUCKET, META_BUCKET, MYNTRA_BUCKET, PURCHASE_BUCKET, SUSPENSE_BUCKET, VELOCITY_RECHARGE_BUCKET]) assert.ok(names.has(b), b);
   for (const old of ['GoKwik payout', 'Velocity COD remittance', 'Velocity wallet recharge', 'Meta ads (invoice payment)', 'Customer receipts (other gateway)', 'Employee Benefit Expenses',
-    'Rent Expenses', 'Rent Sector 63 Noida', 'Purchase Accounts', 'PAYMENT GATEWAY CHARGES', 'Bank Charges GST', 'Miscellaneous Expenses', 'FINANCE COST', 'To confirm: other']) {
+    'Rent Expenses', 'Rent Sector 63 Noida', 'PAYMENT GATEWAY CHARGES', 'Bank Charges GST', 'Miscellaneous Expenses', 'To confirm: other', "The supplier's own ledger (one per payee)"]) {
     assert.ok(!names.has(old), `${old} is gone`);
   }
 });
 
-// The database is migrated by 029_finance_buckets_tally_names.sql: the list there must be this list.
-test('migration 029 creates exactly the buckets the engine knows, with the same kind and bill flag', () => {
-  const sql = readFileSync(new URL('../../migrations/029_finance_buckets_tally_names.sql', import.meta.url), 'utf8');
+// The database is migrated by the latest *_finance_buckets_*.sql (it carries the whole list): that list must be this list.
+test('the latest bucket migration creates exactly the buckets the engine knows, with the same kind and bill flag', () => {
+  const dir = new URL('../../migrations/', import.meta.url);
+  const latest = readdirSync(dir).filter(f => /finance_buckets/.test(f)).sort().pop()!;
+  const sql = readFileSync(new URL(latest, dir), 'utf8');
   const rows = [...sql.matchAll(/^\s*\('((?:[^']|'')+)', '(\w+)', (true|false), '((?:[^']|'')*)', (\d+)\),?;?$/gm)].map(m => ({ name: m[1].replace(/''/g, "'"), kind: m[2], needs_bill: m[3] === 'true', note: m[4].replace(/''/g, "'") }));
   assert.deepEqual(rows.map(r => r.name), BUCKETS.map(b => b.name));
   assert.deepEqual(rows.map(r => [r.kind, r.needs_bill, r.note]), BUCKETS.map(b => [b.kind, b.needs_bill, b.note]));
