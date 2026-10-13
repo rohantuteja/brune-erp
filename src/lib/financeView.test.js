@@ -39,8 +39,8 @@ test('undecided lines are grouped by payee, biggest group first, with the bucket
 });
 
 test('totals per bucket, with the lines that have no bucket yet kept together', () => {
-  const t = bucketTotals([L(1, 'matched', { bucket: 'Labour Charges', debit: 100 }), L(2, 'matched', { bucket: 'Labour Charges', debit: 50 }), L(3, 'needs_review', { debit: 500 }), L(4, 'matched', { bucket: 'GoKwik payout', credit: 1000 })]);
-  assert.deepEqual(t.map(x => [x.bucket, x.count, x.out, x.in]), [['GoKwik payout', 1, 0, 1000], [null, 1, 500, 0], ['Labour Charges', 2, 150, 0]]);
+  const t = bucketTotals([L(1, 'matched', { bucket: 'Labour Charges', debit: 100 }), L(2, 'matched', { bucket: 'Labour Charges', debit: 50 }), L(3, 'needs_review', { debit: 500 }), L(4, 'matched', { bucket: 'Easebuzz Private Limited', credit: 1000 })]);
+  assert.deepEqual(t.map(x => [x.bucket, x.count, x.out, x.in]), [['Easebuzz Private Limited', 1, 0, 1000], [null, 1, 500, 0], ['Labour Charges', 2, 150, 0]]);
 });
 
 test('a line is signed by direction: money out is negative', () => {

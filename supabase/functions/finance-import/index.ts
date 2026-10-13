@@ -21,7 +21,7 @@ import { CORS, cronKeyValid, json, requireAdmin } from '../_shared/shopify-admin
 import { fileKind, parseBankRows, parseCardText, xlsxRows, type ParsedStatement } from '../_shared/statements.ts';
 import { classify, type Ctx, type Line, type Payout } from '../_shared/bank-match.ts';
 import { parseGokwikReport, payoutsOf } from '../_shared/gokwik-report.ts';
-import { matchTopUps } from '../_shared/velocity-ledger.ts';
+import { matchTopUps, VELOCITY_RECHARGE_BUCKET } from '../_shared/velocity-ledger.ts';
 
 const CHUNK = 200;
 
@@ -206,7 +206,7 @@ async function rematch(admin: any) {
   const takenTopups = new Set(all.filter(l => l.decided_at && l.kind === 'velocity_recharge' && l.match_ref).map(l => String(l.match_ref).replace(/^Wallet recharge /, '')));
   ctx.topups = (ctx.topups ?? []).filter(t => !takenTopups.has(t.at));
   // And a top-up whose payment a person filed by hand under the wallet recharge bucket.
-  const filedByHand = all.filter(l => l.decided_at && l.kind !== 'velocity_recharge' && l.bucket === 'Velocity wallet recharge' && Number(l.debit) > 0)
+  const filedByHand = all.filter(l => l.decided_at && l.kind !== 'velocity_recharge' && l.bucket === VELOCITY_RECHARGE_BUCKET && Number(l.debit) > 0)
     .map(l => ({ id: l.id, date: l.txn_date, amount: Number(l.debit), remarks: l.remarks, filed: true }));
   const reserved = matchTopUps(ctx.topups, filedByHand);
   ctx.topups = ctx.topups.filter(t => !reserved.has(t.key));

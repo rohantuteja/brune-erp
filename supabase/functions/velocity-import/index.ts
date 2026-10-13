@@ -19,7 +19,7 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { extractText, getDocumentProxy } from 'npm:unpdf@0.12.1';
 import { CORS, cronKeyValid, json, requireAdmin } from '../_shared/shopify-admin.ts';
-import { GST_FACTOR, invoiceCheck, matchTopUps, parseVelocityInvoice, parseWalletLedger, VELOCITY_HANDLE } from '../_shared/velocity-ledger.ts';
+import { GST_FACTOR, invoiceCheck, matchTopUps, parseVelocityInvoice, parseWalletLedger, VELOCITY_HANDLE, VELOCITY_RECHARGE_BUCKET } from '../_shared/velocity-ledger.ts';
 
 const CHUNK = 500;
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -251,10 +251,10 @@ async function reconcile(admin: any) {
   const { data: stmts } = bankIds.length ? await admin.from('finance_statements').select('period_from, period_to').in('account_id', bankIds) : { data: [] };
   const { data: cand } = bankIds.length
     ? await admin.from('finance_lines').select('id, txn_date, debit, remarks, bucket, kind').in('account_id', bankIds).gt('debit', 0)
-        .or('remarks.ilike.%shipfast%,remarks.ilike.%.cf@%,remarks.ilike.%velocity%,remarks.ilike.%fast@cashf%,bucket.eq."Velocity wallet recharge"')
+        .or(`remarks.ilike.%shipfast%,remarks.ilike.%.cf@%,remarks.ilike.%velocity%,remarks.ilike.%fast@cashf%,bucket.eq."${VELOCITY_RECHARGE_BUCKET}"`)
     : { data: [] };
   // A bank line counts if its payee is a Velocity handle OR a person filed it under the wallet recharge bucket (a handle not seen before).
-  const isFiled = (c: any) => c.bucket === 'Velocity wallet recharge';
+  const isFiled = (c: any) => c.bucket === VELOCITY_RECHARGE_BUCKET;
   const matched = matchTopUps(topups, (cand ?? []).filter((c: any) => VELOCITY_HANDLE.test(c.remarks) || isFiled(c)).map((c: any) => ({ id: c.id, date: c.txn_date, amount: Number(c.debit), remarks: c.remarks, filed: isFiled(c) })));
   const byId = new Map((cand ?? []).map((c: any) => [c.id, c]));
   const outTopups = topups.map(t => ({

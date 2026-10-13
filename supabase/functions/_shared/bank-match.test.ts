@@ -1,7 +1,10 @@
 // Made-up names and amounts, shaped like the real bank and card statements.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUCKETS, classify, parseRemarks, type Ctx, type Line } from './bank-match.ts';
+import { readFileSync } from 'node:fs';
+import { BUCKETS, MERCHANTS, NOTE_BUCKET, COD_BUCKET, GATEWAY_BUCKET, META_BUCKET, RAZORPAY_BUCKET, SUPPLIER_BUCKET, SUSPENSE_BUCKET, classify, parseRemarks, type Ctx, type Line } from './bank-match.ts';
+import { VELOCITY_RECHARGE_BUCKET } from './velocity-ledger.ts';
+import { BANK, COD_RECEIVABLE, GATEWAY, GATEWAY_FEE, RAZORPAY } from './ledger.ts';
 
 let n = 0;
 const bank = (date: string, remarks: string, o: { debit?: number; credit?: number } = {}): Line => ({ key: `b${++n}`, account_kind: 'bank', txn_date: date, remarks, debit: o.debit ?? 0, credit: o.credit ?? 0 });
@@ -52,7 +55,7 @@ test('a GoKwik payout (an Easebuzz credit) is matched when a settlement agrees o
   const a = bank('2026-10-03', 'NEFT-EASEBUZZ PRIVATE LIMITED-Brune Collection', { credit: 15178.96 });
   const b = bank('2026-10-04', 'NEFT-EASEBUZZ PRIVATE LIMITED-Brune Collection', { credit: 15178.96 });
   const m = classify([a, b], ctx);
-  assert.equal(m.get(a.key)!.status, 'matched'); assert.equal(m.get(a.key)!.match_ref, 'UTR UTR111'); assert.equal(m.get(a.key)!.bucket, 'GoKwik payout');
+  assert.equal(m.get(a.key)!.status, 'matched'); assert.equal(m.get(a.key)!.match_ref, 'UTR UTR111'); assert.equal(m.get(a.key)!.bucket, 'Easebuzz Private Limited');
   assert.match(m.get(a.key)!.reason, /12 payments/);
   assert.equal(m.get(b.key)!.status, 'suggested');                       // the same settlement cannot explain two credits
   const wrong = one(bank('2026-10-03', 'NEFT-EASEBUZZ PRIVATE LIMITED-X', { credit: 15000 }), ctx);
@@ -63,7 +66,7 @@ test('a GoKwik payout (an Easebuzz credit) is matched when a settlement agrees o
 test('a Velocity COD remittance (a White Wizard credit) is matched to the payout with the same amount', () => {
   const ctx: Ctx = { ...empty, payouts: [{ source: 'velocity', utr: 'UTR222', date: '2026-10-05', amount: 53978.6, payments: 36 }] };
   const m = one(bank('2026-10-05', 'CMS/ CMS987/WHITE WIZARD TECHNOLOGIES PRIV', { credit: 53978.6 }), ctx);
-  assert.equal(m.status, 'matched'); assert.equal(m.bucket, 'Velocity COD remittance'); assert.match(m.reason, /36 COD parcels/);
+  assert.equal(m.status, 'matched'); assert.equal(m.bucket, 'COD receivable (Velocity)'); assert.match(m.reason, /36 COD parcels/);
   assert.equal(one(bank('2026-10-05', 'CMS/ CMS987/WHITE WIZARD TECHNOLOGIES PRIV', { credit: 1000 }), ctx).status, 'suggested');
 });
 
@@ -72,7 +75,7 @@ test('a Meta payment is matched to its invoice by number and amount; paid net of
   const ctx: Ctx = { ...empty, invoices: [inv] };
   const rem = 'INF/NEFT/IN42627454553388/CITI0000006/2380919690   /FACEBOOK';
   const full = one(bank('2026-10-01', rem, { debit: 801730.58 }), ctx);
-  assert.equal(full.status, 'matched'); assert.equal(full.bucket, 'Meta ads (invoice payment)'); assert.match(full.reason, /no TDS was deducted/);
+  assert.equal(full.status, 'matched'); assert.equal(full.bucket, 'Facebook India Online Services Private Limited'); assert.match(full.reason, /no TDS was deducted/);
   const tds = one(bank('2026-10-01', rem, { debit: 801730.58 - 13588.65 }), ctx);
   assert.equal(tds.status, 'matched'); assert.match(tds.reason, /less 2% TDS of ₹13588.65/);
   const off = one(bank('2026-10-01', rem, { debit: 800000 }), ctx);
@@ -94,39 +97,41 @@ test('the note you type on a payment becomes a suggested bucket', () => {
   const t = (rem: string, debit: number) => one(bank('2026-10-02', rem, { debit }));
   assert.equal(t('UPI/1/trims/a@ybl//I', 500).bucket, 'Fabric and Consumbale');
   assert.equal(t('UPI/1/pcrate/a@ybl//I', 4000).bucket, 'Labour Charges');
-  assert.equal(t('UPI/1/fabric/a@ybl//I', 40000).bucket, 'Purchase Accounts');
+  assert.equal(t('UPI/1/fabric/a@ybl//I', 40000).bucket, "The supplier's own ledger (one per payee)");
   assert.equal(t('UPI/1/transport/a@ybl//I', 300).bucket, 'FREIGHT INWARD NON GST');
-  assert.equal(t('UPI/1/machine/a@ybl//I', 56700).bucket, 'To confirm: machinery (asset)');
-  assert.equal(t('UPI/1/velocity/a@ybl//I', 10000).bucket, 'Velocity wallet recharge');
-  assert.equal(t('INF/NEFT/IN1/UTIB0001/# /Salary                        /AshaVerma', 28000).bucket, 'Employee Benefit Expenses');
-  assert.equal(t('INF/INFT/55512/Rent           /Landlord', 23004).bucket, 'Rent Expenses');
-  assert.equal(t('INF/NEFT/IN1/UTIB0001/# /Advance                       /AshaVerma', 2000).bucket, 'To confirm: employee advance');
+  assert.equal(t('UPI/1/machine/a@ybl//I', 56700).bucket, 'Sewing Machine GST');
+  assert.equal(t('UPI/1/velocity/a@ybl//I', 10000).bucket, 'Velocity Prepaid Recharge Account');
+  assert.equal(t('INF/NEFT/IN1/UTIB0001/# /Salary                        /AshaVerma', 28000).bucket, 'Salary Payable');
+  assert.equal(t('INF/INFT/55512/Rent           /Landlord', 23004).bucket, 'Rent Payable');
+  assert.equal(t('INF/NEFT/IN1/UTIB0001/# /Advance                       /AshaVerma', 2000).bucket, 'Suspense');
   const s = t('UPI/1/fabric/a@ybl//I', 40000);
   assert.equal(s.status, 'suggested'); assert.equal(s.needs_bill, true); assert.match(s.reason, /You wrote "fabric"/);
 });
 
 test('card lines: the merchant or category decides the bucket, and personal-looking ones are asked about', () => {
   const t = (rem: string, debit: number, o: { category?: string; section?: string } = {}) => one(card('2026-09-03', rem, { debit, ...o }));
-  assert.equal(t('GOOGLE WORKSPACE CYBS MUMBAI IN', 1150.5, { category: 'Services' }).bucket, 'Software Expenses');
+  assert.equal(t('GOOGLE WORKSPACE CYBS MUMBAI IN', 1150.5, { category: 'Services' }).bucket, 'Software Expenses @ 18%');
   assert.equal(t('ANTHROPIC* CLAUDE SUB ANTHROPIC.COM CA', 2320.1, { category: 'Computer' }).bucket, 'Software Expenses');
-  assert.match(t('OPENAI *CHATGPT SUBSCR OPENAI.COM CA', 2308.26).reason, /reverse charge/);
-  assert.equal(t('GOKWIK NEW DELHI IN', 1180, { category: 'Services' }).bucket, 'PAYMENT GATEWAY CHARGES');
-  assert.equal(t('SOME FUEL STATION DELHI IN', 4674.52, { category: 'Fuel' }).bucket, 'Travelling Expenses');
-  assert.equal(t('GST', 28.17, { section: 'fee' }).bucket, 'Bank Charges GST');
-  assert.equal(t('YOUTUBE DI SI MUMBAI IN', 149).bucket, 'To confirm: personal or business');
-  assert.equal(t('AMAZON INDIA CYBS SI MUMBAI IN', 299).bucket, 'To confirm: personal or business');
+  assert.match(t('OPENAI *CHATGPT SUBSCR OPENAI.COM CA', 2308.26).reason, /no GST invoice/);
+  assert.equal(t('GOKWIK NEW DELHI IN', 1180, { category: 'Services' }).bucket, 'Goexcelsior Private Limited');   // KwikChat on the card
+  assert.equal(t('SOME FUEL STATION DELHI IN', 4674.52, { category: 'Fuel' }).bucket, 'Car Fuel Expenses');
+  assert.equal(t('GST', 28.17, { section: 'fee' }).bucket, 'Bank Charges');
+  assert.equal(t('YOUTUBE DI SI MUMBAI IN', 149).bucket, 'Suspense');
+  assert.equal(t('GOOGLE PLAY APP SI MUMBAI IN', 199).bucket, 'Suspense');
+  assert.equal(t('AMAZON INDIA CYBS SI MUMBAI IN', 299).bucket, 'Subscription Charges');
+  assert.equal(t('SHOPIFY* 12345 OTTAWA CA', 4000).bucket, 'Shopify Commerce Signapore Pte. Ltd.');
   assert.equal(t('GOOGLE WORKSPACE CYBS MUMBAI IN', 383.5).needs_bill, true);
 });
 
 test('small bank charges are filed as bank charges', () => {
-  assert.equal(one(bank('2026-04-02', 'IMPS chg Apr', { debit: 12 })).bucket, 'Bank Charges GST');
-  assert.equal(one(bank('2026-03-02', 'CashDep Chgs 01', { debit: 236 })).bucket, 'Bank Charges GST');
-  assert.equal(one(bank('2026-03-02', 'GIB/000123/GST', { debit: 41 })).bucket, 'Bank Charges GST');
+  assert.equal(one(bank('2026-04-02', 'IMPS chg Apr', { debit: 12 })).bucket, 'Bank Charges');
+  assert.equal(one(bank('2026-03-02', 'CashDep Chgs 01', { debit: 236 })).bucket, 'Bank Charges');
+  assert.equal(one(bank('2026-03-02', 'GIB/000123/GST', { debit: 41 })).bucket, 'Bank Charges');
 });
 
 test('deposits that are not sale payouts are asked about, and a line nothing explains is left for a person', () => {
-  assert.equal(one(bank('2026-08-18', 'RTGS-IDFBR12345-SOME CO-1234-IDFB0001', { credit: 782334 })).bucket, 'To confirm: capital or loan');
-  assert.equal(one(bank('2026-08-21', 'CAM/1234SRY/CASH DEP-Other/21-08-26/1', { credit: 89500 })).bucket, 'To confirm: cash deposit');
+  assert.equal(one(bank('2026-08-18', 'RTGS-IDFBR12345-SOME CO-1234-IDFB0001', { credit: 782334 })).bucket, 'Suspense');
+  assert.equal(one(bank('2026-08-21', 'CAM/1234SRY/CASH DEP-Other/21-08-26/1', { credit: 89500 })).bucket, 'CASH AT POS DELHI');
   const u = one(bank('2026-10-02', 'UPI/1/UPI Pay/mystery@ybl//I', { debit: 1234 }));
   assert.equal(u.status, 'needs_review'); assert.equal(u.bucket, null);
   assert.equal(u.payee, 'mystery');
@@ -147,10 +152,44 @@ test('a payment to a Velocity wallet handle is proved by the wallet ledger: same
   const b = bank('2026-09-12', 'UPI/2/UPI Pay/XXt.cf@axisban//ICI2', { debit: 10000 });
   const again = bank('2026-09-12', 'UPI/3/UPI Pay/cf.shipfast@cas//ICI3', { debit: 10000 });   // a second payment, no second top-up
   const m = classify([a, b, again], ctx);
-  assert.deepEqual([m.get(a.key)!.status, m.get(a.key)!.kind, m.get(a.key)!.bucket, m.get(a.key)!.match_ref], ['matched', 'velocity_recharge', 'Velocity wallet recharge', 'Wallet recharge 2026-09-07 05:26:00']);
+  assert.deepEqual([m.get(a.key)!.status, m.get(a.key)!.kind, m.get(a.key)!.bucket, m.get(a.key)!.match_ref], ['matched', 'velocity_recharge', 'Velocity Prepaid Recharge Account', 'Wallet recharge 2026-09-07 05:26:00']);
   assert.equal(m.get(b.key)!.status, 'matched');
   assert.equal(m.get(again.key)!.status, 'suggested');     // looks like a top-up, nothing proves it yet
-  assert.equal(m.get(again.key)!.bucket, 'Velocity wallet recharge');
+  assert.equal(m.get(again.key)!.bucket, 'Velocity Prepaid Recharge Account');
   // another payee for the same amount is not taken for a top-up
   assert.equal(one(bank('2026-09-07', 'UPI/4/UPI Pay/someone@ybl//ICI4', { debit: 10000 }), ctx).kind, 'unknown');
+});
+
+test('a GoKwik line on the bank is a payment to GoKwik, while on the card it is the KwikChat subscription', () => {
+  assert.equal(one(bank('2026-09-20', 'NEFT-GOKWIK TECHNOLOGIES-INV 77', { debit: 5900 })).bucket, 'Payment Gateway Expenses');
+  assert.equal(one(card('2026-08-25', 'GOKWIK NEW DELHI IN', { debit: 1180 })).bucket, 'Goexcelsior Private Limited');
+});
+
+// A bucket is a Tally ledger and the order ledger posts to the same ledgers, so the names must be one and the same.
+test('the buckets that share a ledger with the order ledger carry exactly its account name', () => {
+  assert.equal(GATEWAY_BUCKET, GATEWAY);
+  assert.equal(COD_BUCKET, COD_RECEIVABLE);
+  assert.equal(RAZORPAY_BUCKET, RAZORPAY);
+  assert.equal(BUCKETS.find(b => b.name === GATEWAY_FEE)?.kind, 'expense');
+  for (const name of [GATEWAY, COD_RECEIVABLE, RAZORPAY, GATEWAY_FEE]) assert.ok(BUCKETS.some(b => b.name === name), `${name} is a bucket`);
+  assert.ok(!BUCKETS.some(b => b.name === BANK), 'the bank itself is never a bucket');
+});
+
+test('every bucket the engine can suggest exists, and none is one of the old names', () => {
+  const names = new Set(BUCKETS.map(b => b.name));
+  for (const [note, bucket] of Object.entries(NOTE_BUCKET)) assert.ok(names.has(bucket), `note "${note}" points at ${bucket}`);
+  for (const [, bucket] of MERCHANTS) assert.ok(names.has(bucket), `merchant guess points at ${bucket}`);
+  for (const b of [GATEWAY_BUCKET, COD_BUCKET, RAZORPAY_BUCKET, META_BUCKET, SUPPLIER_BUCKET, SUSPENSE_BUCKET, VELOCITY_RECHARGE_BUCKET]) assert.ok(names.has(b), b);
+  for (const old of ['GoKwik payout', 'Velocity COD remittance', 'Velocity wallet recharge', 'Meta ads (invoice payment)', 'Customer receipts (other gateway)', 'Employee Benefit Expenses',
+    'Rent Expenses', 'Rent Sector 63 Noida', 'Purchase Accounts', 'PAYMENT GATEWAY CHARGES', 'Bank Charges GST', 'Miscellaneous Expenses', 'FINANCE COST', 'To confirm: other']) {
+    assert.ok(!names.has(old), `${old} is gone`);
+  }
+});
+
+// The database is migrated by 029_finance_buckets_tally_names.sql: the list there must be this list.
+test('migration 029 creates exactly the buckets the engine knows, with the same kind and bill flag', () => {
+  const sql = readFileSync(new URL('../../migrations/029_finance_buckets_tally_names.sql', import.meta.url), 'utf8');
+  const rows = [...sql.matchAll(/^\s*\('((?:[^']|'')+)', '(\w+)', (true|false), '((?:[^']|'')*)', (\d+)\),?;?$/gm)].map(m => ({ name: m[1].replace(/''/g, "'"), kind: m[2], needs_bill: m[3] === 'true', note: m[4].replace(/''/g, "'") }));
+  assert.deepEqual(rows.map(r => r.name), BUCKETS.map(b => b.name));
+  assert.deepEqual(rows.map(r => [r.kind, r.needs_bill, r.note]), BUCKETS.map(b => [b.kind, b.needs_bill, b.note]));
 });
