@@ -384,6 +384,34 @@ Velocity's COD API answered 503, the lookup skipped it silently, and a full sync
 Checked live on 14 Oct 2026: an incremental sync with Velocity simulated down held 46 COD orders and left every one of
 them, and every other order, exactly as it was.
 
+## The state on every order (migration 031, `accounting-ledger` v18)
+
+Every voucher the Tally file creates for an order (sale, credit note, ERP-issued invoice, every CGST / SGST / IGST line,
+the per-tender clearing journals) carries the **state the goods go to** (place of supply). It is a hard rule of the
+owner's, not a nice-to-have: **an order whose state cannot be found is not exported.**
+
+- **Where it comes from** (`placeOfSupply` in `_shared/order-facts.ts`): the Shopify **shipping address** province first
+  (name, then the short code), the Unicommerce sale order's **shipping** address second (the billing address is never
+  used). Myntra orders have no Shopify order and use the Unicommerce address.
+- **What is stored:** the GST state code and the standard GST name (`_shared/gst-states.ts`: 36 states and union
+  territories, with the spellings Shopify and Unicommerce actually send: "Orissa", "Pondicherry", "New Delhi", "Dadra and
+  Nagar Haveli"…). `ledger_orders.state` and `state_code` (migration 031, indexed), plus `facts.state` with its source.
+  Tally's own spelling of a state differs a little; that mapping happens at export time.
+- **`no_state` exception:** an order that has neither address state gets the exception first in its list and is
+  `attention` (not `open`), with the reason "every voucher needs it, so this order cannot go to Tally". Both the Shopify
+  and the Myntra paths pass `requireState`.
+- **Notes (not exceptions):** Shopify and Unicommerce name different states (Shopify's is used); the Unicommerce sale
+  invoice charged IGST for a state that needs CGST + SGST, or the other way round (compared with `seller_state`).
+- **Tax type follows the state** for an order with no Unicommerce invoice: IGST when the state is not the seller's
+  (`seller_state`, UP = 09), else CGST + SGST. An order with an invoice keeps the invoice's tax type.
+- **Screen:** Analytics → Ledger has a "Ships to" column (sortable, searchable, in the CSV); an order without a state
+  shows "no state" and the `No state` exception.
+
+Checked live on 14 Oct 2026, after a full sync: all 420 sold orders (58 of them Myntra) have a state, no `no_state`,
+no disagreement between Shopify and Unicommerce, no invoice with the wrong tax type. Independently: 401 orders ship
+outside UP and carry IGST only, 19 ship inside UP and carry CGST + SGST only. Compared with a snapshot taken before the
+sync, all 428 orders kept the same status, amounts and sale date, and all 3,328 ledger entries were identical.
+
 ## Myntra orders (migration 027)
 
 Myntra orders (Unicommerce channel `MYNTRAPPMP`) live only in Unicommerce, so the ledger reads them from there and keeps

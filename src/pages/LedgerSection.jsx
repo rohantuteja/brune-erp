@@ -51,6 +51,7 @@ const EXCEPTION_LABEL = {
   store_credit_differs: 'Store credit differs',
   unexplained_residual: 'Unexplained',
   bad_facts: 'Bad data',
+  no_state: 'No state on the order',
 };
 
 const DOC_LABEL = {
@@ -105,6 +106,7 @@ const SORT_KEY = {
   order: o => (/^\d+$/.test(o.order_name) ? Number(o.order_name) : o.order_name),
   sold: o => o.sale_date,
   state: o => stateLabel(o),
+  ships: o => o.state || '',
   amount: o => Number(o.net),
 };
 
@@ -202,12 +204,13 @@ function OrderRow({ o, open, onToggle }) {
         </td>
         <td className="py-2 px-2 whitespace-nowrap text-stone-600">{fmtDate(o.sale_date)}</td>
         <td className="py-2 px-2 whitespace-nowrap"><StateBadge o={o} /></td>
+        <td className="py-2 px-2 whitespace-nowrap text-xs text-stone-600">{o.state || <span className="text-red-700">none</span>}</td>
         <td className="py-2 px-2 text-stone-600 text-xs min-w-[240px]"><DetailText o={o} /></td>
         <td className={`py-2 px-2 text-right tabular-nums whitespace-nowrap ${Number(o.net) < 0 ? 'text-red-700' : 'text-stone-900'}`}>{Number(o.net) ? inr(o.net, 2) : '—'}</td>
       </tr>
       {open && (
         <tr className="bg-stone-50">
-          <td colSpan={5} className="px-2 pb-3 pt-1">
+          <td colSpan={6} className="px-2 pb-3 pt-1">
             <EntriesTable orderName={o.order_name} />
             {(o.notes || []).length > 0 && <div className="text-[11px] text-stone-500 px-2 pt-2">{o.notes.join(' · ')}</div>}
           </td>
@@ -229,7 +232,7 @@ function OrderCard({ o, open, onToggle }) {
           <span className="text-[11px] text-stone-500">{fmtDate(o.sale_date)}</span>
           <span className={`ml-auto text-sm tabular-nums ${Number(o.net) < 0 ? 'text-red-700' : 'text-stone-900'}`}>{Number(o.net) ? inr(o.net, 2) : ''}</span>
         </div>
-        <div className="mt-1 pl-5"><StateBadge o={o} /></div>
+        <div className="mt-1 pl-5 flex items-center gap-2"><StateBadge o={o} /><span className="text-[11px] text-stone-500">{o.state ? `ships to ${o.state}` : <span className="text-red-700">no state</span>}</span></div>
         <div className="mt-1 pl-5 text-xs text-stone-600"><DetailText o={o} /></div>
       </button>
       {open && <div className="mt-2"><EntriesTable orderName={o.order_name} />{(o.notes || []).length > 0 && <div className="text-[11px] text-stone-500 px-2 pt-2">{o.notes.join(' · ')}</div>}</div>}
@@ -252,7 +255,7 @@ export default function LedgerSection({ showToast }) {
     const all = [];
     for (let from = 0; ; from += 1000) {
       const { data, error: err } = await supabase.from('ledger_orders')
-        .select('order_name, order_id, channel, status, net, opening, cod_open, gateway_open, sale_date, exception_type, exceptions, balancing, notes, computed_at')
+        .select('order_name, order_id, channel, status, net, opening, cod_open, gateway_open, sale_date, state, state_code, exception_type, exceptions, balancing, notes, computed_at')
         .order('sale_date', { ascending: false, nullsFirst: false }).order('order_name', { ascending: false }).range(from, from + 999);
       if (err) { setError('Could not load the ledger'); showToast?.('Could not load the ledger', 'error'); setLoading(false); return; }
       all.push(...(data || []));
@@ -306,7 +309,7 @@ export default function LedgerSection({ showToast }) {
 
   const q = p.lq.trim().replace(/^#/, '');
   const shown = useMemo(() => {
-    const list = scoped.filter(IN_FILTER[p.lstatus] ?? IN_FILTER.all).filter(o => !q || o.order_name.toLowerCase().includes(q.toLowerCase()));
+    const list = scoped.filter(IN_FILTER[p.lstatus] ?? IN_FILTER.all).filter(o => !q || o.order_name.toLowerCase().includes(q.toLowerCase()) || (o.state || '').toLowerCase().includes(q.toLowerCase()));
     return p.lsort && SORT_KEY[p.lsort] ? sortRows(list, SORT_KEY[p.lsort], p.ldir === 'asc' ? 'asc' : 'desc') : list;     // the load order is newest first
   }, [scoped, p.lstatus, q, p.lsort, p.ldir]);
 
@@ -321,8 +324,8 @@ export default function LedgerSection({ showToast }) {
   const findOrder = (name) => { setP({ lq: name, lstatus: 'all' }); setOpenOrder(name); };
 
   const csv = () => downloadCsv(`ledger-${p.lstatus}-${new Date().toISOString().slice(0, 10)}.csv`,
-    ['Order', 'Channel', 'Sold', 'State', 'Detail', 'Open amount', 'COD with Velocity', 'Documents the ERP issues'],
-    shown.map(o => [o.order_name, channelOf(o), o.sale_date, stateLabel(o), detailOf(o), o.net, o.cod_open, docsOf(o).map(d => `${DOC_LABEL[d.type] || d.type} ${d.amount}`).join('; ')]));
+    ['Order', 'Channel', 'Sold', 'State', 'Ships to (state)', 'Detail', 'Open amount', 'COD with Velocity', 'Documents the ERP issues'],
+    shown.map(o => [o.order_name, channelOf(o), o.sale_date, stateLabel(o), o.state || '', detailOf(o), o.net, o.cod_open, docsOf(o).map(d => `${DOC_LABEL[d.type] || d.type} ${d.amount}`).join('; ')]));
 
   const chips = [
     p.lfrom || p.lto ? { key: 'date', label: `Sold ${p.lfrom ? fmtDate(p.lfrom) : 'start'} to ${p.lto ? fmtDate(p.lto) : 'today'}`, onRemove: () => setP({ lfrom: '', lto: '' }) } : null,
@@ -443,7 +446,7 @@ export default function LedgerSection({ showToast }) {
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2 top-1/2 -translate-y-1/2" />
-                  <input value={p.lq} onChange={e => setP({ lq: e.target.value })} placeholder="Order or invoice number" aria-label="Search orders" className={`${field} pl-7 pr-6 w-48`} />
+                  <input value={p.lq} onChange={e => setP({ lq: e.target.value })} placeholder="Order, invoice or state" aria-label="Search orders" className={`${field} pl-7 pr-6 w-48`} />
                   {p.lq && <button onClick={() => setP({ lq: '' })} aria-label="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"><X className="w-3.5 h-3.5" /></button>}
                 </div>
                 <span className="flex-1" />
@@ -464,6 +467,7 @@ export default function LedgerSection({ showToast }) {
                           <SortTh label="Order" id="order" sort={p.lsort} dir={p.ldir} onSort={onSort} />
                           <SortTh label="Sold" id="sold" sort={p.lsort} dir={p.ldir} onSort={onSort} />
                           <SortTh label="State" id="state" sort={p.lsort} dir={p.ldir} onSort={onSort} />
+                          <SortTh label="Ships to" id="ships" sort={p.lsort} dir={p.ldir} onSort={onSort} />
                           <th scope="col" className="py-1.5 px-2 font-medium text-left text-stone-500">Detail</th>
                           <SortTh label="Open amount" id="amount" sort={p.lsort} dir={p.ldir} onSort={onSort} align="right" />
                         </tr>

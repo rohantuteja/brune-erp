@@ -540,3 +540,81 @@ test('a Myntra order carries its pieces on the sale and on the return', () => {
   const b = buildMyntraFacts(myntra(o, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
   assert.equal(b.facts.qty, 1); assert.equal(b.facts.returns![0].qty, 1);
 });
+
+// ── The state the goods go to: on every voucher ───────────────────────────────────────────────
+const stateOrder = (shipping: any, uc: any, sale = ucInvoice('INS0200', Date.parse('2026-10-08T06:00:00Z'), 1499, 71.38, 100)): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-12',
+  shopify: {
+    name: '37900', createdAt: '2026-10-08T05:00:00Z', tags: ['COD'], paymentGatewayNames: ['cash_on_delivery'],
+    subtotalPriceSet: m(1399), totalShippingPriceSet: m(100), shippingAddress: shipping,
+    transactions: [{ id: 'x', kind: 'SALE', status: 'PENDING', gateway: 'cash_on_delivery', amountSet: m(1499), processedAt: '2026-10-08T05:00:00Z' }],
+    refunds: [], fulfillments: [{ trackingInfo: [{ number: 'AWB1' }] }],
+  },
+  uc: { order: { status: 'COMPLETE', returns: [], ...uc }, saleInvoice: sale, returnInvoices: {} },
+  rpRequests: [],
+});
+
+test('state: Shopify\'s shipping address names it, and the GST code comes with it', () => {
+  const b = buildFacts(stateOrder({ province: 'Maharashtra', provinceCode: 'MH' }, {}));
+  assert.deepEqual(b.facts.state, { code: '27', name: 'Maharashtra', source: 'shopify' });
+  assert.equal(b.facts.igst, true);
+  assert.ok(!b.notes.some(n => /state|CGST|IGST/.test(n)), b.notes.join(' | '));
+});
+
+test('state: a short code alone is enough, and a Shopify code that differs from Unicommerce\'s (TS / TG) is the same state', () => {
+  assert.equal(buildFacts(stateOrder({ provinceCode: 'TS' }, { addresses: [{ id: 2, state: 'TG', stateName: 'Telangana' }] })).facts.state?.code, '36');
+  const b = buildFacts(stateOrder({ provinceCode: 'TS' }, { addresses: [{ id: 2, state: 'TG', stateName: 'Telangana' }] }));
+  assert.ok(!b.notes.some(n => /Unicommerce has/.test(n)));
+});
+
+test('state: with no Shopify address Unicommerce\'s is used, and its shipping address is the one that is not the billing address', () => {
+  const uc = { billingAddress: { id: 11 }, addresses: [{ id: 11, state: 'DL', stateName: 'Delhi' }, { id: 10, state: 'KA', stateName: 'Karnataka' }] };
+  const b = buildFacts(stateOrder(null, uc));
+  assert.deepEqual(b.facts.state, { code: '29', name: 'Karnataka', source: 'unicommerce' });
+  assert.equal(buildFacts(stateOrder(undefined, { addresses: [{ id: 5, state: 'MH', stateName: 'Maharashtra' }] })).facts.state?.name, 'Maharashtra');   // a single address
+});
+
+test('state: Shopify and Unicommerce disagree → Shopify\'s delivery state is used and a note says so', () => {
+  const b = buildFacts(stateOrder({ province: 'Kerala', provinceCode: 'KL' }, { billingAddress: { id: 1 }, addresses: [{ id: 2, state: 'DL', stateName: 'Delhi' }] }));
+  assert.equal(b.facts.state?.name, 'Kerala');
+  assert.ok(b.notes.some(n => /Shopify delivers this to Kerala but Unicommerce has Delhi/.test(n)));
+});
+
+test('state: the invoice charged IGST but the goods stay in Uttar Pradesh → a note to check the invoice', () => {
+  const b = buildFacts(stateOrder({ province: 'Uttar Pradesh', provinceCode: 'UP' }, {}));      // the invoice above is IGST
+  assert.equal(b.facts.state?.code, '09');
+  assert.ok(b.notes.some(n => /charged IGST but the goods go to Uttar Pradesh, which needs CGST and SGST/.test(n)), b.notes.join(' | '));
+  const ok = buildFacts(stateOrder({ province: 'Uttar Pradesh', provinceCode: 'UP' }, {}, { ...ucInvoice('INS0201', Date.parse('2026-10-08T06:00:00Z'), 1499, 0, 100), centralGst: 35.69, stateGst: 35.69 }));
+  assert.equal(ok.facts.igst, false);
+  assert.ok(!ok.notes.some(n => /charged/.test(n)));
+});
+
+test('state: with no Unicommerce invoice the kind of GST follows the state', () => {
+  const raw = stateOrder({ province: 'Uttar Pradesh', provinceCode: 'UP' }, {});
+  raw.uc = null;
+  assert.equal(buildFacts(raw).facts.igst, false);
+  raw.shopify.shippingAddress = { province: 'Delhi', provinceCode: 'DL' };
+  assert.equal(buildFacts(raw).facts.igst, true);
+});
+
+test('state: none found → no state on the facts, a note, and with requireState an exception that keeps the order out of Tally', () => {
+  const b = buildFacts(stateOrder(null, {}));
+  assert.equal(b.facts.state, undefined);
+  assert.ok(b.notes.some(n => /no state found/.test(n)));
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-12', requireState: true });
+  assert.ok(l.exceptions.some(e => e.type === 'no_state'));
+  assert.equal(l.status, 'attention');
+  assert.equal(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-12' }).exceptions.some(e => e.type === 'no_state'), false);   // off unless asked for
+  const withState = buildFacts(stateOrder({ province: 'Delhi' }, {}));
+  assert.equal(buildOrderLedger(withState.facts, { cutoff: CUTOFF, today: '2026-10-12', requireState: true }).exceptions.some(e => e.type === 'no_state'), false);
+});
+
+test('state: a Myntra order\'s state is its one Unicommerce address, and the invoice\'s kind of GST is checked against it', () => {
+  const order = myntraOrder({ addresses: [{ id: 1, state: 'MH', stateName: 'Maharashtra' }], billingAddress: { id: 2 } });
+  const b = buildMyntraFacts({ ...myntra(order, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)), sellerState: 'UP' });
+  assert.deepEqual(b.facts.state, { code: '27', name: 'Maharashtra', source: 'unicommerce' });
+  assert.ok(!b.notes.some(n => /charged/.test(n)));
+  const wrong = buildMyntraFacts({ ...myntra(myntraOrder({ addresses: [{ id: 1, state: 'UP', stateName: 'Uttar Pradesh' }] }), myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326)), sellerState: 'UP' });
+  assert.ok(wrong.notes.some(n => /charged IGST but the goods go to Uttar Pradesh/.test(n)));
+  assert.equal(buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000032', '2026-10-06T14:15:10', 1326))).facts.state, undefined);
+});

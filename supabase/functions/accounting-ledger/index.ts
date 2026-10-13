@@ -1,4 +1,4 @@
-// accounting-ledger v9
+// accounting-ledger v10
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. `order` and `report` write nothing. `sync` and `tick`
@@ -461,7 +461,7 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
       gatewayPayouts: payoutsBy.get(String(o.name).replace(/^#/, '')) ?? [],
     });
     if (held) built.notes.push(`${held}: this order is not saved, its last figures stay, and it is tried again`);
-    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, held, ledger: buildOrderLedger(built.facts, { cutoff, today, gatewayCoverage }) });
+    out.push({ order: built.facts.order, orderId: id, facts: built.facts, notes: built.notes, skip: built.skip, held, ledger: buildOrderLedger(built.facts, { cutoff, today, gatewayCoverage, requireState: true }) });
   }
   return out;
 }
@@ -504,9 +504,9 @@ async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll 
       continue;
     }
     if (!uc?.order) continue;
-    const built = buildMyntraFacts({ today: shared.today, bookFrom: shared.cutoff, uc });
+    const built = buildMyntraFacts({ sellerState: shared.sellerState, today: shared.today, bookFrom: shared.cutoff, uc });
     if (built.ignore && !keepAll) continue;
-    results.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today }) });
+    results.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today, requireState: true }) });
   }
   return { results, held };
 }
@@ -516,7 +516,7 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
     orders(first: $first, after: $after, query: $q, sortKey: UPDATED_AT) {
       pageInfo { hasNextPage endCursor }
       nodes { id legacyResourceId name createdAt cancelledAt tags note paymentGatewayNames
-        subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode }
+        subtotalPriceSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } shippingAddress { provinceCode province }
         transactions(first: 20) { id kind status gateway amountSet { shopMoney { amount } } processedAt }
         lineItems(first: 10) { nodes { quantity } }
         refunds { createdAt refundLineItems(first: 10) { nodes { quantity subtotalSet { shopMoney { amount } } } }

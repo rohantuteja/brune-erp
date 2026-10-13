@@ -11,7 +11,8 @@
 //   Return Prime what it refunded and when, the return fee, whether the parcel arrived.
 //   Velocity     the delivery date of COD parcels (via cod_deliveries or its API).
 
-import type { Facts } from './ledger.ts';
+import type { Facts, PlaceOfSupply } from './ledger.ts';
+import { resolveState } from './gst-states.ts';
 import { parseNote } from './shipments.ts';
 
 type Return = NonNullable<Facts['returns']>[number];
@@ -35,6 +36,36 @@ const MANUAL_CREDIT_RANGE = 250;
 // Shopify's refund record lands within seconds of Return Prime's refund.
 const REFUND_BEFORE_MS = 2 * 60_000;
 const REFUND_AFTER_MS = 10 * 60_000;
+
+// The state the goods go to. Shopify's shipping address first (it is the delivery address, spelled out); Unicommerce's order
+// address second (its invoices carry no state: the sale order's addresses do, `state` a short code and `stateName` the name;
+// the shipping address is the one that is not the billing address, and a Myntra order has just one).
+function ucPlace(ucOrder: any) {
+  const addresses: any[] = ucOrder?.addresses ?? [];
+  const billingId = ucOrder?.billingAddress?.id;
+  const ship = addresses.find(a => a && billingId != null && String(a.id) !== String(billingId)) ?? addresses[0] ?? ucOrder?.billingAddress;
+  return resolveState({ name: ship?.stateName, code: ship?.state });
+}
+export function placeOfSupply(shopify: any, ucOrder: any): PlaceOfSupply | null {
+  const ship = shopify?.shippingAddress;
+  const s = resolveState({ name: ship?.province, code: ship?.provinceCode });
+  if (s) return { ...s, source: 'shopify' };
+  const u = ucPlace(ucOrder);
+  return u ? { ...u, source: 'unicommerce' } : null;
+}
+// Notes about the state a person should know: Shopify and Unicommerce disagree, or the invoice charged the wrong kind of GST.
+function stateNotes(state: PlaceOfSupply | null, ucOrder: any, sellerCode: string | undefined, invoiceIgst: boolean | undefined): string[] {
+  const out: string[] = [];
+  if (!state) { out.push('no state found on the order: it cannot be exported to Tally'); return out; }
+  const u = state.source === 'shopify' ? ucPlace(ucOrder) : null;
+  if (u && u.code !== state.code) out.push(`Shopify delivers this to ${state.name} but Unicommerce has ${u.name}: ${state.name} is used`);
+  if (invoiceIgst !== undefined && sellerCode) {
+    const needsIgst = state.code !== sellerCode;
+    if (needsIgst !== invoiceIgst) out.push(`the sale invoice charged ${invoiceIgst ? 'IGST' : 'CGST and SGST'} but the goods go to ${state.name}, which needs ${needsIgst ? 'IGST' : 'CGST and SGST'}: check the invoice`);
+  }
+  return out;
+}
+const sellerCodeOf = (sellerState: string | undefined) => resolveState({ name: sellerState, code: sellerState })?.code;
 
 export type RawInputs = {
   sellerState: string;                         // province code of the warehouse, e.g. 'UP'
@@ -79,6 +110,8 @@ export function buildFacts(inp: RawInputs): Built {
   const txs: any[] = o.transactions ?? [];
   const ucOrder = inp.uc?.order && inp.uc.order.status !== 'CANCELLED' ? inp.uc.order : null;
 
+  const sellerCode = sellerCodeOf(inp.sellerState);
+
   // An order cancelled before it shipped was never a sale: no invoice, nothing delivered.
   const shipped = (o.fulfillments ?? []).some((f: any) => (f.trackingInfo ?? []).length) || !!inp.uc?.saleInvoice;
   const movedMoney = txs.some(t => succeeded(t) && t.kind !== 'REFUND');
@@ -88,6 +121,8 @@ export function buildFacts(inp: RawInputs): Built {
       notes: ['cancelled before dispatch: never a sale'], skip: 'cancelled before dispatch',
     };
   }
+
+  const state = placeOfSupply(o, ucOrder);
 
   // ── The sale ───────────────────────────────────────────────────────────────
   let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined, invoiceDate: string | undefined, qty: number | undefined;
@@ -113,7 +148,7 @@ export function buildFacts(inp: RawInputs): Built {
     goods = money(o.subtotalPriceSet);
     codFee = cod ? ship : 0;
     if (!cod && ship > 0) { goods = r2(goods + ship); notes.push('a shipping charge on a prepaid order is treated as part of the goods'); }
-    igst = (o.shippingAddress?.provinceCode ?? '') !== inp.sellerState;
+    igst = state && sellerCode ? state.code !== sellerCode : (o.shippingAddress?.provinceCode ?? '') !== inp.sellerState;
     saleDate = istDate(o.createdAt);
     const lines: any[] = o.lineItems?.nodes ?? [];
     qty = lines.length ? lines.reduce((n, l) => n + (Number(l.quantity) || 0), 0) : undefined;
@@ -242,9 +277,11 @@ export function buildFacts(inp: RawInputs): Built {
     returns.push({ kind: 'rto', date, goodsReturned: goods, qty, pending, uc: uc ? { doc: uc.doc, goods: uc.goods, codFee: uc.codFee, qty: uc.qty } : undefined, storeCredit });
   }
 
+  notes.push(...stateNotes(state, ucOrder, sellerCode, sale ? igst : undefined));
+
   return {
     facts: {
-      order: String(o.name).replace(/^#/, ''), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns,
+      order: String(o.name).replace(/^#/, ''), ...(state ? { state } : {}), rate, igst, goods, codFee, saleDate, saleDoc, qty, invoiceDate, delivered, payments, storeCreditUsed, returns,
       ...(inp.gatewayPayouts ? { gatewayPayouts: inp.gatewayPayouts } : {}),
       rtoOnTheWay: rtoOnTheWay ? { state: rtoOnTheWay.state, since: rtoOnTheWay.on || undefined } : undefined,
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
@@ -267,6 +304,7 @@ export function buildFacts(inp: RawInputs): Built {
 //   - Myntra's own customer charge (the "GT charge") is not ours and is not on the invoice.
 
 export type MyntraInputs = {
+  sellerState?: string;                 // province code of the warehouse, e.g. 'UP' (to check the invoice's kind of GST against the state)
   today: string;                        // IST date
   bookFrom: string;                     // first day of the books (accounting_start_date)
   uc: {
@@ -288,6 +326,7 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
   if (!sale) return { facts: base, notes: [`invoice ${name} could not be read from Unicommerce`], ignore: 'invoice unreadable' };
 
   // ── The sale ───────────────────────────────────────────────────────────────
+  const state = placeOfSupply(null, o);
   const a = invoiceAmounts(sale);
   let goods = a.goods;
   if (a.shipping > 0) { notes.push(`the sale invoice has a shipping charge of ${a.shipping.toFixed(2)}; treated as part of the goods`); goods = r2(goods + a.shipping); }
@@ -318,8 +357,10 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
     });
   }
 
+  notes.push(...stateNotes(state, o, sellerCodeOf(inp.sellerState), a.igst));
+
   return {
-    facts: { ...base, rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, qty: a.qty, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
+    facts: { ...base, ...(state ? { state } : {}), rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, qty: a.qty, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
     notes,
   };
 }

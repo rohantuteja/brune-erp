@@ -42,10 +42,14 @@ export const GATEWAY_FEE = 'Payment Gateway Expenses';
 export const GST_INPUT_IGST = 'IGST Input  UP';
 const gatewayLedger = (name?: string) => /razorpay/i.test(name ?? '') ? RAZORPAY : GATEWAY;
 
+// The state the goods go to (the place of supply): on every customer-side voucher, decides IGST or CGST+SGST, and the B2C return is by state.
+export type PlaceOfSupply = { code: string; name: string; source: 'shopify' | 'unicommerce' };
+
 export type Facts = {
   order: string;                  // Shopify order number; for a Myntra order, its Unicommerce invoice number
   channel?: 'shopify' | 'myntra'; // where the order came from (default shopify)
   channelRef?: string;            // Myntra: the Unicommerce order code
+  state?: PlaceOfSupply;          // absent = the state could not be found (the order cannot be exported)
   rate: number;                   // GST rate, 0.05 for garments up to ₹2,500
   igst: boolean;                  // inter-state: IGST; otherwise CGST + SGST
   goods: number;                  // goods on the sale invoice, after discounts, tax-inclusive
@@ -109,7 +113,8 @@ const PAYOUT_MAX_DAYS = 5;
 const split = (amount: number, rate: number) => { const taxable = r2(amount / (1 + rate)); return { taxable, tax: r2(amount - taxable) }; };
 
 // gatewayCoverage: the transaction dates GoKwik's uploaded reports cover (from the earliest to the latest payment in them).
-export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string; gatewayCoverage?: { from: string; to: string } }): OrderLedger {
+// requireState: an order with no state is an exception (the Tally file puts the state on every voucher, so it cannot be exported).
+export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string; gatewayCoverage?: { from: string; to: string }; requireState?: boolean }): OrderLedger {
   const ctrl = f.channel === 'myntra' ? MYNTRA : CUSTOMER;      // the account that must net to zero
   const entries: Entry[] = [];
   const balancing: Balancing[] = [];
@@ -329,6 +334,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     const rz = openOf(RAZORPAY);
     if (Math.abs(rz) > 0.01) exceptions.push({ type: 'awaiting_payout', amount: rz, reason: 'paid through Razorpay; its payout is not matched yet' });
   }
+  if (opts.requireState && !f.state) exceptions.unshift({ type: 'no_state', amount: 0, reason: 'the state the goods go to is not on the order (Shopify shipping address or Unicommerce address): every voucher needs it, so this order cannot go to Tally' });
   const exportable = entries.filter(e => e.date >= opts.cutoff);
   const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === ctrl).reduce((s, e) => s + e.debit - e.credit, 0));
   const balanced = Math.abs(net) <= 0.01 && !exceptions.length;

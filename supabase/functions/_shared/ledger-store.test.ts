@@ -86,3 +86,14 @@ test('tick: a scheduled run that is due comes before a retry, and a running run 
   assert.equal(decideTick(now, null, now - 20 * 60_000, now - FULL_EVERY_MS, held), 'full');
   assert.equal(decideTick(now, { kind: 'manual', status: 'running', startedAt: now - 60_000, updatedAt: now - 10_000 }, now - 20 * 60_000, now - 3_600_000, held), 'busy');
 });
+
+test('the state of the order is saved with it, as the GST name and the GST code; no state saves as null', () => {
+  const facts: Facts = { ...base, order: '37900', goods: 1399, codFee: 100, saleDate: '2026-10-08', state: { code: '27', name: 'Maharashtra', source: 'shopify' } };
+  const ledger = buildOrderLedger(facts, { cutoff: CUTOFF, today: '2026-10-12', requireState: true });
+  const row = ledgerRow({ order: '37900', orderId: 5, facts, notes: [], ledger }, CUTOFF);
+  assert.equal(row.state, 'Maharashtra'); assert.equal(row.state_code, '27');
+  const none = { ...facts, state: undefined };
+  const row2 = ledgerRow({ order: '37901', orderId: 6, facts: none, notes: [], ledger: buildOrderLedger(none, { cutoff: CUTOFF, today: '2026-10-12', requireState: true }) }, CUTOFF);
+  assert.equal(row2.state, null); assert.equal(row2.state_code, null);
+  assert.equal(row2.status, 'attention'); assert.equal(row2.exception_type, 'no_state');
+});
