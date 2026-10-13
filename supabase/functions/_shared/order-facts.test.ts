@@ -3,8 +3,8 @@
 // for orders 37807, 37707, 37613 and 37605 (Oct 2026), run through the ledger.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildFacts, istDate, type RawInputs } from './order-facts.ts';
-import { buildOrderLedger } from './ledger.ts';
+import { buildFacts, buildMyntraFacts, istDate, type RawInputs, type MyntraInputs } from './order-facts.ts';
+import { buildOrderLedger, CUSTOMER, MYNTRA } from './ledger.ts';
 
 const CUTOFF = '2026-10-01';
 const m = (amount: number) => ({ shopMoney: { amount: String(amount) } });
@@ -407,4 +407,99 @@ test('no Unicommerce invoice (before 29 Sep): booked on the order date as before
   raw.uc = null;
   const b = buildFacts(raw);
   assert.equal(b.facts.saleDate, '2026-09-20'); assert.equal(b.facts.invoiceDate, undefined); assert.equal(b.facts.saleDoc, undefined);
+});
+
+// ── Myntra: the order lives in Unicommerce only; Myntra owes the money ────────────────────────
+const ist = (t: string) => Date.parse(`${t}+05:30`);
+const myntraOrder = (over: Record<string, any> = {}, price = 1326, code = 'bb5a16bf-aaaa-4bbb-8ccc-000000000001') => ({
+  code, status: 'COMPLETE', displayOrderDateTime: ist('2026-10-06T13:10:05'), created: ist('2026-10-06T13:10:31'),
+  saleOrderItems: [{ code: '11439403112', sellingPrice: price, itemSku: 'TOBY-BLACK-DRESS-49-M' }],
+  shippingPackages: [{ code: 'BRUN00030', status: 'DISPATCHED', invoiceDisplayCode: 'I0927RE000000030' }],
+  returns: [], ...over,
+});
+const myntra = (order: any, invoice: any, extra: Partial<MyntraInputs['uc']> = {}): MyntraInputs =>
+  ({ today: '2026-10-13', bookFrom: CUTOFF, uc: { order, saleInvoice: invoice, returnInvoices: {}, ...extra } });
+const myntraInvoice = (code: string, created: string, total: number, igst = true) => ({
+  ...ucInvoice(code, ist(created), total, igst ? Math.round(total / 21 * 100) / 100 : 0, 0),
+  ...(igst ? {} : { centralGst: Math.round(total / 42 * 100) / 100, stateGst: Math.round(total / 42 * 100) / 100, integratedGst: 0 }),
+});
+
+test('Myntra: an invoiced order is booked on Myntra\'s order day, named by its invoice number, owed by Myntra', () => {
+  const b = buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
+  assert.equal(b.facts.order, 'I0927RE000000030'); assert.equal(b.facts.channel, 'myntra'); assert.equal(b.facts.channelRef, 'bb5a16bf-aaaa-4bbb-8ccc-000000000001');
+  assert.equal(b.facts.saleDate, '2026-10-06'); assert.equal(b.facts.saleDoc, 'I0927RE000000030'); assert.equal(b.facts.goods, 1326); assert.equal(b.facts.codFee, 0);
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-13' });
+  const sale = l.entries.filter(e => e.voucher === 'sale');
+  assert.equal(sale.find(e => e.account === MYNTRA)?.debit, 1326);
+  assert.equal(sale.find(e => e.account === 'Sales')?.credit, 1262.86); assert.equal(sale.find(e => e.account === 'Output IGST')?.credit, 63.14);
+  assert.ok(!l.entries.some(e => e.account === CUSTOMER), 'never the customer account');
+  assert.equal(l.net, 1326); assert.equal(l.status, 'open'); assert.equal(l.exceptions[0].type, 'awaiting_settlement');
+  assert.match(l.exceptions[0].reason, /Myntra owes 1326\.00/);
+  assert.equal(l.exportable.length, sale.length);
+});
+
+test('Myntra: an order placed in September is booked on 1 October (the September books had no Myntra sales)', () => {
+  const b = buildMyntraFacts(myntra(myntraOrder({ displayOrderDateTime: ist('2026-09-30T20:01:47') }), myntraInvoice('I0927RE000000006', '2026-10-01T08:42:06', 1326)));
+  assert.equal(b.facts.saleDate, '2026-10-01'); assert.equal(b.facts.invoiceDate, '2026-10-01');
+  assert.ok(b.notes.some(n => /placed on 2026-09-30, before the books started: booked on 2026-10-01/.test(n)));
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-13' });
+  assert.equal(l.opening, 0); assert.ok(l.exportable.some(e => e.voucher === 'sale'), 'the sale is October\'s');
+  // an order invoiced in the same September month it was placed is booked on 1 Oct too
+  const c = buildMyntraFacts(myntra(myntraOrder({ displayOrderDateTime: ist('2026-09-27T13:58:25') }), myntraInvoice('I0927RE000000003', '2026-09-28T09:31:09', 1226)));
+  assert.equal(c.facts.saleDate, '2026-10-01');
+});
+
+test('Myntra: ordered late on 31 Oct and invoiced in November is October\'s sale (the order date rule), with a note', () => {
+  const b = buildMyntraFacts({ ...myntra(myntraOrder({ displayOrderDateTime: ist('2026-10-31T23:40:00') }), myntraInvoice('I0927RE000000200', '2026-11-01T09:00:00', 1326)), bookFrom: CUTOFF });
+  assert.equal(b.facts.saleDate, '2026-10-31'); assert.equal(b.facts.invoiceDate, '2026-11-01');
+  assert.ok(b.notes.some(n => /order date 2026-10-31.*in a later month/.test(n)));
+});
+
+test('Myntra: not invoiced yet is not stored; a cancelled invoiced order is not a sale', () => {
+  const none = buildMyntraFacts(myntra(myntraOrder({ status: 'PROCESSING', shippingPackages: [{ code: 'P', status: 'CREATED' }] }), undefined));
+  assert.equal(none.ignore, 'not invoiced yet');
+  const cancelled = buildMyntraFacts(myntra(myntraOrder({ status: 'CANCELLED' }), myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326)));
+  assert.equal(cancelled.skip, 'cancelled');
+});
+
+test('Myntra: a customer return still on its way is "waiting for the parcel"; the sale stays open', () => {
+  const o = myntraOrder({ returns: [{ code: 'RET1', type: 'Customer Returned', statusCode: 'COURIER_ALLOCATED', returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
+  const b = buildMyntraFacts(myntra(o, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
+  assert.equal(b.facts.returns![0].kind, 'customer'); assert.equal(b.facts.returns![0].pending, true); assert.equal(b.facts.returns![0].goodsReturned, 1326);
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-13' });
+  assert.equal(l.status, 'open'); assert.equal(l.exceptions[0].type, 'awaiting_return');
+});
+
+test('Myntra: once Unicommerce receives the parcel its return invoice is the credit note, dated by it, and the order nets to zero', () => {
+  const o = myntraOrder({ returns: [{ code: 'RET1', type: 'Customer Returned', statusCode: 'RETURNED', returnInvoiceDisplayCode: 'ISR0010', returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
+  const ret = { ...myntraInvoice('ISR0010', '2026-10-14T10:30:00', 1326), displayCode: 'ISR0010' };
+  const b = buildMyntraFacts({ ...myntra(o, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326), { returnInvoices: { RET1: ret } }), today: '2026-10-15' });
+  const r = b.facts.returns![0];
+  assert.equal(r.pending, false); assert.equal(r.date, '2026-10-14'); assert.equal(r.uc?.doc, 'ISR0010');
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-15' });
+  const cn = l.entries.filter(e => e.voucher === 'credit_note');
+  assert.equal(cn.find(e => e.account === MYNTRA)?.credit, 1326); assert.equal(cn[0].date, '2026-10-14'); assert.equal(cn[0].doc, 'ISR0010');
+  assert.equal(l.net, 0); assert.equal(l.status, 'complete'); assert.equal(l.balancing.length, 0);
+});
+
+test('Myntra: an RTO (courier returned) on its way is waiting for the parcel; a return invoice that does not match is not trusted', () => {
+  const rto = myntraOrder({ returns: [{ code: 'RET2', type: 'Courier Returned', statusCode: 'RETURN_EXPECTED', returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
+  const a = buildMyntraFacts(myntra(rto, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
+  assert.equal(a.facts.returns![0].kind, 'rto'); assert.equal(a.facts.returns![0].pending, true);
+  const odd = myntraOrder({ returns: [{ code: 'RET3', type: 'Customer Returned', statusCode: 'RETURNED', returnInvoiceDisplayCode: 'ISR0011', returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
+  const b = buildMyntraFacts(myntra(odd, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326), { returnInvoices: { RET3: { ...myntraInvoice('ISR0099', '2026-10-14T10:30:00', 1326), displayCode: 'ISR0099' } } }));
+  assert.equal(b.facts.returns![0].pending, true); assert.ok(b.notes.some(n => /return invoice ISR0011 could not be read/.test(n)));
+});
+
+test('Myntra: a two-item order with one item returned credits only that item; intra-state tax is split into CGST and SGST', () => {
+  const two = myntraOrder({
+    saleOrderItems: [{ code: 'A1', sellingPrice: 1326 }, { code: 'A2', sellingPrice: 1426.01 }],
+    returns: [{ code: 'RET4', type: 'Customer Returned', statusCode: 'COURIER_ALLOCATED', returnItems: [{ saleOrderItemCode: 'A2' }] }],
+  });
+  const b = buildMyntraFacts(myntra(two, myntraInvoice('I0927RE000000006', '2026-10-06T14:15:10', 2752.01)));
+  assert.equal(b.facts.goods, 2752.01); assert.equal(b.facts.returns![0].goodsReturned, 1426.01);
+  const intra = buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000018', '2026-10-06T14:15:10', 1326, false)));
+  assert.equal(intra.facts.igst, false);
+  const l = buildOrderLedger(intra.facts, { cutoff: CUTOFF, today: '2026-10-13' });
+  assert.ok(l.entries.some(e => e.account === 'Output CGST') && l.entries.some(e => e.account === 'Output SGST') && !l.entries.some(e => e.account === 'Output IGST'));
 });

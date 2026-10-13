@@ -1,4 +1,4 @@
-// accounting-ledger v5
+// accounting-ledger v6
 // Gathers the facts about Shopify orders from every system, builds each order's
 // double-entry ledger, and reports which orders balance and which need a person
 // or a balancing document. `order` and `report` write nothing. `sync` and `tick`
@@ -11,6 +11,9 @@
 //                 return invoices with their real amounts (invoice/details/get)
 //   Return Prime  its refunds: amount, date, return fee, whether the parcel arrived
 //   cod_deliveries / Velocity   the delivery date of COD parcels and the remittance (UTR) that paid them
+// and, for Myntra orders (channel MYNTRAPPMP, which live only in Unicommerce): the order, its sale invoice and its
+// return invoices. Myntra owes the money, so those orders sit on a "Myntra receivable" account and stay open until its
+// settlement is matched (later). A Myntra order enters the ledger once Unicommerce has invoiced it.
 // then _shared/order-facts.ts turns that into facts and _shared/ledger.ts into entries.
 // The rules and their tests: docs/accounting-ledger.md.
 //
@@ -18,7 +21,8 @@
 // order can be shown to balance, but are never part of `exportable`.
 //
 // Actions (POST { action } with an admin user's JWT, or the x-cron-key header):
-//   order  — { order: "37613" } full facts, notes and entries for one order
+//   order  — { order: "37613" } full facts, notes and entries for one order; a Myntra order by its Unicommerce
+//            order code, or by its invoice number once it is in the ledger
 //   report — { from?: "2026-10-01", limit?: 15, after?: cursor, only_issues?: true, budget_s?: 80 }
 //            orders updated since `from`. One page of `limit` orders, or with `budget_s` as many
 //            pages as fit in that many seconds (Return Prime is read once per call). Pass `next`
@@ -39,10 +43,10 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { buildFacts, istDate, type RawInputs } from '../_shared/order-facts.ts';
+import { buildFacts, buildMyntraFacts, istDate, type RawInputs } from '../_shared/order-facts.ts';
 import { buildOrderLedger } from '../_shared/ledger.ts';
 import { decideTick, ledgerRow } from '../_shared/ledger-store.ts';
-import { ucPost } from '../_shared/unicommerce.ts';
+import { ucErrorText, ucPost } from '../_shared/unicommerce.ts';
 import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
 
 const RP_API = 'https://api.returnprime.co';
@@ -83,6 +87,19 @@ serve(async (req) => {
 
 async function oneOrder(ctx: Ctx, name: string) {
   if (!name) return { error: 'order is required' };
+  // A Myntra order: its Unicommerce order code (a UUID), or its invoice number once the ledger knows it.
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name);
+  if (uuid || /^I\d{4}RE\d+$/i.test(name)) {
+    let code = name;
+    if (!uuid) {
+      const { data } = await ctx.admin.from('ledger_orders').select('channel_ref').eq('order_name', name).eq('channel', 'myntra').maybeSingle();
+      if (!data?.channel_ref) return { error: `Myntra invoice ${name} is not in the ledger yet: pass the Unicommerce order code` };
+      code = String(data.channel_ref);
+    }
+    const shared = await sharedInputs(ctx);
+    const [res] = await processMyntra(ctx, [code], shared, true);
+    return res ? { ...res, entries: res.ledger.entries } : { error: `Myntra order ${code} not found, or not invoiced yet` };
+  }
   const nodes = await shopifyOrders(ctx, `name:${name}`, 5);
   // Shopify's name search is loose ("37720" also finds "3-7720"): keep the exact order.
   const exact = nodes.nodes.filter(n => String(n.name).replace(/^#/, '') === name);
@@ -253,30 +270,47 @@ async function startRun(ctx: Ctx, kind: 'full' | 'incremental') {
     if (data?.[0]) { const d = istDate(Date.parse(data[0].started_at) - 2 * 86_400_000); since = d > cutoff ? d : cutoff; }
   }
   const ids = new Set<number>(await shopifyOrderIds(ctx, `updated_at:>=${since}`));
-  const { data: open } = await ctx.admin.from('ledger_orders').select('order_id').in('status', ['open', 'attention']);
-  for (const r of open ?? []) ids.add(Number(r.order_id));
-  const queue = [...ids];
-  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [] } }).select('*').single();
+  const { data: open } = await ctx.admin.from('ledger_orders').select('order_id, channel, channel_ref').in('status', ['open', 'attention']);
+  const myntra = new Set<string>();
+  for (const r of open ?? []) {
+    if (r.channel === 'myntra' && r.channel_ref) myntra.add(String(r.channel_ref));
+    else if (r.order_id != null) ids.add(Number(r.order_id));
+  }
+  // Myntra orders: a full run reads every one since Myntra went live in Unicommerce; an incremental run those changed since the last run.
+  const myntraFrom = await setting(ctx.admin, 'myntra_ledger_from', '2026-09-20');
+  // A Unicommerce problem finding Myntra orders must not stop the Shopify orders: it is recorded on the run instead.
+  let myntraError: string | null = null;
+  try {
+    for (const c of await myntraCodes(ctx, kind === 'full' || since < myntraFrom ? myntraFrom : since, kind === 'full' ? 'CREATED' : 'UPDATED')) myntra.add(c);
+  } catch (err) { myntraError = err instanceof Error ? err.message : String(err); }
+  const queue: Array<number | string> = [...ids, ...[...myntra].map(c => `M:${c}`)];
+  const { data, error } = await ctx.admin.from('ledger_runs').insert({ kind, status: 'running', queue, total: queue.length, summary: { since, missing: [], ...(myntraError ? { myntra_error: myntraError.slice(0, 300) } : {}) } }).select('*').single();
   if (error) throw new Error(`could not start a run: ${error.message}`);
   return data;
 }
 
 async function advance(ctx: Ctx, run: any, budget: number) {
   const started = Date.now();
-  const queue: number[] = run.queue ?? [];
+  const queue: Array<number | string> = run.queue ?? [];       // Shopify order ids, and "M:<code>" for Myntra orders
   const missing: number[] = run.summary?.missing ?? [];
   let pos: number = run.pos;
   try {
     const shared = await sharedInputs(ctx);
     while (pos < run.total && Date.now() - started < budget) {
-      const ids = queue.slice(pos, pos + CHUNK);
-      const page = await shopifyOrders(ctx, ids.map(i => `id:${i}`).join(' OR '), ids.length);
-      const found = new Set(page.nodes.map(n => Number(n.legacyResourceId)));
-      for (const i of ids) if (!found.has(i)) missing.push(i);
-      const rows = (await process(ctx, page.nodes, shared)).map(r => ledgerRow(r, shared.cutoff));
-      const { error } = await ctx.admin.rpc('ledger_save_orders', { p_orders: rows });
+      const chunk = queue.slice(pos, pos + CHUNK);
+      const ids = chunk.filter((i): i is number => typeof i === 'number');
+      const myntraChunk = chunk.filter((i): i is string => typeof i === 'string' && i.startsWith('M:')).map(i => i.slice(2));
+      const rows: any[] = [];
+      if (ids.length) {
+        const page = await shopifyOrders(ctx, ids.map(i => `id:${i}`).join(' OR '), ids.length);
+        const found = new Set(page.nodes.map(n => Number(n.legacyResourceId)));
+        for (const i of ids) if (!found.has(i)) missing.push(i);
+        rows.push(...(await process(ctx, page.nodes, shared)).map(r => ledgerRow(r, shared.cutoff)));
+      }
+      if (myntraChunk.length) rows.push(...(await processMyntra(ctx, myntraChunk, shared)).map(r => ledgerRow(r, shared.cutoff)));
+      const { error } = rows.length ? await ctx.admin.rpc('ledger_save_orders', { p_orders: rows }) : { error: null };
       if (error) throw new Error(`saving the ledger: ${error.message}`);
-      pos += ids.length;
+      pos += chunk.length;
       await ctx.admin.from('ledger_runs').update({ pos, updated_at: new Date().toISOString(), summary: { ...run.summary, missing } }).eq('id', run.id);
     }
     const finished = pos >= run.total;
@@ -372,6 +406,43 @@ async function process(ctx: Ctx, orders: any[], shared?: Shared) {
   return out;
 }
 
+// ── Myntra (Unicommerce channel MYNTRAPPMP) ───────────────────────────────────────────────────
+
+// The Unicommerce codes of Myntra orders created (or, for an incremental run, changed) since a date. Unicommerce's order
+// search takes at most 31 days at a time, and pages of 500.
+async function myntraCodes(ctx: Ctx, fromDate: string, dateType: 'CREATED' | 'UPDATED'): Promise<string[]> {
+  const out = new Set<string>();
+  const end = Date.now();
+  const WINDOW = 30 * 86_400_000;
+  for (let start = Date.parse(`${fromDate}T00:00:00+05:30`); start < end; start += WINDOW) {
+    const to = Math.min(start + WINDOW, end);
+    for (let displayStart = 0; ; displayStart += 500) {
+      const r = await ucPost(ctx.admin, '/services/rest/v1/oms/saleOrder/search', {
+        channel: 'MYNTRAPPMP', dateType, fromDate: new Date(start).toISOString(), toDate: new Date(to).toISOString(),
+        searchOptions: { displayLength: 500, displayStart },
+      });
+      if (!r?.successful) throw new Error(`Unicommerce Myntra order search failed: ${ucErrorText(r)}`);
+      for (const e of r.elements ?? []) out.add(String(e.code));
+      if ((r.elements ?? []).length < 500) break;
+    }
+  }
+  return [...out];
+}
+
+// Myntra orders → ledger results. An order Unicommerce has not invoiced yet is left out (it is not a sale yet).
+// With `keepAll` (the single-order action) a result is returned even for a skipped order.
+async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll = false) {
+  const out: Array<{ order: string; orderId: number | null; facts: any; notes: string[]; skip?: string; ledger: ReturnType<typeof buildOrderLedger> }> = [];
+  for (const code of codes) {
+    const uc = await unicommerce(ctx, code);
+    if (!uc?.order) continue;
+    const built = buildMyntraFacts({ today: shared.today, bookFrom: shared.cutoff, uc });
+    if (built.ignore && !keepAll) continue;
+    out.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today }) });
+  }
+  return out;
+}
+
 async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string | null = null) {
   const res = await gql(ctx, `query LedgerOrders($q: String!, $first: Int!, $after: String) {
     orders(first: $first, after: $after, query: $q, sortKey: UPDATED_AT) {
@@ -389,7 +460,7 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
   return { nodes: conn.nodes as any[], hasNext: !!conn.pageInfo.hasNextPage, cursor: conn.pageInfo.endCursor as string | null };
 }
 
-async function unicommerce(ctx: Ctx, orderId: number): Promise<RawInputs['uc']> {
+async function unicommerce(ctx: Ctx, orderId: number | string): Promise<RawInputs['uc']> {
   const so = await ucPost(ctx.admin, '/services/rest/v1/oms/saleorder/get', { code: String(orderId) });
   if (!so?.successful || !so.saleOrderDTO) return null;
   const order = so.saleOrderDTO;

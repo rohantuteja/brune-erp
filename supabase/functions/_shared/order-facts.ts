@@ -53,7 +53,8 @@ export type RawInputs = {
   adjustments?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; approved_by: string }>;   // ledger_adjustments for this order
 };
 
-export type Built = { facts: Facts; notes: string[]; skip?: string };
+// skip: not a sale (stored as such); ignore: nothing to store yet (a Myntra order Unicommerce has not invoiced).
+export type Built = { facts: Facts; notes: string[]; skip?: string; ignore?: string };
 
 // What an invoice from Unicommerce says, in the ledger's terms (tax-inclusive).
 function invoiceAmounts(inv: any) {
@@ -241,6 +242,75 @@ export function buildFacts(inp: RawInputs): Built {
       remitted: delivered && inp.remittance ? { date: inp.remittance.date, amount: inp.remittance.amount ?? delivered.amount, utr: inp.remittance.utr } : undefined,
       approved: (inp.adjustments ?? []).map(a => ({ kind: a.kind, amount: Number(a.amount), reason: a.reason, by: a.approved_by })),
     },
+    notes,
+  };
+}
+
+// ── Myntra ────────────────────────────────────────────────────────────────────────────────────
+// A Myntra order lives only in Unicommerce (channel MYNTRAPPMP). Everything comes from there: the sale invoice (number,
+// amounts, tax) and, when a parcel comes back, the return invoice. Myntra, not the end customer, owes the money, so the
+// order's control account is "Myntra receivable"; what Myntra then pays (net of its fees, TCS and TDS) is matched later
+// from its settlement reports, so until then a sold order stays open ("awaiting settlement").
+//   - Booked on Myntra's own order time (displayOrderDateTime, IST), like a Shopify order is booked on its order date,
+//     but never before `bookFrom` (the first day of the books): September's books had no Myntra sales, so the few
+//     orders placed before it are booked on that day.
+//   - The order's name is its Unicommerce invoice number (a Myntra order enters the ledger only once it is invoiced).
+//   - Myntra's own customer charge (the "GT charge") is not ours and is not on the invoice.
+
+export type MyntraInputs = {
+  today: string;                        // IST date
+  bookFrom: string;                     // first day of the books (accounting_start_date)
+  uc: {
+    order: any;                         // Unicommerce saleOrderDTO
+    saleInvoice?: any;                  // invoice/details/get → invoice (return: false)
+    returnInvoices: Record<string, any>;// by Unicommerce return code → invoice (return: true)
+  };
+};
+
+export function buildMyntraFacts(inp: MyntraInputs): Built {
+  const o = inp.uc.order;
+  const notes: string[] = [];
+  const code = String(o.code);
+  const sale = inp.uc.saleInvoice;
+  const name = String(sale?.displayCode ?? (o.shippingPackages ?? []).find((p: any) => p?.invoiceDisplayCode)?.invoiceDisplayCode ?? '');
+  const base: Facts = { order: name, channel: 'myntra', channelRef: code, rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(Number(o.displayOrderDateTime ?? o.created)) };
+  if (!name) return { facts: base, notes: ['no Unicommerce invoice yet: not a sale until it is invoiced'], ignore: 'not invoiced yet' };
+  if (o.status === 'CANCELLED') return { facts: base, notes: ['cancelled: never a sale'], skip: 'cancelled' };
+  if (!sale) return { facts: base, notes: [`invoice ${name} could not be read from Unicommerce`], ignore: 'invoice unreadable' };
+
+  // ── The sale ───────────────────────────────────────────────────────────────
+  const a = invoiceAmounts(sale);
+  let goods = a.goods;
+  if (a.shipping > 0) { notes.push(`the sale invoice has a shipping charge of ${a.shipping.toFixed(2)}; treated as part of the goods`); goods = r2(goods + a.shipping); }
+  const ordered = istDate(Number(o.displayOrderDateTime ?? o.created));
+  const invoiceDate = istDate(Number(sale.created));
+  const saleDate = ordered < inp.bookFrom ? inp.bookFrom : ordered;
+  if (saleDate !== ordered) notes.push(`placed on ${ordered}, before the books started: booked on ${saleDate} (the earlier months' books had no Myntra sales)`);
+  else if (invoiceDate.slice(0, 7) !== saleDate.slice(0, 7)) notes.push(`sale booked on the order date ${saleDate}; the Unicommerce invoice ${name} is dated ${invoiceDate}, in a later month`);
+
+  // ── Returns ────────────────────────────────────────────────────────────────
+  // A "Courier Returned" return is the parcel coming back undelivered (RTO); "Customer Returned" is the customer sending it back.
+  // A credit note exists once Unicommerce has received the parcel and issued its return invoice; until then the return is pending.
+  const items: any[] = o.saleOrderItems ?? [];
+  const returns: NonNullable<Facts['returns']> = [];
+  for (const r of (o.returns ?? []).filter((x: any) => x.statusCode !== 'CANCELLED')) {
+    const inv = r.returnInvoiceDisplayCode ? inp.uc.returnInvoices[r.code] : undefined;
+    const readable = inv && String(inv.displayCode ?? '') === String(r.returnInvoiceDisplayCode);
+    if (r.returnInvoiceDisplayCode && !readable) notes.push(`return invoice ${r.returnInvoiceDisplayCode} could not be read from Unicommerce: treated as not received yet`);
+    const uc = readable ? invoiceAmounts(inv) : undefined;
+    const returned = (r.returnItems ?? []).map((ri: any) => items.find(i => String(i.code) === String(ri.saleOrderItemCode))).filter(Boolean);
+    const goodsReturned = r2(sum((returned.length ? returned : items).map((i: any) => Number(i.sellingPrice ?? 0))));
+    returns.push({
+      kind: /courier/i.test(String(r.type)) ? 'rto' : 'customer',
+      date: uc ? istDate(Number(inv.created)) : inp.today,
+      goodsReturned, pending: !uc,
+      uc: uc ? { doc: String(inv.displayCode), goods: uc.goods, codFee: uc.codFee } : undefined,
+      storeCredit: [],
+    });
+  }
+
+  return {
+    facts: { ...base, rate: a.rate, igst: a.igst, goods, codFee: a.codFee, saleDate, saleDoc: name, invoiceDate, returns, payments: [], storeCreditUsed: [], approved: [] },
     notes,
   };
 }

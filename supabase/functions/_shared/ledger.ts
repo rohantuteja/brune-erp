@@ -21,9 +21,13 @@
 // before it belong to months already closed in Tally and are never exported.
 
 export const CUSTOMER = 'Customer (order control)';
+// A Myntra order is owed by Myntra, not by the end customer: its control account is a receivable from Myntra.
+export const MYNTRA = 'Myntra receivable (order control)';
 
 export type Facts = {
-  order: string;                  // Shopify order number
+  order: string;                  // Shopify order number; for a Myntra order, its Unicommerce invoice number
+  channel?: 'shopify' | 'myntra'; // where the order came from (default shopify)
+  channelRef?: string;            // Myntra: the Unicommerce order code
   rate: number;                   // GST rate, 0.05 for garments up to ₹2,500
   igst: boolean;                  // inter-state: IGST; otherwise CGST + SGST
   goods: number;                  // goods on the sale invoice, after discounts, tax-inclusive
@@ -57,11 +61,11 @@ export type Entry = {
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
 export type Exception = {
-  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'bad_facts';
+  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'awaiting_settlement' | 'bad_facts';
   amount: number; reason: string;
 };
-// awaiting_return and in_transit are normal stages of an order that is not finished yet.
-const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit', 'rto_on_the_way']);
+// awaiting_return, in_transit and awaiting_settlement are normal stages of an order that is not finished yet.
+const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit', 'rto_on_the_way', 'awaiting_settlement']);
 export type OrderLedger = {
   entries: Entry[]; exportable: Entry[]; balancing: Balancing[]; exceptions: Exception[];
   net: number;          // whole life; must be 0
@@ -78,6 +82,7 @@ const REMITTANCE_OVERDUE_DAYS = 10;
 const split = (amount: number, rate: number) => { const taxable = r2(amount / (1 + rate)); return { taxable, tax: r2(amount - taxable) }; };
 
 export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: string }): OrderLedger {
+  const ctrl = f.channel === 'myntra' ? MYNTRA : CUSTOMER;      // the account that must net to zero
   const entries: Entry[] = [];
   const balancing: Balancing[] = [];
   const exceptions: Exception[] = [];
@@ -104,7 +109,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   const approvedExtra = (extra: number) => (f.approved ?? []).find(a => a.kind === 'goodwill_credit' && Math.abs(a.amount - extra) <= 0.01);
   const bookGoodwill = (date: string, tag: string, extra: number, a: { reason: string; by: string }) =>
     voucher(date, 'goodwill', 'erp', undefined, `${tag}: extra store credit of ${extra.toFixed(2)} approved by ${a.by}: ${a.reason}`,
-      [['Goodwill credits', extra, 0], [CUSTOMER, 0, extra]]);
+      [['Goodwill credits', extra, 0], [ctrl, 0, extra]]);
 
   if (f.goods < 0 || f.codFee < 0 || !(f.rate >= 0)) {
     return { entries, exportable: [], balancing, exceptions: [{ type: 'bad_facts', amount: 0, reason: 'negative amounts or rate' }], net: 0, opening: 0, balanced: false, codOpen: 0, status: 'attention' };
@@ -114,7 +119,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   {
     const p = parts(f.goods, f.codFee);
     voucher(f.saleDate, 'sale', f.saleDoc ? 'unicommerce' : 'shopify', f.saleDoc, `sale ${f.order}`, [
-      [CUSTOMER, r2(f.goods + f.codFee), 0],
+      [ctrl, r2(f.goods + f.codFee), 0],
       ['Sales', 0, p.g.taxable], ['COD charge income', 0, p.c.taxable],
       ...gst(r2(p.g.tax + p.c.tax), 'credit', 'output'),
     ]);
@@ -122,17 +127,17 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   // Settlements of what the customer owes
   if (f.delivered) {
     voucher(f.delivered.date, 'delivery', 'courier', undefined, 'COD collected by the courier', [
-      ['COD receivable (Velocity)', f.delivered.amount, 0], [CUSTOMER, 0, f.delivered.amount]]);
+      ['COD receivable (Velocity)', f.delivered.amount, 0], [ctrl, 0, f.delivered.amount]]);
   }
   if (f.delivered && f.remitted) {
     voucher(f.remitted.date, 'remittance', 'courier', f.remitted.utr, 'COD paid into the bank by the courier (UTR)', [
       ['Bank', f.remitted.amount, 0], ['COD receivable (Velocity)', 0, f.remitted.amount]]);
   }
   for (const p of f.payments ?? []) {
-    voucher(p.date, 'payment', 'gateway', p.ref, 'prepaid payment', [['Gateway clearing', p.amount, 0], [CUSTOMER, 0, p.amount]]);
+    voucher(p.date, 'payment', 'gateway', p.ref, 'prepaid payment', [['Gateway clearing', p.amount, 0], [ctrl, 0, p.amount]]);
   }
   for (const s of f.storeCreditUsed ?? []) {
-    voucher(s.date, 'store_credit_used', 'shopify', undefined, 'store credit spent at checkout', [['Store credit liability', s.amount, 0], [CUSTOMER, 0, s.amount]]);
+    voucher(s.date, 'store_credit_used', 'shopify', undefined, 'store credit spent at checkout', [['Store credit liability', s.amount, 0], [ctrl, 0, s.amount]]);
   }
 
   // Returns
@@ -149,7 +154,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
         voucher(ret.date, 'credit_note', 'unicommerce', ret.uc.doc, `${tag}: Unicommerce return invoice`, [
           ['Sales returns', p.g.taxable, 0], ['COD charge income', p.c.taxable, 0],
           ...gst(r2(p.g.tax + p.c.tax), 'debit', 'output'),
-          [CUSTOMER, 0, r2(ucGoods + ucCod)],
+          [ctrl, 0, r2(ucGoods + ucCod)],
         ]);
       }
       // What the order requires of its credit notes, and what is missing or extra.
@@ -159,28 +164,28 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
         const p = split(amt, f.rate);
         balancing.push({ type: 'credit_note_goods', amount: amt, reason: ret.uc ? `Unicommerce's return invoice covers ${ucGoods.toFixed(2)} of ${needGoods.toFixed(2)} goods` : 'no Unicommerce return invoice exists for this order' });
         voucher(ret.date, 'credit_note', 'erp', undefined, `${tag}: credit note for goods`, [
-          ['Sales returns', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [CUSTOMER, 0, amt]]);
+          ['Sales returns', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [ctrl, 0, amt]]);
       }
       if (fullReturn && r2(f.codFee - ucCod) > 0.005) {
         const amt = r2(f.codFee - ucCod);
         const p = split(amt, f.rate);
         balancing.push({ type: 'credit_note_cod_fee', amount: amt, reason: 'returned to origin: the COD charge was never collected, so it is reversed too' });
         voucher(ret.date, 'credit_note', 'erp', undefined, `${tag}: credit note for the COD charge`, [
-          ['COD charge income', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [CUSTOMER, 0, amt]]);
+          ['COD charge income', p.taxable, 0], ...gst(p.tax, 'debit', 'output'), [ctrl, 0, amt]]);
       }
       if (!fullReturn && ucCod > 0.005) {
         // The customer paid the COD charge and it is kept: bill it back.
         const p = split(ucCod, f.rate);
         balancing.push({ type: 'retained_cod_fee_invoice', amount: ucCod, reason: "the return invoice reversed the COD charge, but the customer paid it and it is kept" });
         voucher(ret.date, 'invoice', 'erp', undefined, `${tag}: retained COD charge`, [
-          [CUSTOMER, ucCod, 0], ['COD charge income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
+          [ctrl, ucCod, 0], ['COD charge income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
       }
       // Return fee kept from the customer: Unicommerce never invoices it
       if (ret.returnFee && ret.returnFee > 0) {
         const p = split(ret.returnFee, f.rate);
         balancing.push({ type: 'return_fee_invoice', amount: ret.returnFee, reason: 'return fee kept from the customer' });
         voucher(ret.date, 'invoice', 'erp', undefined, `${tag}: return fee`, [
-          [CUSTOMER, ret.returnFee, 0], ['Return fee income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
+          [ctrl, ret.returnFee, 0], ['Return fee income', 0, p.taxable], ...gst(p.tax, 'credit', 'output')]);
       }
     }
     // Store credit actually issued (and anything taken back)
@@ -188,10 +193,10 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     for (const c of ret.storeCredit ?? []) {
       issued = r2(issued + c.amount);
       voucher(c.date, 'store_credit', 'return_prime', c.ref, `${tag}: store credit ${c.amount < 0 ? 'taken back' : 'issued'}`,
-        c.amount >= 0 ? [[CUSTOMER, c.amount, 0], ['Store credit liability', 0, c.amount]] : [['Store credit liability', -c.amount, 0], [CUSTOMER, 0, -c.amount]]);
+        c.amount >= 0 ? [[ctrl, c.amount, 0], ['Store credit liability', 0, c.amount]] : [['Store credit liability', -c.amount, 0], [ctrl, 0, -c.amount]]);
     }
     if (ret.cashRefund) {
-      voucher(ret.cashRefund.date, 'refund', 'gateway', undefined, `${tag}: cash refund`, [[CUSTOMER, ret.cashRefund.amount, 0], ['Bank', 0, ret.cashRefund.amount]]);
+      voucher(ret.cashRefund.date, 'refund', 'gateway', undefined, `${tag}: cash refund`, [[ctrl, ret.cashRefund.amount, 0], ['Bank', 0, ret.cashRefund.amount]]);
     }
     // A parcel returned to origin pays back everything the customer paid (prepaid money, a part-payment,
     // store credit spent). A person rounds a manual credit, so a difference under a rupee goes to Round off.
@@ -208,7 +213,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       } else if (Math.abs(diff) > 0.005) {
         const when = ret.storeCredit?.[ret.storeCredit.length - 1]?.date ?? ret.date;
         voucher(when, 'round_off', 'erp', undefined, `${tag}: store credit differs from what was paid by ${Math.abs(diff).toFixed(2)}`,
-          diff > 0 ? [['Round off', diff, 0], [CUSTOMER, 0, diff]] : [[CUSTOMER, -diff, 0], ['Round off', 0, -diff]]);
+          diff > 0 ? [['Round off', diff, 0], [ctrl, 0, diff]] : [[ctrl, -diff, 0], ['Round off', 0, -diff]]);
       }
     }
     // A customer return pays back what was paid for the goods, less the return fee.
@@ -227,7 +232,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   }
 
   // Does the order net to zero?
-  const net = r2(entries.filter(e => e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0));
+  const net = r2(entries.filter(e => e.account === ctrl).reduce((s, e) => s + e.debit - e.credit, 0));
   if (Math.abs(net) > 0.01 && !exceptions.length) {
     const waiting = (f.returns ?? []).filter(r => r.pending);
     if (waiting.length) {
@@ -242,6 +247,9 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       const days = f.rtoOnTheWay.since && opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.rtoOnTheWay.since)) / 86_400_000)) : 0;
       exceptions.push({ type: 'rto_on_the_way', amount: net,
         reason: `returning to origin (${f.rtoOnTheWay.state === 'initiated' ? 'RTO initiated' : 'RTO in transit'}${f.rtoOnTheWay.since ? ` ${days} day${days === 1 ? '' : 's'} ago` : ''}); the sale is reversed when the parcel is back` });
+    } else if (net > 0 && f.channel === 'myntra') {
+      // Myntra pays about 15 days after delivery, net of its fees, TCS and TDS: until that settlement is matched the sale is owed.
+      exceptions.push({ type: 'awaiting_settlement', amount: net, reason: `Myntra owes ${net.toFixed(2)} for this sale: it has not paid yet (Myntra pays about 15 days after delivery, net of its fees, TCS and TDS)` });
     } else if (net > 0 && f.codFee > 0 && !(f.returns ?? []).length && !f.delivered) {
       const days = opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.invoiceDate ?? f.saleDate)) / 86_400_000)) : 0;   // counted from the invoice (dispatch), not the order
       exceptions.push({ type: 'in_transit', amount: net, reason: `COD parcel not delivered yet, invoiced ${days} day${days === 1 ? '' : 's'} ago${days > 15 ? ' (long overdue: check with the courier)' : ''}` });
@@ -262,7 +270,7 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     }
   }
   const exportable = entries.filter(e => e.date >= opts.cutoff);
-  const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === CUSTOMER).reduce((s, e) => s + e.debit - e.credit, 0));
+  const opening = r2(entries.filter(e => e.date < opts.cutoff && e.account === ctrl).reduce((s, e) => s + e.debit - e.credit, 0));
   const balanced = Math.abs(net) <= 0.01 && !exceptions.length;
   const status = balanced ? 'complete' : exceptions.every(e => OPEN_STAGES.has(e.type)) ? 'open' : 'attention';
   return { entries, exportable, balancing, exceptions, net, opening, balanced, codOpen, status };

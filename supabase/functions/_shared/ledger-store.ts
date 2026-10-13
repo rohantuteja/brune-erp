@@ -7,7 +7,7 @@ import type { Facts, OrderLedger } from './ledger.ts';
 
 export type OrderResult = {
   order: string;
-  orderId: number;
+  orderId: number | null;       // Shopify's id; none for a Myntra order
   facts: Facts;
   notes: string[];
   skip?: string;
@@ -19,6 +19,8 @@ export function ledgerRow(r: OrderResult, cutoff: string) {
   return {
     order_name: r.order,
     order_id: r.orderId,
+    channel: r.facts.channel ?? 'shopify',
+    channel_ref: r.facts.channelRef ?? null,
     status: sold ? r.ledger.status : 'not_a_sale',
     net: sold ? r.ledger.net : 0,
     opening: sold ? r.ledger.opening : 0,
