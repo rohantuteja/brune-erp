@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { sortRows, inRange, clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pills, EmptyState, downloadCsv, useUrlParams, wideScreen } from '../components/AnalyticsKit';
-import { RefreshCw, AlertCircle, ChevronDown, ChevronRight, Search, X, ExternalLink, Download, Info, FileText, SlidersHorizontal } from 'lucide-react';
+import { RefreshCw, AlertCircle, ChevronDown, ChevronRight, Search, X, ExternalLink, Download, Info, FileText, SlidersHorizontal, Clock } from 'lucide-react';
 
 // Analytics → Ledger. Shows the stored order ledger (ledger_orders / ledger_entries,
 // written by the accounting-ledger function): which orders net to zero, which are
@@ -26,6 +26,7 @@ const SHOPIFY_ONLY = new Set(['in_transit', 'rto_on_the_way', 'with_courier', 'a
 const STATUS_FILTERS = [
   { id: 'all',             label: 'All' },
   { id: 'attention',       label: 'Needs attention' },
+  { id: 'waiting_invoice', label: 'Waiting for invoice' },
   { id: 'in_transit',      label: 'COD in transit' },
   { id: 'rto_on_the_way',  label: 'RTO on the way' },
   { id: 'awaiting_return', label: 'Waiting for parcel' },
@@ -54,6 +55,7 @@ const EXCEPTION_LABEL = {
   no_state: 'No state on the order',
   cancelled_after_payment: 'Cancelled but paid',
   refund_not_booked: 'Refund not in the ledger',
+  invoice_overdue: 'Invoice overdue',
 };
 
 const DOC_LABEL = {
@@ -68,6 +70,7 @@ const STATUS_STYLE = {
   open:       'bg-sky-50 text-sky-800 border-sky-200',
   attention:  'bg-amber-50 text-amber-900 border-amber-300',
   not_a_sale: 'bg-stone-100 text-stone-600 border-stone-200',
+  waiting_invoice: 'bg-white text-stone-600 border-stone-300 border-dashed',
 };
 
 const inr = (n, digits = 0) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -87,15 +90,25 @@ const ago = (iso) => {
 
 // What the list says about one order, in one place (the table, the phone card, the CSV and the filters all use it).
 const exceptionOf = (o) => (o.exceptions || [])[0];
-const stateLabel = (o) => { const ex = exceptionOf(o); return ex ? EXCEPTION_LABEL[ex.type] || ex.type : o.status === 'complete' ? 'Complete' : o.status === 'not_a_sale' ? 'Not a sale' : o.status; };
+const stateLabel = (o) => { const ex = exceptionOf(o); return ex ? EXCEPTION_LABEL[ex.type] || ex.type : o.status === 'complete' ? 'Complete' : o.status === 'not_a_sale' ? 'Not a sale' : o.status === 'waiting_invoice' ? 'Waiting for invoice' : o.status; };
+const MODE_LABEL = { prepaid: 'paid in full', 'part paid': 'part paid', cod: 'cash on delivery', marketplace: 'Myntra collects' };
+const daysSince = (d) => (d ? Math.max(0, Math.round((Date.now() - Date.parse(`${d}T00:00:00`)) / 864e5)) : 0);
+// A Myntra order waiting for its invoice has no invoice number yet and is named by its long Unicommerce code: show the end of it.
+const nameOf = (o) => (channelOf(o) === 'myntra' && o.status === 'waiting_invoice' && o.order_name.length > 20 ? `…${o.order_name.slice(-8)}` : o.order_name);
+const waitingText = (o) => {
+  const w = o.waiting || {};
+  const days = daysSince(o.sale_date);
+  return `${inr(w.amount)} ordered${w.mode ? `, ${MODE_LABEL[w.mode] || w.mode}` : ''} · ${days === 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} ago`} · no invoice yet, nothing is booked`;
+};
 const docsOf = (o) => (o.balancing || []).filter(b => b.type !== 'return_fee_invoice');
-const detailOf = (o) => { const ex = exceptionOf(o); return ex ? ex.reason : o.status === 'not_a_sale' ? (o.notes || [])[0] || '' : ''; };
+const detailOf = (o) => { const ex = exceptionOf(o); return ex ? ex.reason : o.status === 'not_a_sale' ? (o.notes || [])[0] || '' : o.status === 'waiting_invoice' ? waitingText(o) : ''; };
 
 const IN_FILTER = {
   all: () => true,
   attention: o => o.status === 'attention',
   complete: o => o.status === 'complete',
   not_a_sale: o => o.status === 'not_a_sale',
+  waiting_invoice: o => o.status === 'waiting_invoice',
   with_courier: o => Number(o.cod_open) > 0,
   needs_docs: o => docsOf(o).length > 0,
   in_transit: o => o.exception_type === 'in_transit',
@@ -112,10 +125,11 @@ const SORT_KEY = {
   amount: o => Number(o.net),
 };
 
-function EntriesTable({ orderName }) {
+function EntriesTable({ orderName, waiting = false }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState('');
   useEffect(() => {
+    if (waiting) return undefined;
     let live = true;
     supabase.from('ledger_entries')
       .select('seq, entry_date, voucher, account, debit, credit, doc, issued_by, memo, exportable, part, qty')
@@ -125,8 +139,9 @@ function EntriesTable({ orderName }) {
         if (err) setError('Could not load the entries'); else setRows(data || []);
       });
     return () => { live = false; };
-  }, [orderName]);
+  }, [orderName, waiting]);
 
+  if (waiting) return <div className="text-xs text-stone-600 px-3 py-2">Waiting for Unicommerce to issue the invoice. Nothing is booked and nothing is exported until it does; the sale is then booked on the order date.</div>;
   if (error) return <div className="text-xs text-red-700 px-3 py-2">{error}</div>;
   if (!rows) return <div className="text-xs text-stone-500 px-3 py-2">Loading entries…</div>;
   if (!rows.length) return <div className="text-xs text-stone-500 px-3 py-2">No entries.</div>;
@@ -199,7 +214,7 @@ function OrderRow({ o, open, onToggle }) {
         <td className="py-2 px-2 whitespace-nowrap">
           <span className="inline-flex items-center gap-1">
             {open ? <ChevronDown className="w-3.5 h-3.5 text-stone-400" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-400" />}
-            <span className="font-mono font-medium text-stone-900">{o.order_name}</span>
+            <span className="font-mono font-medium text-stone-900" title={o.order_name}>{nameOf(o)}</span>
             <ChannelTag o={o} />
             <OrderLink o={o} />
           </span>
@@ -213,7 +228,7 @@ function OrderRow({ o, open, onToggle }) {
       {open && (
         <tr className="bg-stone-50">
           <td colSpan={6} className="px-2 pb-3 pt-1">
-            <EntriesTable orderName={o.order_name} />
+            <EntriesTable orderName={o.order_name} waiting={o.status === 'waiting_invoice'} />
             {(o.notes || []).length > 0 && <div className="text-[11px] text-stone-500 px-2 pt-2">{o.notes.join(' · ')}</div>}
           </td>
         </tr>
@@ -228,7 +243,7 @@ function OrderCard({ o, open, onToggle }) {
       <button type="button" onClick={onToggle} aria-expanded={open} className="w-full text-left">
         <div className="flex items-center gap-1.5">
           {open ? <ChevronDown className="w-3.5 h-3.5 text-stone-400" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-400" />}
-          <span className="font-mono font-medium text-stone-900">{o.order_name}</span>
+          <span className="font-mono font-medium text-stone-900" title={o.order_name}>{nameOf(o)}</span>
           <ChannelTag o={o} />
           <OrderLink o={o} />
           <span className="text-[11px] text-stone-500">{fmtDate(o.sale_date)}</span>
@@ -237,7 +252,7 @@ function OrderCard({ o, open, onToggle }) {
         <div className="mt-1 pl-5 flex items-center gap-2"><StateBadge o={o} /><span className="text-[11px] text-stone-500">{o.state ? `ships to ${o.state}` : <span className="text-red-700">no state</span>}</span></div>
         <div className="mt-1 pl-5 text-xs text-stone-600"><DetailText o={o} /></div>
       </button>
-      {open && <div className="mt-2"><EntriesTable orderName={o.order_name} />{(o.notes || []).length > 0 && <div className="text-[11px] text-stone-500 px-2 pt-2">{o.notes.join(' · ')}</div>}</div>}
+      {open && <div className="mt-2"><EntriesTable orderName={o.order_name} waiting={o.status === 'waiting_invoice'} />{(o.notes || []).length > 0 && <div className="text-[11px] text-stone-500 px-2 pt-2">{o.notes.join(' · ')}</div>}</div>}
     </div>
   );
 }
@@ -257,7 +272,7 @@ export default function LedgerSection({ showToast }) {
     const all = [];
     for (let from = 0; ; from += 1000) {
       const { data, error: err } = await supabase.from('ledger_orders')
-        .select('order_name, order_id, channel, status, net, opening, cod_open, gateway_open, sale_date, state, state_code, exception_type, exceptions, balancing, notes, computed_at')
+        .select('order_name, order_id, channel, status, net, opening, cod_open, gateway_open, sale_date, state, state_code, exception_type, exceptions, balancing, notes, computed_at, waiting:facts->waiting')
         .order('sale_date', { ascending: false, nullsFirst: false }).order('order_name', { ascending: false }).range(from, from + 999);
       if (err) { setError('Could not load the ledger'); showToast?.('Could not load the ledger', 'error'); setLoading(false); return; }
       all.push(...(data || []));
@@ -280,12 +295,13 @@ export default function LedgerSection({ showToast }) {
   const scoped = useMemo(() => channel === 'all' ? dated : dated.filter(o => channelOf(o) === channel), [dated, channel]);
 
   const stats = useMemo(() => {
-    const s = { complete: 0, not_a_sale: 0, in_transit: 0, rto: 0, awaiting_return: 0, settlement: 0, payout: 0, attention: 0, transitAmount: 0, rtoAmount: 0, awaitingAmount: 0, settlementAmount: 0, payoutAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0 };
+    const s = { waiting: 0, waitingAmount: 0, waitingOverdue: 0, complete: 0, not_a_sale: 0, in_transit: 0, rto: 0, awaiting_return: 0, settlement: 0, payout: 0, attention: 0, transitAmount: 0, rtoAmount: 0, awaitingAmount: 0, settlementAmount: 0, payoutAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0 };
     for (const o of scoped) {
       if (Number(o.cod_open) > 0) { s.courier++; s.courierAmount += Number(o.cod_open); }
       if (o.exception_type === 'remittance_overdue') s.courierOverdue++;
       if (o.status === 'complete') s.complete++;
       else if (o.status === 'not_a_sale') s.not_a_sale++;
+      else if (o.status === 'waiting_invoice') { s.waiting++; s.waitingAmount += Number(o.waiting?.amount || 0); if (o.exception_type === 'invoice_overdue') s.waitingOverdue++; }
       else if (o.status === 'attention') { s.attention++; s.attentionAmount += Number(o.net); }
       else if (o.exception_type === 'awaiting_return') { s.awaiting_return++; s.awaitingAmount += Number(o.net); }
       else if (o.exception_type === 'awaiting_settlement') { s.settlement++; s.settlementAmount += Number(o.net); }
@@ -299,6 +315,9 @@ export default function LedgerSection({ showToast }) {
   const lastComputed = useMemo(() => orders.reduce((m, o) => (!m || o.computed_at > m ? o.computed_at : m), null), [orders]);
   const attention = useMemo(() => scoped.filter(IN_FILTER.attention), [scoped]);
   const attentionOutside = orders.filter(IN_FILTER.attention).length - dated.filter(IN_FILTER.attention).length;
+  // Orders not invoiced yet, the overdue ones first, then the longest waiting.
+  const waitingList = useMemo(() => scoped.filter(IN_FILTER.waiting_invoice)
+    .sort((a, b) => (b.exception_type === 'invoice_overdue') - (a.exception_type === 'invoice_overdue') || String(a.sale_date).localeCompare(String(b.sale_date))), [scoped]);
 
   const docs = useMemo(() => {
     const by = {};
@@ -374,6 +393,7 @@ export default function LedgerSection({ showToast }) {
           <Collapsible id="ledger-help" title="How this page works" icon={<Info className="w-4 h-4 text-stone-400" />}>
             <ul className="list-disc pl-5 space-y-1 text-xs text-stone-600">
               <li>Every order since the accounting start date, built from Shopify, Unicommerce, Return Prime and Velocity. A finished order nets to zero.</li>
+              <li><b>An order is a sale only once Unicommerce has issued its invoice.</b> Until then it is listed as <i>Waiting for invoice</i> (Shopify and Myntra alike): nothing is booked and nothing can be exported. When the invoice exists the sale is booked on the order date. An order waiting 3 days or more, or dispatched without an invoice, is flagged <i>Invoice overdue</i>; one cancelled first simply drops out.</li>
               <li><b>Myntra</b> orders come from Unicommerce and are named by their invoice number. They are invoiced to the customer, but Myntra collects the payment and pays us later, so they stay <i>Awaiting Myntra payment</i> until its settlement is matched. Use the Channel filter to look at one channel.</li>
               <li><b>Prepaid orders</b> stay <i>Awaiting GoKwik payout</i> until GoKwik's settlement report (uploaded on the Bank &amp; card page) shows the payout. The payout entry books the bank receipt, GoKwik's fee and the GST on the fee.</li>
               <li><b>Open amount</b> is what is still owed on the order (money to collect, or a sale still to be reversed). <b>COD with Velocity</b> is cash the courier collected and has not yet paid into the bank.</li>
@@ -389,6 +409,7 @@ export default function LedgerSection({ showToast }) {
 
           {(() => {
             const cardsShown = [
+              <StatCard key="invoice" label="Waiting for invoice" value={stats.waiting} sub={stats.waiting ? `${inr(stats.waitingAmount)} ordered, not booked${stats.waitingOverdue ? ` · ${stats.waitingOverdue} overdue` : ''}` : 'nothing waiting'} tone={stats.waitingOverdue ? 'text-amber-800' : 'text-stone-600'} active={p.lstatus === 'waiting_invoice'} onClick={() => goTo('waiting_invoice')} />,
               <StatCard key="complete" label="Complete" value={stats.complete} sub="net to zero" tone="text-emerald-800" active={p.lstatus === 'complete'} onClick={() => goTo('complete')} />,
               channel !== 'myntra' && <StatCard key="transit" label="COD in transit" value={stats.in_transit} sub={`${inr(stats.transitAmount)} due on delivery`} tone="text-sky-800" active={p.lstatus === 'in_transit'} onClick={() => goTo('in_transit')} />,
               channel !== 'myntra' && <StatCard key="rto" label="RTO on the way" value={stats.rto} sub={`${inr(stats.rtoAmount)} to reverse when back`} tone="text-sky-800" active={p.lstatus === 'rto_on_the_way'} onClick={() => goTo('rto_on_the_way')} />,
@@ -398,7 +419,7 @@ export default function LedgerSection({ showToast }) {
               channel !== 'myntra' && <StatCard key="courier" label="COD with Velocity" value={stats.courier} sub={stats.courier ? `${inr(stats.courierAmount)} collected, not yet paid in${stats.courierOverdue ? ` · ${stats.courierOverdue} overdue` : ''}` : 'nothing waiting'} tone={stats.courierOverdue ? 'text-amber-800' : 'text-sky-800'} active={p.lstatus === 'with_courier'} onClick={() => goTo('with_courier')} />,
               <StatCard key="attention" label="Needs attention" value={stats.attention} sub={stats.attention ? `${inr(Math.abs(stats.attentionAmount))} net` : 'nothing to do'} tone={stats.attention ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'attention'} onClick={() => goTo('attention')} />,
             ].filter(Boolean);
-            const cols = { 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6', 7: 'xl:grid-cols-7', 8: 'xl:grid-cols-8' }[cardsShown.length];
+            const cols = { 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6', 7: 'xl:grid-cols-7', 8: 'xl:grid-cols-8', 9: 'xl:grid-cols-5', 10: 'xl:grid-cols-5' }[cardsShown.length];
             return <div className={`grid grid-cols-2 lg:grid-cols-3 ${cols} gap-3`}>{cardsShown}</div>;
           })()}
 
@@ -418,6 +439,24 @@ export default function LedgerSection({ showToast }) {
                 {attentionOutside > 0 && (
                   <div className="text-xs text-amber-900">{attentionOutside} more order{attentionOutside === 1 ? ' needs' : 's need'} attention outside these dates. <button type="button" className="underline" onClick={() => setP({ lfrom: '', lto: '', lstatus: 'attention' })}>Show all dates</button></div>
                 )}
+              </div>
+            </Collapsible>
+          )}
+
+          {waitingList.length > 0 && (
+            <Collapsible id="ledger-waiting" title="Waiting for invoice" defaultOpen={stats.waitingOverdue > 0} count={waitingList.length}
+              icon={<Clock className="w-4 h-4 text-stone-400" />} summary={`${inr(stats.waitingAmount)} not booked yet${stats.waitingOverdue ? ` · ${stats.waitingOverdue} overdue` : ''}`}>
+              <div className="space-y-1">
+                {waitingList.slice(0, 12).map(o => {
+                  const ex = exceptionOf(o);
+                  return (
+                    <button key={o.order_name} type="button" onClick={() => findOrder(o.order_name)} className={`block w-full text-left text-xs rounded px-1.5 py-1 ${ex ? 'text-amber-900 hover:bg-amber-100/60' : 'text-stone-700 hover:bg-stone-100'}`}>
+                      <span className="font-mono font-medium">{nameOf(o)}</span>{channelOf(o) === 'myntra' ? ' · Myntra' : ''}{' · '}{fmtDate(o.sale_date)}{o.state ? ` · ${o.state}` : ''}{' · '}{inr(o.waiting?.amount)}{o.waiting?.mode ? ` · ${MODE_LABEL[o.waiting.mode] || o.waiting.mode}` : ''}
+                      {ex && <div className="text-amber-800/80 mt-0.5">{ex.reason}</div>}
+                    </button>
+                  );
+                })}
+                {waitingList.length > 12 && <div className="text-xs text-stone-600 px-1.5 pt-1">and {waitingList.length - 12} more. <button type="button" className="underline" onClick={() => goTo('waiting_invoice')}>Show them all</button></div>}
               </div>
             </Collapsible>
           )}

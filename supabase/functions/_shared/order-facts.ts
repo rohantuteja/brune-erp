@@ -83,9 +83,13 @@ export type RawInputs = {
   remittance?: { utr: string; date: string; amount: number | null } | null;   // the COD money paid by the courier (UTR set)
   gatewayPayouts?: Array<{ date: string; utr: string; gross: number; fee: number; tax: number; net: number; ref?: string }>;   // GoKwik's settlement report rows for this order ([] = none yet; absent = not looked up)
   adjustments?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; approved_by: string }>;   // ledger_adjustments for this order
+  // The instant Unicommerce started (app_settings.uc_orders_from). An order placed from then on with no sale invoice waits for it
+  // (facts.waiting); without this, or for an older order, Shopify's own amounts are used as before.
+  ucFrom?: string;
 };
 
-// skip: not a sale (stored as such); ignore: nothing to store yet (a Myntra order Unicommerce has not invoiced).
+// skip: not a sale (stored as such); ignore: nothing to store (a Myntra order cancelled before it was invoiced).
+// An order Unicommerce has not invoiced yet is neither: it is stored with facts.waiting and no entries.
 export type Built = { facts: Facts; notes: string[]; skip?: string; ignore?: string };
 
 // What an invoice from Unicommerce says, in the ledger's terms (tax-inclusive).
@@ -143,10 +147,34 @@ export function buildFacts(inp: RawInputs): Built {
   }
 
   const state = placeOfSupply(o, ucOrder);
+  const sale = ucOrder ? inp.uc?.saleInvoice : undefined;
+
+  // ── Not invoiced yet: not a sale ───────────────────────────────────────────
+  // An order is a sale once Unicommerce has issued its invoice, and not before: until then its amounts are guesses (GST rate,
+  // tax type), it can still be cancelled or edited, and Tally needs the invoice number. It is stored with no entries so the
+  // Ledger page can list it; the sale is built (on the order date) when the invoice exists. Only orders placed from the
+  // instant Unicommerce started (ucFrom) wait: older ones were never in Unicommerce and keep Shopify's amounts below.
+  if (!sale && inp.ucFrom && Date.parse(o.createdAt) >= Date.parse(inp.ucFrom)) {
+    const gatewayPaid = sum(txs.filter(t => succeeded(t) && !isStoreCredit(t.gateway) && !isCodGateway(t.gateway)).map(t => money(t.amountSet)));
+    const creditPaid = sum(txs.filter(t => succeeded(t) && isStoreCredit(t.gateway)).map(t => money(t.amountSet)));
+    const amount = r2(money(o.subtotalPriceSet) + money(o.totalShippingPriceSet));
+    const paid = r2(gatewayPaid + creditPaid);
+    return {
+      facts: {
+        order: String(o.name).replace(/^#/, ''), ...(state ? { state } : {}), rate: 0.05, goods: 0, codFee: 0, saleDate: istDate(o.createdAt),
+        igst: state && sellerCode ? state.code !== sellerCode : true,
+        waiting: {
+          amount, paid, mode: paid <= 0.005 ? 'cod' : paid >= amount - 0.005 ? 'prepaid' : 'part paid',
+          inUnicommerce: !!inp.uc?.order, ...(shipped ? { shipped: true } : {}),
+          ...(inp.uc?.order?.status === 'CANCELLED' && !o.cancelledAt ? { cancelledInUnicommerce: true } : {}),
+        },
+      },
+      notes: ['waiting for the Unicommerce invoice: nothing is booked until it exists'],
+    };
+  }
 
   // ── The sale ───────────────────────────────────────────────────────────────
   let rate = 0.05, igst: boolean, goods: number, codFee: number, saleDate: string, saleDoc: string | undefined, invoiceDate: string | undefined, qty: number | undefined;
-  const sale = ucOrder ? inp.uc?.saleInvoice : undefined;
   if (sale) {
     const a = invoiceAmounts(sale);
     ({ rate, igst, codFee } = a);
@@ -341,7 +369,20 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
   const sale = inp.uc.saleInvoice;
   const name = String(sale?.displayCode ?? (o.shippingPackages ?? []).find((p: any) => p?.invoiceDisplayCode)?.invoiceDisplayCode ?? '');
   const base: Facts = { order: name, channel: 'myntra', channelRef: code, rate: 0.05, igst: true, goods: 0, codFee: 0, saleDate: istDate(Number(o.displayOrderDateTime ?? o.created)) };
-  if (!name) return { facts: base, notes: ['no Unicommerce invoice yet: not a sale until it is invoiced'], ignore: 'not invoiced yet' };
+  if (!name) {
+    // Not invoiced yet: listed as waiting (named by its Unicommerce order code, it has no invoice number) unless it was cancelled
+    // first, when there is nothing to show.
+    if (o.status === 'CANCELLED') return { facts: base, notes: ['cancelled before it was invoiced: never a sale'], ignore: 'cancelled before it was invoiced' };
+    const ordered = base.saleDate;
+    const state = placeOfSupply(null, o);
+    return {
+      facts: {
+        ...base, order: code, ...(state ? { state } : {}), saleDate: ordered < inp.bookFrom ? inp.bookFrom : ordered,
+        waiting: { amount: r2(sum((o.saleOrderItems ?? []).map((i: any) => Number(i.sellingPrice ?? 0)))), paid: 0, mode: 'marketplace', inUnicommerce: true },
+      },
+      notes: ['waiting for the Unicommerce invoice: nothing is booked until it exists'],
+    };
+  }
   if (o.status === 'CANCELLED') return { facts: base, notes: ['cancelled: never a sale'], skip: 'cancelled' };
   if (!sale) return { facts: base, notes: [`invoice ${name} could not be read from Unicommerce`], ignore: 'invoice unreadable' };
 

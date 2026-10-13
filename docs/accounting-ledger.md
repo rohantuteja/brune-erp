@@ -412,6 +412,44 @@ no disagreement between Shopify and Unicommerce, no invoice with the wrong tax t
 outside UP and carry IGST only, 19 ship inside UP and carry CGST + SGST only. Compared with a snapshot taken before the
 sync, all 428 orders kept the same status, amounts and sale date, and all 3,328 ledger entries were identical.
 
+## An order is a sale only once Unicommerce has invoiced it (migration 032, `accounting-ledger` v20)
+
+On 14 Oct 2026 the owner saw that Shopify orders reached the ledger the moment they were placed, while Myntra orders waited for
+their invoice, and that this is how 37937 (cancelled 20 seconds after it was placed) had looked like a finished sale. One rule
+now covers both channels:
+
+- **No invoice, no sale.** An order has ledger entries only once Unicommerce has issued its sale invoice. Until then it is stored
+  with status `waiting_invoice`: **no entries, nothing booked, nothing exported.** Its amounts would be guesses (GST rate and tax
+  type assumed), it can still be cancelled or edited, and a Tally sales voucher needs the invoice number.
+- **Booked on the order date.** When the invoice exists the order is built as a normal sale dated the order date (Shopify) or
+  Myntra's order day, exactly as before (see "Ledger sale date = order date").
+- **Which orders wait.** A Shopify order placed from `app_settings.uc_orders_from` (the opening-load instant, 29 Sep 2026
+  17:07:59 UTC) with no sale invoice. Older orders were never in Unicommerce and keep Shopify's amounts: 120 orders, among them
+  37697, 37699 and 37700, which were shipped and delivered on 29 Sep with no invoice. A Myntra order in Unicommerce with no
+  invoice waits too; one cancelled before its invoice is dropped.
+- **Cancelled first, never waiting.** The cancelled-before-dispatch rule below runs before this one: such an order is
+  `not_a_sale` (or the `cancelled_after_payment` exception), never `waiting_invoice`.
+- **Names.** A waiting Shopify order keeps its order number. A waiting Myntra order has no invoice number yet, so it is named by
+  its Unicommerce order code (`channel_ref`); when it is invoiced the row is saved under the invoice number and the function
+  deletes the waiting row (only rows of that channel and status with that name).
+- **Re-checked every run.** `startRun` queues every `waiting_invoice` order like it queues `open` and `attention` ones, so an
+  invoice that appears in Unicommerce (which does not touch Shopify's `updated_at`) is noticed on the next run.
+- **Flags.** The status stays `waiting_invoice`; the exception `invoice_overdue` marks an order that has waited
+  `app_settings.invoice_wait_alert_days` days (3) or more, that has a tracking number but no invoice, or whose Unicommerce copy
+  was cancelled while Shopify's was not. Paid orders say how much the customer has already paid.
+- **Facts.** `facts.waiting` = `{ amount, paid, mode (prepaid | part paid | cod | marketplace), inUnicommerce, shipped?,
+  cancelledInUnicommerce? }`; `amount` is goods plus shipping or COD charge as the channel says, an estimate.
+- **Screen.** Analytics → Ledger has a "Waiting for invoice" card (count, amount, overdue), a filter, and a list above the table
+  with the overdue orders first. An opened waiting order says nothing is booked yet.
+- **Still to decide with the accountant:** an order placed on 31 Oct and invoiced on 2 Nov is October's sale but is missing from an
+  October file made on 1 Nov (export after everything is invoiced, or carry the late ones into the next file with their October
+  date). GST returns go by invoice date, so also whether the booking date should become the invoice date from November.
+
+Checked live on 14 Oct 2026 with a snapshot before and a full sync after: exactly 11 orders changed (37937 → not a sale; 37930-37936
+and 37938-37940 → waiting, 54 entries removed); 4 Myntra orders with no invoice yet appeared as waiting (432 rows); no other order,
+amount or entry changed; two further full syncs were stable. A fake waiting row planted under an already-invoiced Myntra order's
+code was deleted by the sync and the real row kept.
+
 ## Cancelled orders, and refunds checked against Shopify (`accounting-ledger` v19)
 
 On 14 Oct 2026 order 37937 showed as a finished sale although Shopify had cancelled it 20 seconds after it was placed

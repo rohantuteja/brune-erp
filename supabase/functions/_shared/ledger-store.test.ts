@@ -43,6 +43,23 @@ test('an order that was never a sale is saved with no lines, no facts and the re
   assert.deepEqual(row.notes, ['cancelled before dispatch']);
 });
 
+test('an order waiting for its invoice is saved with its own status, no lines, and what it is worth', () => {
+  const facts: Facts = { ...base, order: '37938', goods: 0, codFee: 0, saleDate: '2026-10-13', state: { code: '06', name: 'Haryana', source: 'shopify' },
+    waiting: { amount: 1699, paid: 1699, mode: 'prepaid', inUnicommerce: true } };
+  const ledger = buildOrderLedger(facts, { cutoff: CUTOFF, today: '2026-10-14' });
+  const row = ledgerRow({ order: '37938', orderId: 4, facts, notes: ['waiting for the Unicommerce invoice: nothing is booked until it exists'], ledger }, CUTOFF);
+  assert.equal(row.status, 'waiting_invoice');
+  assert.deepEqual(row.entries, []);
+  assert.equal(row.net, 0);
+  assert.equal(row.sale_date, '2026-10-13');
+  assert.equal(row.state, 'Haryana');
+  assert.equal(row.exception_type, null);
+  assert.equal((row.facts as any).waiting.amount, 1699);       // the Ledger page lists it with this amount
+  const late = ledgerRow({ order: '37938', orderId: 4, facts, notes: [], ledger: buildOrderLedger(facts, { cutoff: CUTOFF, today: '2026-10-17' }) }, CUTOFF);
+  assert.equal(late.status, 'waiting_invoice');                // overdue is a flag on it, not another status
+  assert.equal(late.exception_type, 'invoice_overdue');
+});
+
 test('balancing documents are saved with the order', () => {
   const facts: Facts = { ...base, order: '37586', goods: 1499, codFee: 0, saleDate: '2026-09-24', payments: [{ date: '2026-09-24', amount: 1499, ref: 'p' }],
     returns: [{ kind: 'rto', date: '2026-10-11', goodsReturned: 1499, storeCredit: [] }] };

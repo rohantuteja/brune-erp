@@ -493,6 +493,98 @@ test('no Unicommerce invoice (before 29 Sep): booked on the order date as before
   assert.equal(b.facts.saleDate, '2026-09-20'); assert.equal(b.facts.invoiceDate, undefined); assert.equal(b.facts.saleDoc, undefined);
 });
 
+// ── An order is a sale only once Unicommerce has invoiced it ─────────────────────────────────
+// Orders placed from the instant Unicommerce started (ucFrom) with no sale invoice WAIT: stored with no entries, listed on the
+// Ledger page, booked (on the order date) when the invoice exists. Older orders keep Shopify's amounts.
+const UC_FROM = '2026-09-29T17:07:59Z';
+const fresh = (name: string, createdAt: string, o: any = {}, txs?: any[]): RawInputs => ({
+  sellerState: 'UP', today: '2026-10-14', ucFrom: UC_FROM, rpRequests: [],
+  uc: { order: { status: 'CREATED', returns: [] }, returnInvoices: {} },
+  shopify: { name, createdAt, tags: ['GoKwik'], paymentGatewayNames: ['cash_on_delivery'], subtotalPriceSet: m(1699), totalShippingPriceSet: m(0),
+    shippingAddress: { province: 'Haryana', provinceCode: 'HR' }, refunds: [], customer: null, fulfillments: [],
+    transactions: txs ?? [{ id: 'a', kind: 'SALE', status: 'PENDING', gateway: 'cash_on_delivery', amountSet: m(1699), processedAt: createdAt }], ...o },
+});
+const waitingLedger = (b: ReturnType<typeof buildFacts>, today = '2026-10-14') => buildOrderLedger(b.facts, { cutoff: CUTOFF, today, requireState: true });
+
+test('a new COD order, placed today, no invoice: waiting, nothing booked, nothing to flag yet', () => {
+  const b = buildFacts(fresh('37950', '2026-10-14T05:00:00Z'));
+  assert.equal(b.skip, undefined);
+  assert.deepEqual(b.facts.waiting, { amount: 1699, paid: 0, mode: 'cod', inUnicommerce: true });
+  assert.equal(b.facts.state?.name, 'Haryana'); assert.equal(b.facts.saleDate, '2026-10-14');
+  const l = waitingLedger(b);
+  assert.equal(l.status, 'waiting_invoice'); assert.equal(l.entries.length, 0); assert.equal(l.exportable.length, 0);
+  assert.equal(l.balanced, false); assert.deepEqual(l.exceptions, []);
+});
+
+test('order 37938: paid in full with store credit, not invoiced yet → waiting, not a "complete" sale', () => {
+  const b = buildFacts(fresh('37938', '2026-10-13T19:33:20Z', { paymentGatewayNames: ['shopify_store_credit'], tags: ['StoreCredits'] },
+    [{ id: 'c', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Shopify Store Credits', amountSet: m(1699), processedAt: '2026-10-13T19:33:21Z' }]));
+  assert.deepEqual(b.facts.waiting, { amount: 1699, paid: 1699, mode: 'prepaid', inUnicommerce: true });
+  const l = waitingLedger(b);
+  assert.equal(l.status, 'waiting_invoice'); assert.equal(l.entries.length, 0);
+});
+
+test('prepaid by UPI and part paid: the payment is NOT booked until the invoice exists', () => {
+  const upi = buildFacts(fresh('37951', '2026-10-14T05:00:00Z', {}, [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1699), processedAt: '2026-10-14T05:00:05Z' }]));
+  assert.equal(upi.facts.waiting?.mode, 'prepaid'); assert.equal(waitingLedger(upi).entries.length, 0);
+  const part = buildFacts(fresh('37952', '2026-10-14T05:00:00Z', {}, [{ id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(99), processedAt: '2026-10-14T05:00:05Z' }]));
+  assert.equal(part.facts.waiting?.mode, 'part paid'); assert.equal(part.facts.waiting?.paid, 99);
+});
+
+test('waiting for 3 days (the default) is flagged; 2 days is not; the limit can be changed', () => {
+  const b = buildFacts(fresh('37953', '2026-10-11T05:00:00Z'));
+  assert.deepEqual(waitingLedger(b, '2026-10-13').exceptions, []);
+  const flagged = waitingLedger(b, '2026-10-14');
+  assert.equal(flagged.exceptions[0].type, 'invoice_overdue'); assert.match(flagged.exceptions[0].reason, /ordered 3 days ago and Unicommerce has not invoiced it/);
+  assert.equal(flagged.status, 'waiting_invoice');
+  assert.deepEqual(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-14', invoiceAlertDays: 5 }).exceptions, []);
+});
+
+test('dispatched with a tracking number but no invoice → flagged at once; Unicommerce not having the order is said too', () => {
+  const shipped = buildFacts(fresh('37954', '2026-10-14T05:00:00Z', { fulfillments: [{ trackingInfo: [{ number: 'AWB9' }] }] }));
+  assert.equal(shipped.facts.waiting?.shipped, true);
+  const l = waitingLedger(shipped);
+  assert.equal(l.exceptions[0].type, 'invoice_overdue'); assert.match(l.exceptions[0].reason, /dispatched .* no sale invoice/);
+  const notImported = buildFacts({ ...fresh('37955', '2026-10-10T05:00:00Z'), uc: null });
+  assert.equal(notImported.facts.waiting?.inUnicommerce, false);
+  assert.match(waitingLedger(notImported).exceptions[0].reason, /has not even imported the order/);
+});
+
+test('Unicommerce cancelled its copy but Shopify did not → flagged', () => {
+  const b = buildFacts({ ...fresh('37956', '2026-10-14T05:00:00Z'), uc: { order: { status: 'CANCELLED', returns: [] }, returnInvoices: {} } });
+  assert.equal(b.facts.waiting?.cancelledInUnicommerce, true);
+  assert.match(waitingLedger(b).exceptions[0].reason, /Unicommerce cancelled its copy/);
+});
+
+test('once Unicommerce has invoiced it, the order is a normal sale on the order date (no longer waiting)', () => {
+  const raw = fresh('37957', '2026-10-13T19:00:00Z');
+  raw.uc = { order: { status: 'COMPLETE', returns: [] }, saleInvoice: ucInvoice('INS0900', Date.parse('2026-10-14T06:00:00Z'), 1699, 80.9, 0), returnInvoices: {} };
+  const b = buildFacts(raw);
+  assert.equal(b.facts.waiting, undefined); assert.equal(b.facts.saleDoc, 'INS0900'); assert.equal(b.facts.saleDate, '2026-10-14');
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-14' });
+  assert.ok(l.entries.some(e => e.voucher === 'sale' && e.doc === 'INS0900'));
+});
+
+test('an order placed BEFORE Unicommerce started keeps Shopify\'s amounts and is booked as a sale (37697 and the other 29 Sep orders)', () => {
+  const b = buildFacts({ ...fresh('37697', '2026-09-29T12:15:17Z'), uc: null });
+  assert.equal(b.facts.waiting, undefined); assert.equal(b.facts.goods, 1699);
+  assert.ok(buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-14' }).entries.some(e => e.voucher === 'sale'));
+  const noSetting = buildFacts({ ...fresh('37958', '2026-10-14T05:00:00Z'), ucFrom: undefined, uc: null });   // no start instant known → the old behaviour
+  assert.equal(noSetting.facts.waiting, undefined);
+});
+
+test('an order cancelled before dispatch is still "not a sale" (never waiting), paid or not', () => {
+  const cod = buildFacts(fresh('37959', '2026-10-14T05:00:00Z', { cancelledAt: '2026-10-14T05:01:00Z' }));
+  assert.equal(cod.skip, 'cancelled before dispatch'); assert.equal(cod.facts.waiting, undefined);
+  const credit = buildFacts(fresh('37960', '2026-10-14T05:00:00Z', { cancelledAt: '2026-10-14T05:00:20Z' }, [
+    { id: 'c', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Shopify Store Credits', amountSet: m(1699), processedAt: '2026-10-14T05:00:05Z' },
+    { id: 'r', kind: 'REFUND', status: 'SUCCESS', gateway: 'Shopify Store Credits', amountSet: m(1699), processedAt: '2026-10-14T05:00:21Z' }]));
+  assert.match(credit.skip!, /store credit spent and credited back/);
+  const upi = buildFacts(fresh('37961', '2026-10-14T05:00:00Z', { cancelledAt: '2026-10-14T05:00:20Z' }, [
+    { id: 'p', kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik UPI', amountSet: m(1699), processedAt: '2026-10-14T05:00:05Z' }]));
+  assert.equal(buildOrderLedger(upi.facts, { cutoff: CUTOFF, today: '2026-10-14' }).exceptions[0].type, 'cancelled_after_payment');
+});
+
 // ── Myntra: the order lives in Unicommerce only; Myntra owes the money ────────────────────────
 const ist = (t: string) => Date.parse(`${t}+05:30`);
 const myntraOrder = (over: Record<string, any> = {}, price = 1326, code = 'bb5a16bf-aaaa-4bbb-8ccc-000000000001') => ({
@@ -539,11 +631,31 @@ test('Myntra: ordered late on 31 Oct and invoiced in November is October\'s sale
   assert.ok(b.notes.some(n => /order date 2026-10-31.*in a later month/.test(n)));
 });
 
-test('Myntra: not invoiced yet is not stored; a cancelled invoiced order is not a sale', () => {
-  const none = buildMyntraFacts(myntra(myntraOrder({ status: 'PROCESSING', shippingPackages: [{ code: 'P', status: 'CREATED' }] }), undefined));
-  assert.equal(none.ignore, 'not invoiced yet');
+test('Myntra: a cancelled invoiced order is not a sale', () => {
   const cancelled = buildMyntraFacts(myntra(myntraOrder({ status: 'CANCELLED' }), myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326)));
   assert.equal(cancelled.skip, 'cancelled');
+});
+
+test('Myntra: an order not invoiced yet WAITS under its Unicommerce order code, with no entries; cancelled before the invoice it is dropped', () => {
+  const pending = myntraOrder({ status: 'PROCESSING', shippingPackages: [{ code: 'P', status: 'CREATED' }] });
+  const b = buildMyntraFacts(myntra(pending, undefined));
+  assert.equal(b.ignore, undefined); assert.equal(b.skip, undefined);
+  assert.equal(b.facts.order, 'bb5a16bf-aaaa-4bbb-8ccc-000000000001');         // no invoice number yet
+  assert.equal(b.facts.channel, 'myntra'); assert.equal(b.facts.channelRef, 'bb5a16bf-aaaa-4bbb-8ccc-000000000001');
+  assert.equal(b.facts.saleDate, '2026-10-06');
+  assert.deepEqual(b.facts.waiting, { amount: 1326, paid: 0, mode: 'marketplace', inUnicommerce: true });
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-07', requireState: true });
+  assert.equal(l.status, 'waiting_invoice'); assert.equal(l.entries.length, 0); assert.equal(l.exportable.length, 0);
+  assert.deepEqual(l.exceptions, []);
+  const late = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-10-13', requireState: true });
+  assert.equal(late.exceptions[0].type, 'invoice_overdue'); assert.match(late.exceptions[0].reason, /ordered 7 days ago/);
+  const gone = buildMyntraFacts(myntra(myntraOrder({ status: 'CANCELLED', shippingPackages: [] }), undefined));
+  assert.equal(gone.ignore, 'cancelled before it was invoiced'); assert.equal(gone.facts.waiting, undefined);
+});
+
+test('Myntra: once invoiced it is a normal sale under the invoice number, and no longer waiting', () => {
+  const b = buildMyntraFacts(myntra(myntraOrder(), myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326)));
+  assert.equal(b.facts.waiting, undefined); assert.equal(b.facts.order, 'I0927RE000000030');
 });
 
 test('Myntra: a customer return still on its way is "waiting for the parcel"; the sale stays open', () => {
