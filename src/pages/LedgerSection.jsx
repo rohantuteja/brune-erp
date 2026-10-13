@@ -7,11 +7,20 @@ import { RefreshCw, AlertCircle, ChevronDown, ChevronRight, Search, X, ExternalL
 // Analytics → Ledger. Shows the stored order ledger (ledger_orders / ledger_entries,
 // written by the accounting-ledger function): which orders net to zero, which are
 // still travelling, which need a person, and the documents the ERP has to issue.
-// Design and rules: docs/accounting-ledger.md.
+// Shopify and Myntra orders share the list (Myntra orders come from Unicommerce, are named by their invoice number and are
+// owed by Myntra); the Channel filter separates them. Design and rules: docs/accounting-ledger.md.
 
 const SHOP_ADMIN = 'https://admin.shopify.com/store/supply-rethought/orders';
 
-const URL_DEFAULTS = { lstatus: 'all', lq: '', lfrom: '', lto: '', lsort: '', ldir: '', lpage: '1', lsize: '25' };
+const URL_DEFAULTS = { lstatus: 'all', lchan: 'all', lq: '', lfrom: '', lto: '', lsort: '', ldir: '', lpage: '1', lsize: '25' };
+
+const CHANNELS = [
+  { id: 'all',     label: 'All channels' },
+  { id: 'shopify', label: 'Shopify' },
+  { id: 'myntra',  label: 'Myntra' },
+];
+const channelOf = (o) => o.channel || 'shopify';
+const SHOPIFY_ONLY = new Set(['in_transit', 'rto_on_the_way', 'with_courier']);       // COD and courier states a Myntra order never has
 
 const STATUS_FILTERS = [
   { id: 'all',             label: 'All' },
@@ -19,6 +28,7 @@ const STATUS_FILTERS = [
   { id: 'in_transit',      label: 'COD in transit' },
   { id: 'rto_on_the_way',  label: 'RTO on the way' },
   { id: 'awaiting_return', label: 'Waiting for parcel' },
+  { id: 'awaiting_settlement', label: 'Awaiting Myntra payment' },
   { id: 'with_courier',    label: 'COD with Velocity' },
   { id: 'needs_docs',      label: 'ERP issues a document' },
   { id: 'complete',        label: 'Complete' },
@@ -29,6 +39,7 @@ const EXCEPTION_LABEL = {
   in_transit: 'COD in transit',
   rto_on_the_way: 'RTO on the way',
   awaiting_return: 'Waiting for returned parcel',
+  awaiting_settlement: 'Awaiting Myntra payment',
   refund_due: 'Refund due',
   remittance_overdue: 'Velocity payment overdue',
   remittance_differs: 'Velocity paid a different amount',
@@ -82,6 +93,7 @@ const IN_FILTER = {
   in_transit: o => o.exception_type === 'in_transit',
   rto_on_the_way: o => o.exception_type === 'rto_on_the_way',
   awaiting_return: o => o.exception_type === 'awaiting_return',
+  awaiting_settlement: o => o.exception_type === 'awaiting_settlement',
 };
 const SORT_KEY = {
   order: o => (/^\d+$/.test(o.order_name) ? Number(o.order_name) : o.order_name),
@@ -157,7 +169,12 @@ function DetailText({ o }) {
   );
 }
 
+function ChannelTag({ o }) {
+  return channelOf(o) === 'myntra' ? <span className="text-[10px] px-1 py-px rounded border border-stone-300 bg-stone-100 text-stone-700">Myntra</span> : null;
+}
+
 function OrderLink({ o }) {
+  if (channelOf(o) !== 'shopify' || o.order_id == null) return null;      // a Myntra order has no Shopify page
   return (
     <a href={`${SHOP_ADMIN}/${o.order_id}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-stone-400 hover:text-stone-700" title="Open in Shopify" aria-label={`Open ${o.order_name} in Shopify`}>
       <ExternalLink className="w-3 h-3" />
@@ -173,6 +190,7 @@ function OrderRow({ o, open, onToggle }) {
           <span className="inline-flex items-center gap-1">
             {open ? <ChevronDown className="w-3.5 h-3.5 text-stone-400" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-400" />}
             <span className="font-mono font-medium text-stone-900">{o.order_name}</span>
+            <ChannelTag o={o} />
             <OrderLink o={o} />
           </span>
         </td>
@@ -200,6 +218,7 @@ function OrderCard({ o, open, onToggle }) {
         <div className="flex items-center gap-1.5">
           {open ? <ChevronDown className="w-3.5 h-3.5 text-stone-400" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-400" />}
           <span className="font-mono font-medium text-stone-900">{o.order_name}</span>
+          <ChannelTag o={o} />
           <OrderLink o={o} />
           <span className="text-[11px] text-stone-500">{fmtDate(o.sale_date)}</span>
           <span className={`ml-auto text-sm tabular-nums ${Number(o.net) < 0 ? 'text-red-700' : 'text-stone-900'}`}>{Number(o.net) ? inr(o.net, 2) : ''}</span>
@@ -226,8 +245,8 @@ export default function LedgerSection({ showToast }) {
     const all = [];
     for (let from = 0; ; from += 1000) {
       const { data, error: err } = await supabase.from('ledger_orders')
-        .select('order_name, order_id, status, net, opening, cod_open, sale_date, exception_type, exceptions, balancing, notes, computed_at')
-        .order('order_name', { ascending: false }).range(from, from + 999);
+        .select('order_name, order_id, channel, status, net, opening, cod_open, sale_date, exception_type, exceptions, balancing, notes, computed_at')
+        .order('sale_date', { ascending: false, nullsFirst: false }).order('order_name', { ascending: false }).range(from, from + 999);
       if (err) { setError('Could not load the ledger'); showToast?.('Could not load the ledger', 'error'); setLoading(false); return; }
       all.push(...(data || []));
       if (!data || data.length < 1000) break;
@@ -240,10 +259,14 @@ export default function LedgerSection({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   // The dates filter says WHICH orders the page is about: the cards, counts and lists all follow it.
-  const scoped = useMemo(() => orders.filter(o => o.status === 'not_a_sale' && !p.lfrom && !p.lto ? true : inRange(o.sale_date, p.lfrom, p.lto)), [orders, p.lfrom, p.lto]);
+  const dated = useMemo(() => orders.filter(o => o.status === 'not_a_sale' && !p.lfrom && !p.lto ? true : inRange(o.sale_date, p.lfrom, p.lto)), [orders, p.lfrom, p.lto]);
+  const hasMyntra = useMemo(() => orders.some(o => channelOf(o) === 'myntra'), [orders]);
+  const channelCounts = useMemo(() => ({ all: dated.length, shopify: dated.filter(o => channelOf(o) === 'shopify').length, myntra: dated.filter(o => channelOf(o) === 'myntra').length }), [dated]);
+  const channel = hasMyntra && CHANNELS.some(c => c.id === p.lchan) ? p.lchan : 'all';
+  const scoped = useMemo(() => channel === 'all' ? dated : dated.filter(o => channelOf(o) === channel), [dated, channel]);
 
   const stats = useMemo(() => {
-    const s = { complete: 0, not_a_sale: 0, in_transit: 0, rto: 0, awaiting_return: 0, attention: 0, transitAmount: 0, rtoAmount: 0, awaitingAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0 };
+    const s = { complete: 0, not_a_sale: 0, in_transit: 0, rto: 0, awaiting_return: 0, settlement: 0, attention: 0, transitAmount: 0, rtoAmount: 0, awaitingAmount: 0, settlementAmount: 0, attentionAmount: 0, courier: 0, courierAmount: 0, courierOverdue: 0 };
     for (const o of scoped) {
       if (Number(o.cod_open) > 0) { s.courier++; s.courierAmount += Number(o.cod_open); }
       if (o.exception_type === 'remittance_overdue') s.courierOverdue++;
@@ -251,6 +274,7 @@ export default function LedgerSection({ showToast }) {
       else if (o.status === 'not_a_sale') s.not_a_sale++;
       else if (o.status === 'attention') { s.attention++; s.attentionAmount += Number(o.net); }
       else if (o.exception_type === 'awaiting_return') { s.awaiting_return++; s.awaitingAmount += Number(o.net); }
+      else if (o.exception_type === 'awaiting_settlement') { s.settlement++; s.settlementAmount += Number(o.net); }
       else if (o.exception_type === 'rto_on_the_way') { s.rto++; s.rtoAmount += Number(o.net); }
       else if (o.exception_type === 'in_transit') { s.in_transit++; s.transitAmount += Number(o.net); }
     }
@@ -259,7 +283,7 @@ export default function LedgerSection({ showToast }) {
 
   const lastComputed = useMemo(() => orders.reduce((m, o) => (!m || o.computed_at > m ? o.computed_at : m), null), [orders]);
   const attention = useMemo(() => scoped.filter(IN_FILTER.attention), [scoped]);
-  const attentionOutside = orders.filter(IN_FILTER.attention).length - attention.length;
+  const attentionOutside = orders.filter(IN_FILTER.attention).length - dated.filter(IN_FILTER.attention).length;
 
   const docs = useMemo(() => {
     const by = {};
@@ -272,7 +296,7 @@ export default function LedgerSection({ showToast }) {
 
   const q = p.lq.trim().replace(/^#/, '');
   const shown = useMemo(() => {
-    const list = scoped.filter(IN_FILTER[p.lstatus] ?? IN_FILTER.all).filter(o => !q || o.order_name.includes(q));
+    const list = scoped.filter(IN_FILTER[p.lstatus] ?? IN_FILTER.all).filter(o => !q || o.order_name.toLowerCase().includes(q.toLowerCase()));
     return p.lsort && SORT_KEY[p.lsort] ? sortRows(list, SORT_KEY[p.lsort], p.ldir === 'asc' ? 'asc' : 'desc') : list;     // the load order is newest first
   }, [scoped, p.lstatus, q, p.lsort, p.ldir]);
 
@@ -287,15 +311,16 @@ export default function LedgerSection({ showToast }) {
   const findOrder = (name) => { setP({ lq: name, lstatus: 'all' }); setOpenOrder(name); };
 
   const csv = () => downloadCsv(`ledger-${p.lstatus}-${new Date().toISOString().slice(0, 10)}.csv`,
-    ['Order', 'Sold', 'State', 'Detail', 'Open amount', 'COD with Velocity', 'Documents the ERP issues'],
-    shown.map(o => [o.order_name, o.sale_date, stateLabel(o), detailOf(o), o.net, o.cod_open, docsOf(o).map(d => `${DOC_LABEL[d.type] || d.type} ${d.amount}`).join('; ')]));
+    ['Order', 'Channel', 'Sold', 'State', 'Detail', 'Open amount', 'COD with Velocity', 'Documents the ERP issues'],
+    shown.map(o => [o.order_name, channelOf(o), o.sale_date, stateLabel(o), detailOf(o), o.net, o.cod_open, docsOf(o).map(d => `${DOC_LABEL[d.type] || d.type} ${d.amount}`).join('; ')]));
 
   const chips = [
     p.lfrom || p.lto ? { key: 'date', label: `Sold ${p.lfrom ? fmtDate(p.lfrom) : 'start'} to ${p.lto ? fmtDate(p.lto) : 'today'}`, onRemove: () => setP({ lfrom: '', lto: '' }) } : null,
+    channel !== 'all' ? { key: 'chan', label: CHANNELS.find(c => c.id === channel)?.label || channel, onRemove: () => setP({ lchan: 'all' }) } : null,
     p.lstatus !== 'all' ? { key: 'status', label: STATUS_FILTERS.find(f => f.id === p.lstatus)?.label || p.lstatus, onRemove: () => setP({ lstatus: 'all' }) } : null,
     p.lq ? { key: 'q', label: `Order ${p.lq}`, onRemove: () => setP({ lq: '' }) } : null,
   ].filter(Boolean);
-  const clearAll = () => setP({ lfrom: '', lto: '', lstatus: 'all', lq: '' });
+  const clearAll = () => setP({ lfrom: '', lto: '', lstatus: 'all', lchan: 'all', lq: '' });
 
   const running = run?.status === 'running';
   const field = 'h-8 border border-stone-300 rounded-md px-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-transparent';
@@ -327,6 +352,7 @@ export default function LedgerSection({ showToast }) {
           <Collapsible id="ledger-help" title="How this page works" icon={<Info className="w-4 h-4 text-stone-400" />}>
             <ul className="list-disc pl-5 space-y-1 text-xs text-stone-600">
               <li>Every order since the accounting start date, built from Shopify, Unicommerce, Return Prime and Velocity. A finished order nets to zero.</li>
+              <li><b>Myntra</b> orders come from Unicommerce and are named by their invoice number. Myntra, not the customer, owes the money, so they stay <i>Awaiting Myntra payment</i> until its settlement is matched. Use the Channel filter to look at one channel.</li>
               <li><b>Open amount</b> is what is still owed on the order (money to collect, or a sale still to be reversed). <b>COD with Velocity</b> is cash the courier collected and has not yet paid into the bank.</li>
               <li>Where Unicommerce's documents fall short, the ERP issues the credit note or invoice itself (<i>ERP issues a document</i>), so Tally always receives balanced orders.</li>
               <li>The date filter is the date of sale. Open an order to see its double-entry lines; grey lines are dated before the accounting start date and are never exported.</li>
@@ -338,14 +364,19 @@ export default function LedgerSection({ showToast }) {
             <DateRange label="Sold" from={p.lfrom} to={p.lto} onChange={(f, t) => setP({ lfrom: f, lto: t })} />
           </Collapsible>
 
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            <StatCard label="Complete" value={stats.complete} sub="net to zero" tone="text-emerald-800" active={p.lstatus === 'complete'} onClick={() => goTo('complete')} />
-            <StatCard label="COD in transit" value={stats.in_transit} sub={`${inr(stats.transitAmount)} due on delivery`} tone="text-sky-800" active={p.lstatus === 'in_transit'} onClick={() => goTo('in_transit')} />
-            <StatCard label="RTO on the way" value={stats.rto} sub={`${inr(stats.rtoAmount)} to reverse when back`} tone="text-sky-800" active={p.lstatus === 'rto_on_the_way'} onClick={() => goTo('rto_on_the_way')} />
-            <StatCard label="Waiting for parcel" value={stats.awaiting_return} sub={`${inr(stats.awaitingAmount)} refunded, goods not back`} tone="text-sky-800" active={p.lstatus === 'awaiting_return'} onClick={() => goTo('awaiting_return')} />
-            <StatCard label="COD with Velocity" value={stats.courier} sub={stats.courier ? `${inr(stats.courierAmount)} collected, not yet paid in${stats.courierOverdue ? ` · ${stats.courierOverdue} overdue` : ''}` : 'nothing waiting'} tone={stats.courierOverdue ? 'text-amber-800' : 'text-sky-800'} active={p.lstatus === 'with_courier'} onClick={() => goTo('with_courier')} />
-            <StatCard label="Needs attention" value={stats.attention} sub={stats.attention ? `${inr(Math.abs(stats.attentionAmount))} net` : 'nothing to do'} tone={stats.attention ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'attention'} onClick={() => goTo('attention')} />
-          </div>
+          {(() => {
+            const cardsShown = [
+              <StatCard key="complete" label="Complete" value={stats.complete} sub="net to zero" tone="text-emerald-800" active={p.lstatus === 'complete'} onClick={() => goTo('complete')} />,
+              channel !== 'myntra' && <StatCard key="transit" label="COD in transit" value={stats.in_transit} sub={`${inr(stats.transitAmount)} due on delivery`} tone="text-sky-800" active={p.lstatus === 'in_transit'} onClick={() => goTo('in_transit')} />,
+              channel !== 'myntra' && <StatCard key="rto" label="RTO on the way" value={stats.rto} sub={`${inr(stats.rtoAmount)} to reverse when back`} tone="text-sky-800" active={p.lstatus === 'rto_on_the_way'} onClick={() => goTo('rto_on_the_way')} />,
+              <StatCard key="waiting" label="Waiting for parcel" value={stats.awaiting_return} sub={channel === 'myntra' ? `${inr(stats.awaitingAmount)} sold, parcel not back` : `${inr(stats.awaitingAmount)} refunded, goods not back`} tone="text-sky-800" active={p.lstatus === 'awaiting_return'} onClick={() => goTo('awaiting_return')} />,
+              hasMyntra && channel !== 'shopify' && <StatCard key="settle" label="Awaiting Myntra payment" value={stats.settlement} sub={`${inr(stats.settlementAmount)} owed by Myntra`} tone="text-sky-800" active={p.lstatus === 'awaiting_settlement'} onClick={() => goTo('awaiting_settlement')} />,
+              channel !== 'myntra' && <StatCard key="courier" label="COD with Velocity" value={stats.courier} sub={stats.courier ? `${inr(stats.courierAmount)} collected, not yet paid in${stats.courierOverdue ? ` · ${stats.courierOverdue} overdue` : ''}` : 'nothing waiting'} tone={stats.courierOverdue ? 'text-amber-800' : 'text-sky-800'} active={p.lstatus === 'with_courier'} onClick={() => goTo('with_courier')} />,
+              <StatCard key="attention" label="Needs attention" value={stats.attention} sub={stats.attention ? `${inr(Math.abs(stats.attentionAmount))} net` : 'nothing to do'} tone={stats.attention ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'attention'} onClick={() => goTo('attention')} />,
+            ].filter(Boolean);
+            const cols = { 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6', 7: 'xl:grid-cols-7' }[cardsShown.length];
+            return <div className={`grid grid-cols-2 lg:grid-cols-3 ${cols} gap-3`}>{cardsShown}</div>;
+          })()}
 
           {(attention.length > 0 || attentionOutside > 0) && (
             <Collapsible id="ledger-attention" title="Needs attention" tone="amber" defaultOpen count={attention.length}
@@ -388,11 +419,12 @@ export default function LedgerSection({ showToast }) {
 
           <div className="bg-white rounded-lg border border-stone-200">
             <div className="p-3 sm:p-4 space-y-3 border-b border-stone-100">
-              <Pills value={p.lstatus} onChange={goTo} options={STATUS_FILTERS.map(f => ({ ...f, count: counts[f.id] }))} />
+              {hasMyntra && <Pills value={channel} onChange={id => { setP({ lchan: id, lstatus: 'all' }); setOpenOrder(null); }} options={CHANNELS.map(c => ({ ...c, count: channelCounts[c.id] }))} />}
+              <Pills value={p.lstatus} onChange={goTo} options={STATUS_FILTERS.filter(f => (f.id !== 'awaiting_settlement' || (hasMyntra && channel !== 'shopify')) && !(channel === 'myntra' && SHOPIFY_ONLY.has(f.id))).map(f => ({ ...f, count: counts[f.id] }))} />
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2 top-1/2 -translate-y-1/2" />
-                  <input value={p.lq} onChange={e => setP({ lq: e.target.value })} placeholder="Order number" aria-label="Search orders" className={`${field} pl-7 pr-6 w-40`} />
+                  <input value={p.lq} onChange={e => setP({ lq: e.target.value })} placeholder="Order or invoice number" aria-label="Search orders" className={`${field} pl-7 pr-6 w-48`} />
                   {p.lq && <button onClick={() => setP({ lq: '' })} aria-label="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"><X className="w-3.5 h-3.5" /></button>}
                 </div>
                 <span className="flex-1" />
