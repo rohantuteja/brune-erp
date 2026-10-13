@@ -450,6 +450,20 @@ and 37938-37940 → waiting, 54 entries removed); 4 Myntra orders with no invoic
 amount or entry changed; two further full syncs were stable. A fake waiting row planted under an already-invoiced Myntra order's
 code was deleted by the sync and the real row kept.
 
+## Refresh now and Reload (Analytics → Ledger)
+
+The stored ledger is recalculated by the server about every hour (an incremental run; a full one each night). The page used to have one
+button, "Refresh", which only re-read the stored rows: it looked as if nothing happened because nothing had been recalculated.
+
+- **Reload** (everyone) reads the stored ledger again. It shows a change only after a recalculation has happened.
+- **Refresh now** (admins only; the function checks the admin's sign-in) recalculates now: it calls `accounting-ledger`
+  `{ action: "sync", kind: "incremental", budget_s: 40 }` again and again until it says `finished`, shows "Refreshing… N of M orders",
+  then reloads the page and says "Ledger refreshed: M orders checked" (and how many orders are held back, if any). It is the same run
+  the hourly schedule does, so it picks up a new Unicommerce invoice, a delivery or a refund straight away.
+- A run already going (the schedule's, or a colleague's) is waited for, never started twice; a run nobody has touched for 3 minutes is
+  continued. It gives up after 12 calls or 5 minutes of waiting with a plain message; the run itself keeps going on the server.
+- Logic and its tests: `src/lib/ledgerRefresh.js` / `ledgerRefresh.test.js`; the call uses `callFunction` (`src/lib/edgeCall.js`).
+
 ## Cancelled orders, and refunds checked against Shopify (`accounting-ledger` v19)
 
 On 14 Oct 2026 order 37937 showed as a finished sale although Shopify had cancelled it 20 seconds after it was placed
