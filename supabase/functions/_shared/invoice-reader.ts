@@ -25,6 +25,7 @@ export type InvoiceLine = { description: string; hsn: string | null; qty: number
 export type Check = { id: string; ok: boolean; detail: string };
 export type ReadInvoice = {
   status: 'ok' | 'review' | 'unreadable';
+  kind: 'goods' | 'service';                      // goods carry an HSN and quantities; services carry a SAC and only amounts (Meta, Velocity, Easebuzz ...)
   supplier: { name: string | null; name_source: 'signature' | 'header' | null; gstin: string | null; pan: string | null; state_code: string | null; state: string | null };
   buyer_gstin: string | null;
   invoice_no: string | null;
@@ -132,9 +133,10 @@ export type Solved = { taxable: number; rate: number; kind: 'IGST' | 'CGST+SGST'
  * rounding. Of the combinations that agree, the one with the least rounding wins, then the one whose taxable value sits
  * next to a "taxable / before tax" label.
  */
-export function solveAmounts(text: string): Solved | null {
+export function solveAmounts(text: string, extraTaxable: number[] = []): Solved | null {
   const all = [...text.matchAll(AMOUNT)].map(m => r2(num(m[0])));
   const values = [...new Set(all)].filter(v => v >= 50);
+  const taxables = [...new Set([...values, ...extraTaxable.map(r2).filter(v => v >= 50)])];       // a taxable value that is only the sum of the lines is not printed anywhere
   const count = (v: number) => all.filter(x => Math.abs(x - v) <= 0.005).length;
   const near = (v: number, tol: number) => values.find(x => Math.abs(x - v) <= tol);
   const labelled = new Set<number>();
@@ -142,7 +144,7 @@ export function solveAmounts(text: string): Solved | null {
 
   let best: (Solved & { cost: number }) | null = null;
   for (const rate of GST_RATES) {
-    for (const T of values) {
+    for (const T of taxables) {
       const tax = r2(T * rate / 100);
       const halves = rate >= 3 ? near(r2(tax / 2), 0.51) : undefined;
       const igst = near(tax, 1.01);
@@ -167,14 +169,14 @@ export function solveAmounts(text: string): Solved | null {
 // ── The line items ───────────────────────────────────────────────────────────────────────────
 type Col = 'desc' | 'hsn' | 'qty' | 'unit' | 'rate' | 'amount' | 'other';
 const HEADER_COL: Array<[Col, RegExp]> = [
-  ['desc', /description|design|particulars|item/i], ['hsn', /^hsn/i], ['qty', /^(qty|quantity|weight|meters?|mtrs?)\b/i],
-  ['unit', /^unit$/i], ['rate', /^(rate|price)$/i], ['amount', /^amount/i],
+  ['desc', /description|design|particulars|item/i], ['hsn', /^(hsn|sac)/i], ['qty', /^(qty|quantity|weight|meters?|mtrs?)\b/i],
+  ['unit', /^unit$/i], ['rate', /^(rate|price)$/i], ['amount', /^(amount|total)/i],
 ];
 // a number, or a number with its unit ("10.000 kgs"): placed by where its middle is, not by where it starts
-const isNumeric = (s: string) => /^[\d,.\-%\s]+$/.test(s) || /^[\d,]*\.?\d+\s*(kgs?|mtrs?|metres?|meters?|pcs?|nos)\.?$/i.test(s);
+const isNumeric = (s: string) => /^[₹\d,.\-%\s]+$/.test(s) || /^[\d,]*\.?\d+\s*(kgs?|mtrs?|metres?|meters?|pcs?|nos)\.?$/i.test(s);
 
 function lineItems(rows: Row[]): InvoiceLine[] {
-  const hi = rows.findIndex(r => /description|design name|particulars/i.test(r.text) && /hsn/i.test(r.text) && /rate|price/i.test(r.text) && /amount/i.test(r.text));
+  const hi = rows.findIndex(r => /description|design name|particulars/i.test(r.text) && /hsn|sac/i.test(r.text) && /amount|total/i.test(r.text) && r.cells.length >= 3);
   if (hi < 0) return [];
   const cols = rows[hi].cells.map(c => ({ left: c.x, mid: c.x + c.w / 2, col: (HEADER_COL.find(([, re]) => re.test(c.s))?.[0] ?? 'other') as Col }));
   const colOf = (c: Cell): Col => {
@@ -189,13 +191,15 @@ function lineItems(rows: Row[]): InvoiceLine[] {
   const items: Array<Partial<Record<Col, string>>> = [];
   for (let i = hi + 1; i < rows.length; i++) {
     const r = rows[i];
-    if (/^(total|remark|payment status|add |less |igst|cgst|sgst|r\/o|round|hsn\/sac|tax rate|tax analysis|amount chargeable)/i.test(r.cells[0].s)) break;
+    if (/^(total|grand total|remark|payment status|add |less |igst|cgst|sgst|r\/o|round|hsn\/sac|tax rate|tax analysis|amount chargeable)/i.test(r.cells[0].s)) break;
     const hsnCell = r.cells.find(c => /^\d{4,8}$/.test(c.s));
     const isItem = /^\d+\.?$/.test(r.cells[0].s) || !!hsnCell;
     // The description is whatever sits between the serial number and the HSN (headers are often centred over a left-aligned
     // description, so where the header sits says little about where the text starts); without an HSN, the first text.
     const afterSerial = /^\d+\.?$/.test(r.cells[0].s) ? r.cells.slice(1) : r.cells;
-    const descCells = !isItem ? [] : hsnCell ? afterSerial.filter(c => c.x < hsnCell.x) : afterSerial.filter(c => !isNumeric(c.s)).slice(0, 1);
+    const before = isItem && hsnCell ? afterSerial.filter(c => c.x < hsnCell.x) : [];
+    // (a service invoice puts the SAC first and the description after it)
+    const descCells = !isItem ? [] : before.length ? before : afterSerial.filter(c => !isNumeric(c.s)).slice(0, 1);
     const row: Partial<Record<Col, string>> = {};
     for (const c of r.cells) {
       const left = !isItem && !isNumeric(c.s) && hsnHead && c.x + c.w / 2 < hsnHead.mid;     // a continuation line of the description
@@ -234,7 +238,7 @@ function supplierName(rows: Row[], companyWords: RegExp): { name: string; source
   const noise = /^(tax\s+)?invoice$|^original|^duplicate|^triplicate|^\(?(original|duplicate)|copy|^!!|^gstin|^shop|^plot|^phone|^mobile|^tel|^e-?mail|^pan|^cin|^msme|^bill of supply|^page/i;
   for (const r of head) {
     const t = r.cells.length === 1 ? r.cells[0].s : '';
-    if (t && /^[A-Z][A-Za-z0-9 &.,'()\-]{3,60}$/.test(t) && !noise.test(t) && !companyWords.test(t)) return { name: t, source: 'header' };
+    if (t && /^[A-Z][A-Za-z0-9 &.,'()\-]{3,60}$/.test(t) && !noise.test(t) && !companyWords.test(t)) return { name: t.replace(/,+$/, ''), source: 'header' };
   }
   return null;
 }
@@ -272,8 +276,13 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
   const pos = posRaw ? resolveState({ name: posRaw.replace(/\s*\(\d+\)\s*$/, ''), code: /\((\d{2})\)/.exec(posRaw)?.[1] ?? null }) : null;
   const irn = /\b[0-9a-f]{64}\b/.exec(text)?.[0] ?? null;
 
-  const solved = solveAmounts(text);
-  const lines = lineItems(rows);
+  const kind: ReadInvoice['kind'] = /\bSAC\b/.test(text) && !/\bHSN\b/.test(text) ? 'service' : 'goods';
+  // A service invoice is booked from its totals. Its lines are kept only when they are a plain table of SAC, description and
+  // amount (Velocity's); a campaign list or a free-form table (Meta's) is not read as lines.
+  const rawLines = lineItems(rows);
+  const lines = kind === 'service' && !rawLines.every(l => l.hsn) ? [] : rawLines;
+  const lineSum = r2(lines.reduce((t, l) => t + (l.amount ?? 0), 0));
+  const solved = solveAmounts(text, lines.length ? [lineSum] : []);
   const name = supplierName(rows, companyWords);
   const stateCode = supplier ? supplier.gstin.slice(0, 2) : null;
   const state = stateCode ? GST_STATES.find(s => s.code === stateCode)?.name ?? null : null;
@@ -297,15 +306,17 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
       add('lines_total', Math.abs(sum - solved.taxable) <= 1, Math.abs(sum - solved.taxable) <= 1 ? `the lines add up to ${money(sum)}` : `the lines add up to ${money(sum)} but the taxable value is ${money(solved.taxable)}`);
     }
   }
-  if (lines.length) {
-    const bad = lines.map((l, i) => ({ l, i })).filter(({ l }) => l.qty === null || l.rate === null || l.amount === null || Math.abs(l.qty * l.rate - l.amount) > Math.max(1, l.amount * 0.005));
+  const counted = lines.map((l, i) => ({ l, i })).filter(({ l }) => l.qty !== null && l.rate !== null && l.amount !== null);
+  if (counted.length) {
+    const bad = counted.filter(({ l }) => Math.abs(l.qty! * l.rate! - l.amount!) > Math.max(1, l.amount! * 0.005));
     add('line_math', bad.length === 0, bad.length === 0 ? 'every line: quantity × rate = amount' : `line ${bad.map(b => b.i + 1).join(', ')}: quantity × rate does not equal the amount`);
-  } else add('line_items', false, 'no line items found');
+  } else if (kind === 'goods') add('line_items', false, lines.length ? 'the lines have no quantity and rate to check' : 'no line items found');
+  // a service invoice (Meta, Velocity, a gateway fee) is booked from its totals: no quantities to check, and its lines are optional
 
   // unreadable: neither a supplier nor an invoice number could be found. review: something was found but a check failed. ok: every check passed.
   const status: ReadInvoice['status'] = !supplier && !invoice_no ? 'unreadable' : checks.every(c => c.ok) ? 'ok' : 'review';
   return {
-    status,
+    status, kind,
     supplier: { name: name?.name ?? null, name_source: name?.source ?? null, gstin: supplier?.gstin ?? null, pan: supplier ? panOf(supplier.gstin) : null, state_code: stateCode, state },
     buyer_gstin: buyerIsUs ? company : null,
     invoice_no, invoice_date, place_of_supply: pos?.name ?? null, irn,
@@ -322,6 +333,18 @@ function headerOf(rows: Row[], opts: ReadOptions): { gstin: string | null; no: s
   return { gstin: supplier?.gstin ?? null, no };
 }
 
+/** "Page 2 of 3": a page that says it is the second or later page of its invoice. */
+function isLaterPage(rows: Row[]): boolean {
+  for (const r of rows) {
+    if (!/page/i.test(r.text)) continue;
+    for (const c of r.cells) {
+      const m = /^(?:page\s*:?\s*)?(\d+)\s+of\s+(\d+)$/i.exec(c.s);
+      if (m && +m[1] >= 2 && +m[2] >= +m[1]) return true;
+    }
+  }
+  return false;
+}
+
 export function readInvoicePdf(items: TextItem[], opts: ReadOptions): ReadResult {
   const pages = items.length ? Math.max(...items.map(i => i.page)) : 0;
   if (!items.some(i => i.s.trim())) return { invoices: [], pages, problem: 'no_text' };
@@ -333,9 +356,11 @@ export function readInvoicePdf(items: TextItem[], opts: ReadOptions): ReadResult
   const byPage = new Map<number, TextItem[]>();
   for (const it of items) (byPage.get(it.page) ?? byPage.set(it.page, []).get(it.page)!).push(it);
   for (const p of [...byPage.keys()].sort((a, b) => a - b)) {
-    const h = headerOf(rowsOf(byPage.get(p)!), opts);
+    const pageRows = rowsOf(byPage.get(p)!);
+    const h = headerOf(pageRows, opts);
     const key = h.gstin && h.no ? `${h.gstin}|${h.no}` : '';
     const last = docs[docs.length - 1];
+    if (last && isLaterPage(pageRows)) { last.pages.push(p); continue; }       // "Page 2 of 2" repeats the header but is not a copy
     if (key && last && last.key === key) { last.copies++; continue; }
     if (!key && last) { last.pages.push(p); continue; }
     docs.push({ key, pages: [p], copies: 1 });

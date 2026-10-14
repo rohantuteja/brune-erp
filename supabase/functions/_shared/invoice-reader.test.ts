@@ -10,6 +10,7 @@ const OURS = '09AALCR1014K1ZB';
 const fixture = (name: string): { pages: number; items: TextItem[] } => JSON.parse(readFileSync(new URL(`./fixtures/invoices/${name}.json`, import.meta.url), 'utf8'));
 const read = (items: TextItem[], today = '2026-10-15') => readInvoicePdf(items, { companyGstin: OURS, today });
 const only = (items: TextItem[], today?: string): ReadInvoice => { const r = read(items, today); assert.equal(r.invoices.length, 1); return r.invoices[0]; };
+const failed = (inv: ReadInvoice) => inv.checks.filter(c => !c.ok).map(c => c.id);
 const edit = (items: TextItem[], from: string | RegExp, to: string): TextItem[] => {
   let hit = 0;
   const out = items.map(i => { const s = i.s.replace(from, () => { hit++; return to; }); return { ...i, s }; });
@@ -53,6 +54,33 @@ for (const [file, want] of CASES) {
   });
 }
 
+// Invoices that are not for fabric: a service has a SAC instead of an HSN and no quantities, and is booked from its totals.
+test('a service invoice (an ad platform\'s, a courier\'s) is read from its totals: SAC not HSN, no quantities to check, lines only when they are a plain table', () => {
+  const meta = only(fixture('meta').items);
+  assert.equal(meta.status, 'ok', meta.checks.filter(c => !c.ok).map(c => c.detail).join('; '));
+  assert.equal(meta.kind, 'service');
+  assert.deepEqual([meta.supplier.gstin, meta.supplier.state, meta.supplier.name, meta.supplier.name_source], ['06GGGGG7777G1ZI', 'Haryana', 'Sample Ads India Pvt. Ltd.', 'header']);
+  assert.deepEqual([meta.invoice_no, meta.invoice_date, meta.place_of_supply], ['2300000001', '2026-10-01', 'Uttar Pradesh']);
+  assert.deepEqual([meta.taxable, meta.tax_type, meta.tax_rate, meta.tax, meta.round_off, meta.total], [504308.3, 'IGST', 18, 90775.49, 0, 595083.79]);
+  assert.deepEqual(meta.lines, []);          // a campaign list, not a table of SAC / description / amount: the totals are what is booked
+  assert.equal(meta.copies, 1);              // "Page 2 of 2" repeats the header but is the next page, not a copy
+
+  const velocity = only(fixture('velocity').items);
+  assert.equal(velocity.status, 'ok', velocity.checks.filter(c => !c.ok).map(c => c.detail).join('; '));
+  assert.equal(velocity.kind, 'service');
+  assert.deepEqual([velocity.supplier.gstin, velocity.supplier.state, velocity.supplier.name], ['29HHHHH8888H1ZV', 'Karnataka', 'Sample Logistics Tech Pvt. Ltd.']);
+  assert.deepEqual([velocity.invoice_no, velocity.invoice_date], ['SF/1026/1158', '2026-10-01']);
+  // the taxable value is not printed anywhere: it is the two lines added up
+  assert.deepEqual([velocity.taxable, velocity.tax, velocity.total], [49572.84, 8923.11, 58495.95]);
+  assert.deepEqual(velocity.lines.map(l => [l.description, l.hsn, l.amount]), [['VAS Charges', '996812', 146.5], ['Velocity Freight Charges', '996812', 49426.34]]);
+});
+
+test('a service invoice whose lines do not add up to its total is still flagged, and the fabric invoices are goods', () => {
+  const inv = only(edit(fixture('velocity').items, '₹146.50', '₹100.50'));
+  assert.equal(inv.status, 'review'); assert.ok(failed(inv).includes('amounts') || failed(inv).includes('lines_total'));
+  for (const f of ['a', 'b', 'c', 'd', 'e', 'f']) assert.equal(only(fixture(f).items).kind, 'goods', f);
+});
+
 test('the supplier\'s state comes from its GSTIN: Delhi and Gujarat here, selling into Uttar Pradesh, so IGST', () => {
   assert.deepEqual(['a', 'b', 'f'].map(f => only(fixture(f).items).supplier.state), ['Delhi', 'Delhi', 'Delhi']);
   assert.deepEqual(['c', 'e'].map(f => only(fixture(f).items).supplier.state), ['Gujarat', 'Gujarat']);
@@ -87,7 +115,6 @@ test('a PDF with no text (a scan) and a PDF that is not an invoice are told apar
 });
 
 // ── doubtful invoices are held, not accepted ──
-const failed = (inv: ReadInvoice) => inv.checks.filter(c => !c.ok).map(c => c.id);
 
 test('a total that does not agree with the taxable value and the GST is held for review, with the figures shown', () => {
   const inv = only(edit(fixture('b').items, /30,516\.00/g, '30,616.00'));
