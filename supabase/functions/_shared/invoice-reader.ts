@@ -70,6 +70,7 @@ export function parseInvoiceDate(s: string): string | null {
   let m = /(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/.exec(s);
   if (m) { d = +m[1]; mo = +m[2]; y = +m[3]; }
   else if ((m = /(\d{1,2})[-/. ]([A-Za-z]{3})[A-Za-z]*[-/., ]+(\d{2,4})/.exec(s))) { d = +m[1]; mo = MONTHS[m[2].toLowerCase()] ?? 0; y = +m[3]; }
+  else if ((m = /([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/.exec(s))) { d = +m[2]; mo = MONTHS[m[1].toLowerCase()] ?? 0; y = +m[3]; }   // Sept. 30, 2026
   else return null;
   if (y < 100) y += 2000;
   if (!mo || mo > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return null;
@@ -133,7 +134,7 @@ export type Solved = { taxable: number; rate: number; kind: 'IGST' | 'CGST+SGST'
  * rounding. Of the combinations that agree, the one with the least rounding wins, then the one whose taxable value sits
  * next to a "taxable / before tax" label.
  */
-export function solveAmounts(text: string, extraTaxable: number[] = []): Solved | null {
+export function solveAmounts(text: string, extraTaxable: number[] = [], hint: 'IGST' | 'CGST+SGST' | null = null): Solved | null {
   const all = [...text.matchAll(AMOUNT)].map(m => r2(num(m[0])));
   const values = [...new Set(all)].filter(v => v >= 50);
   const taxables = [...new Set([...values, ...extraTaxable.map(r2).filter(v => v >= 50)])];       // a taxable value that is only the sum of the lines is not printed anywhere
@@ -150,8 +151,8 @@ export function solveAmounts(text: string, extraTaxable: number[] = []): Solved 
       const igst = near(tax, 1.01);
       const split = halves !== undefined && count(halves) >= 2;          // CGST and SGST are both printed
       const options: Array<{ kind: 'IGST' | 'CGST+SGST'; tax: number }> = [];
-      if (split) options.push({ kind: 'CGST+SGST', tax: r2((halves as number) * 2) });
-      else if (igst !== undefined) options.push({ kind: 'IGST', tax: igst });
+      if (split && hint !== 'IGST') options.push({ kind: 'CGST+SGST', tax: r2((halves as number) * 2) });
+      else if (igst !== undefined) options.push({ kind: hint ?? 'IGST', tax: igst });     // the GST is printed once, as a total, whichever head it is
       for (const o of options) {
         const total = values.find(x => x > T && Math.abs(x - (T + o.tax)) <= 1.0);
         if (total === undefined) continue;
@@ -224,23 +225,32 @@ function lineItems(rows: Row[]): InvoiceLine[] {
 
 // ── The supplier's name ──────────────────────────────────────────────────────────────────────
 const NOT_A_NAME = /\b(the|any|all|this|that|your|goods|payment|delivery|each|every|you|us|office|use|recipient|transporter|customer)\b/i;
-function supplierName(rows: Row[], companyWords: RegExp): { name: string; source: 'signature' | 'header' } | null {
-  // "for CHANDRA FASHION" above the signature: the last one on the page that names a business
-  let found: string | null = null;
+const SUFFIX = /\b(pvt|private|limited|ltd|llp|inc|corporation)\b/i;
+function supplierName(rows: Row[], companyWords: RegExp, supplierGstin: string | null): { name: string; source: 'signature' | 'header' } | null {
+  // "for CHANDRA FASHION" above the signature. Of several, the one that ends like a company's name ("... Limited"); else the last.
+  const signed: string[] = [];
   for (const r of rows) for (const c of r.cells) {
-    const m = /^for[,.]?\s+([A-Za-z0-9][A-Za-z0-9 &.,'()\-]{2,60})$/i.exec(c.s);
-    if (m && !NOT_A_NAME.test(m[1]) && !companyWords.test(m[1]) && m[1].trim().split(/\s+/).length <= 7) found = m[1].trim().replace(/[.,]+$/, '');
+    const m = /^for[,.]?\s+([A-Za-z0-9][A-Za-z0-9\s&.,'()\-]{2,60})$/i.exec(c.s);
+    if (m && !NOT_A_NAME.test(m[1]) && !companyWords.test(m[1]) && m[1].trim().split(/\s+/).length <= 7) signed.push(m[1].trim().replace(/[.,]+$/, ''));
   }
+  const found = signed.find(n => SUFFIX.test(n)) ?? signed[signed.length - 1];
   if (found) return { name: found, source: 'signature' };
-  // else the first line of the header that looks like a business name, above the supplier's GSTIN
-  const gi = rows.findIndex(r => GSTIN_HERE.test(r.text));
+  // else a line of the header above the supplier's own GSTIN that looks like a business name
+  const gi = supplierGstin ? rows.findIndex(r => r.text.includes(supplierGstin)) : -1;
   const head = rows.slice(0, gi < 0 ? 6 : Math.max(gi, 1));
-  const noise = /^(tax\s+)?invoice$|^original|^duplicate|^triplicate|^\(?(original|duplicate)|copy|^!!|^gstin|^shop|^plot|^phone|^mobile|^tel|^e-?mail|^pan|^cin|^msme|^bill of supply|^page/i;
-  for (const r of head) {
-    const t = r.cells.length === 1 ? r.cells[0].s : '';
-    if (t && /^[A-Z][A-Za-z0-9 &.,'()\-]{3,60}$/.test(t) && !noise.test(t) && !companyWords.test(t)) return { name: t.replace(/,+$/, ''), source: 'header' };
+  const noise = /^(tax\s+)?invoice$|^original|^duplicate|^triplicate|^\(?(original|duplicate)|copy|^!!|^gstin|^shop|^plot|^phone|^mobile|^tel|^e-?mail|^pan|^cin|^msme|^bill of supply|^page|^bill(ed)?\s*to|^invoice\s*to|^ship(ped)?\s*to|^address|^postpaid|^invoice date|^date/i;
+  const looksLikeName = (t: string) => /^[A-Za-z][A-Za-z0-9 &.,'()\-]{3,60}$/.test(t) && !noise.test(t) && !companyWords.test(t) && !/bank/i.test(t);
+  const single = (r: Row) => (r.cells.length === 1 ? r.cells[0].s : '');
+  const SUFFIX_ONLY = /^(pvt\.?|private|ltd\.?|limited|llp)(\s+(pvt\.?|private|ltd\.?|limited))*$/i;
+  // a name broken over two lines ("GOKWIK COMMERCE SOLUTIONS" / "PVT LTD") is one name
+  for (let i = 0; i < head.length; i++) {
+    const t = single(head[i]);
+    if (t && SUFFIX_ONLY.test(t) && i > 0 && single(head[i - 1]) && looksLikeName(single(head[i - 1]))) return { name: `${single(head[i - 1])} ${t}`.replace(/,+$/, ''), source: 'header' };
   }
-  return null;
+  const company = head.map(single).find(t => t && looksLikeName(t) && SUFFIX.test(t) && !SUFFIX_ONLY.test(t));
+  if (company) return { name: company.replace(/,+$/, ''), source: 'header' };
+  const first = head.map(single).find(t => t && /^[A-Z]/.test(t) && looksLikeName(t));
+  return first ? { name: first.replace(/,+$/, ''), source: 'header' } : null;
 }
 
 // ── One invoice ──────────────────────────────────────────────────────────────────────────────
@@ -258,6 +268,17 @@ function gstinsOf(rows: Row[], company: string): { supplier: Found | null; buyer
   return { supplier, buyerIsUs };
 }
 
+// Goods carry an HSN, services a SAC, and a SAC always starts with 99: so the codes say which an invoice is (an airline or a telecom bill
+// labels its SAC "HSN"). Without a code on the page, the word SAC without HSN is the hint.
+function kindOf(rows: Row[], text: string): ReadInvoice['kind'] {
+  const codes = [
+    ...rows.filter(r => r.cells.some(c => /^\d[\d,]*\.\d{1,2}$/.test(c.s))).flatMap(r => r.cells.filter(c => /^\d{6,8}$/.test(c.s)).map(c => c.s)),
+    ...[...text.matchAll(/\b(?:HSN|SAC)\s*:?\s*(\d{4,8})\b/gi)].map(m => m[1]),
+  ];
+  if (codes.length) return codes.every(c => c.startsWith('99')) ? 'service' : 'goods';
+  return /\bSAC\b/.test(text) && !/\bHSN\b/.test(text) ? 'service' : 'goods';
+}
+
 const money = (n: number) => `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, opts: ReadOptions): ReadInvoice {
@@ -269,21 +290,23 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
 
   const invoice_no = valueAfter(rows, /^(tax\s+)?invoice\s*(no|number|#)\.?\s*:?/i, v => !/^(date|dated|gr|l\.?r|e-?way|ack|irn)/i.test(v) && v.length <= 40, /date/i)
     ?? valueAfter(rows, /^bill\s*(no|number)\.?\s*:?/i, v => v.length <= 40);
-  const dateRaw = [/^(invoice\s*date|date\s*of\s*invoice|bill\s*date)\s*:?/i, /^dated\s*:?/i]
+  const dateRaw = [/^(invoice\s*date|date\s*of\s*invoice|bill\s*date)\s*:?/i, /^dated\s*:?/i, /^date\b\s*:?/i]
     .map(re => valueAfter(rows, re, v => parseInvoiceDate(v) !== null)).find(Boolean) ?? null;
   const invoice_date = dateRaw ? parseInvoiceDate(dateRaw) : null;
   const posRaw = valueAfter(rows, /^place\s*of\s*supply\s*:?/i);
   const pos = posRaw ? resolveState({ name: posRaw.replace(/\s*\(\d+\)\s*$/, ''), code: /\((\d{2})\)/.exec(posRaw)?.[1] ?? null }) : null;
-  const irn = /\b[0-9a-f]{64}\b/.exec(text)?.[0] ?? null;
+  const irn = /\b[0-9a-f]{64}\b/i.exec(text)?.[0] ?? null;
 
-  const kind: ReadInvoice['kind'] = /\bSAC\b/.test(text) && !/\bHSN\b/.test(text) ? 'service' : 'goods';
+  const kind = kindOf(rows, text);
   // A service invoice is booked from its totals. Its lines are kept only when they are a plain table of SAC, description and
   // amount (Velocity's); a campaign list or a free-form table (Meta's) is not read as lines.
   const rawLines = lineItems(rows);
   const lines = kind === 'service' && !rawLines.every(l => l.hsn) ? [] : rawLines;
   const lineSum = r2(lines.reduce((t, l) => t + (l.amount ?? 0), 0));
-  const solved = solveAmounts(text, lines.length ? [lineSum] : []);
-  const name = supplierName(rows, companyWords);
+  // An invoice that names only IGST, or only CGST and SGST, has said which it is; one that lists all three columns (with dashes) has not.
+  const hasIgst = /\bIGST\b|\bIntegrated\s+GST/i.test(text), hasSplit = /\b(CGST|SGST)/i.test(text);
+  const solved = solveAmounts(text, lines.length ? [lineSum] : [], hasIgst && !hasSplit ? 'IGST' : hasSplit && !hasIgst ? 'CGST+SGST' : null);
+  const name = supplierName(rows, companyWords, supplier?.gstin ?? null);
   const stateCode = supplier ? supplier.gstin.slice(0, 2) : null;
   const state = stateCode ? GST_STATES.find(s => s.code === stateCode)?.name ?? null : null;
 
@@ -291,7 +314,7 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
   const checks: Check[] = [];
   const add = (id: string, ok: boolean, detail: string) => checks.push({ id, ok, detail });
   add('supplier_gstin', !!supplier && supplier.valid, !supplier ? 'no supplier GSTIN found' : supplier.valid ? `${supplier.gstin} is a valid GSTIN (${state ?? 'state ' + stateCode})` : `${supplier.gstin} fails the GSTIN check digit: misprinted or misread`);
-  add('billed_to_us', buyerIsUs, buyerIsUs ? 'billed to our GSTIN' : 'our GSTIN is not on the invoice: it may be addressed to someone else');
+  add('billed_to_us', buyerIsUs, buyerIsUs ? 'billed to our GSTIN' : 'our GSTIN is not on the invoice: it may be addressed to someone else, and the input GST on it cannot be claimed');
   add('invoice_number', !!invoice_no, invoice_no ? `invoice ${invoice_no}` : 'no invoice number found');
   const future = invoice_date && opts.today && invoice_date > opts.today;
   add('invoice_date', !!invoice_date && !future, !invoice_date ? 'no valid invoice date found' : future ? `${invoice_date} is in the future` : `dated ${invoice_date}`);

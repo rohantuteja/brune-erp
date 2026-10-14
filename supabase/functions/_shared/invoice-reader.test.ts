@@ -75,6 +75,49 @@ test('a service invoice (an ad platform\'s, a courier\'s) is read from its total
   assert.deepEqual(velocity.lines.map(l => [l.description, l.hsn, l.amount]), [['VAS Charges', '996812', 146.5], ['Velocity Freight Charges', '996812', 49426.34]]);
 });
 
+// A gateway, a payment company, a software vendor and a telecom bill: the rest of the vendors that send invoices.
+const failedIds = (inv: ReadInvoice) => inv.checks.filter(c => !c.ok).map(c => c.id);
+const VENDORS: Array<[string, Record<string, unknown>]> = [
+  ['easebuzz', { name: 'Sample Payments Pvt. Ltd.', gstin: '27JJJJJ9999J1Z8', state: 'Maharashtra', no: 'N2627/000000000', date: '2026-09-30', taxable: 10693.94, type: 'IGST', tax: 1924.91, total: 12618.85, irn: true }],
+  ['airtel', { name: 'Sample Telecom Limited', gstin: '09LLLLL2020L1ZY', state: 'Uttar Pradesh', no: 'HF2709I013498070', date: '2026-10-12', taxable: 899, type: 'CGST+SGST', tax: 161.82, total: 1060.82, irn: true }],
+  ['gokwik-pp-cod', { name: 'SAMPLE GATEWAY SOLUTIONS PVT LTD', gstin: '06MMMMM3030M1ZR', state: 'Haryana', no: 'GKHR/2627/035032', date: '2026-10-01', taxable: 716.37, type: 'IGST', tax: 128.95, total: 845, irn: false, ro: -0.32 }],
+  ['gokwik-pp-cod-paid', { name: 'SAMPLE GATEWAY SOLUTIONS PVT LTD', gstin: '06MMMMM3030M1ZR', state: 'Haryana', no: 'GKHR/2627/028279', date: '2026-09-01', taxable: 1136.72, type: 'IGST', tax: 204.61, total: 1341, irn: true, ro: -0.33 }],
+];
+for (const [file, want] of VENDORS) {
+  test(`vendor invoice ${file}: read from its totals, every check passes`, () => {
+    const inv = only(fixture(file).items);
+    assert.equal(inv.status, 'ok', inv.checks.filter(c => !c.ok).map(c => c.detail).join('; '));
+    assert.equal(inv.kind, 'service');
+    assert.deepEqual([inv.supplier.name, inv.supplier.gstin, inv.supplier.state], [want.name, want.gstin, want.state]);
+    assert.deepEqual([inv.invoice_no, inv.invoice_date], [want.no, want.date]);
+    assert.deepEqual([inv.taxable, inv.tax_type, inv.tax_rate, inv.tax, inv.total], [want.taxable, want.type, 18, want.tax, want.total]);
+    if (want.ro !== undefined) assert.equal(inv.round_off, want.ro);
+    assert.equal(inv.irn !== null, want.irn);
+  });
+}
+
+test('a telecom bill from a supplier in our own state is CGST + SGST: the GST is printed once, as a total, and the headings name CGST and SGST only', () => {
+  const inv = only(fixture('airtel').items);
+  assert.equal(inv.tax_type, 'CGST+SGST'); assert.equal(inv.supplier.state_code, '09'); assert.equal(inv.place_of_supply, 'Uttar Pradesh');
+  assert.ok(inv.checks.find(c => c.id === 'tax_type')!.ok);
+  assert.equal(only(edit(fixture('airtel').items, 'Uttar Pradesh', 'Uttar Pradesh')).tax_type, 'CGST+SGST');
+});
+
+test('a software invoice that does not carry our GSTIN (only our PAN) is held: its input GST cannot be claimed', () => {
+  const inv = only(fixture('google').items);
+  assert.equal(inv.status, 'review'); assert.deepEqual(failedIds(inv), ['billed_to_us']);
+  assert.match(inv.checks.find(c => c.id === 'billed_to_us')!.detail, /input GST on it cannot be claimed/);
+  assert.deepEqual([inv.taxable, inv.tax, inv.total, inv.invoice_date, inv.kind], [975, 175.5, 1150.5, '2026-09-30', 'service']);
+});
+
+test('a GoKwik commission invoice keeps the number of transactions and the GMV it was charged on, and the commission is 2% of that GMV', () => {
+  const inv = only(fixture('gokwik-pp-cod').items);
+  const line = inv.lines[0];
+  assert.equal(line.hsn, '997158'); assert.equal(line.amount, 716.37);
+  assert.match(line.description, /Commission on PP COD/); assert.match(line.description, /No of Transactions:21/); assert.match(line.description, /GMV :35818\.55/);
+  assert.equal(Math.round(35818.55 * 0.02 * 100) / 100, 716.37);
+});
+
 test('a service invoice whose lines do not add up to its total is still flagged, and the fabric invoices are goods', () => {
   const inv = only(edit(fixture('velocity').items, '₹146.50', '₹100.50'));
   assert.equal(inv.status, 'review'); assert.ok(failed(inv).includes('amounts') || failed(inv).includes('lines_total'));
