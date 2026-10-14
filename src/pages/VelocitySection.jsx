@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { callFunction } from '../lib/edgeCall';
+import { refreshLedgerNow } from '../lib/ledgerRefreshNow';
+import LedgerRefreshStatus from '../components/LedgerRefreshStatus';
 import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { toBase64 } from '../lib/financeView';
 import { KIND_LABEL, TOPUP_STATUS_TEXT, invoiceVerdict, monthLabel, splitKinds, topupCounts, topupStatus } from '../lib/velocityView';
@@ -82,6 +84,7 @@ function UploadPanel({ onDone }) {
       }
       setFile(null); if (input.current) input.current.value = '';
       onDone();
+      if (!json.already_imported) refreshLedgerNow('the Velocity upload');       // recalculate the order ledger now, without being asked
     } catch (err) {
       setResult({ ok: false, title: 'Nothing was imported', error: err.message || String(err) });
     } finally { setBusy(false); }
@@ -282,7 +285,7 @@ export default function VelocitySection({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   // Taking an upload back: a dry run is shown for confirmation first (see components/UploadDelete.jsx).
-  const flow = useDeleteFlow({ call: callVelocity, showToast, onDeleted: load });
+  const flow = useDeleteFlow({ call: callVelocity, showToast, onDeleted: async (json) => { await load(); if (String(json?.kind || '').startsWith('velocity_')) refreshLedgerNow('removing the Velocity upload'); } });
   const deleteLedger = (i) => flow.start({ action: 'delete_ledger', import_id: i.id });
   const deleteInvoice = (v) => flow.start({ action: 'delete_invoice', invoice_no: v.invoice_no });
 
@@ -330,6 +333,8 @@ export default function VelocitySection({ showToast }) {
       </div>
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+
+      <LedgerRefreshStatus />
 
       <Collapsible id="velocity-help" title="How this page works" icon={<Info className="w-4 h-4 text-stone-400" />}>
         <ul className="list-disc pl-5 space-y-1 text-xs text-stone-600">

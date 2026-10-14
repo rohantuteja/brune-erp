@@ -2,8 +2,9 @@
 // run the hourly schedule does, instead of waiting for the schedule. Pure logic with the network and the clock passed in, so
 // it is tested without either (ledgerRefresh.test.js).
 //
-// - A run the schedule (or a colleague) is already doing is waited for, never started twice.
-// - Otherwise `sync` is called until it says it has finished; each call works for a bounded time and returns how far it got.
+// - A run the schedule (or a colleague) is already doing is waited for, never run alongside. It is NOT enough to join it: it may have
+//   read its inputs before whatever just changed (a settlement report uploaded a minute ago), so a run of our own follows it.
+// - `sync` is called until it says it has finished; each call works for a bounded time and returns how far it got.
 // - A run nobody has touched for STALE_MS has stalled: `sync` continues it (the function does the same).
 
 export const STALE_MS = 3 * 60 * 1000;      // the function's BUSY_MS: a running run untouched this long is continued
@@ -30,7 +31,6 @@ export async function refreshLedger({ call, readLatestRun, onProgress = () => {}
       await sleep(POLL_MS);
       run = await readLatestRun();
     }
-    return { ok: true, joined: true };
   }
 
   for (let i = 0; i < MAX_CALLS; i++) {
@@ -43,16 +43,18 @@ export async function refreshLedger({ call, readLatestRun, onProgress = () => {}
   return { ok: false, error: 'The refresh is taking longer than expected. It keeps going in the background; reload in a minute.' };
 }
 
-/** What the button says while it works. */
-export function progressText(p) {
-  if (!p || !p.total) return 'Refreshing…';
-  return `${p.joined ? 'Refresh in progress' : 'Refreshing'}… ${p.processed ?? 0} of ${p.total} orders`;
+/** What the page says while it works. `reason` is what started it ("the GoKwik upload"), absent for the button. */
+export function progressText(p, reason) {
+  const what = reason ? `Updating the ledger after ${reason}` : 'Refreshing';
+  if (!p || !p.total) return `${what}…`;
+  return p.joined
+    ? `Another ledger refresh is running (${p.processed ?? 0} of ${p.total} orders); ${reason ? 'the update' : 'this one'} starts when it ends.`
+    : `${what}… ${p.processed ?? 0} of ${p.total} orders`;
 }
 
 /** What the page says when it is done. */
-export function doneText(r) {
+export function doneText(r, reason) {
   if (!r.ok) return r.error || 'The refresh failed.';
-  if (r.joined) return 'The ledger was already being refreshed and now is.';
   const held = r.held ? `; ${r.held} ${r.held === 1 ? 'order is' : 'orders are'} held back because Velocity or Unicommerce could not be reached` : '';
-  return `Ledger refreshed: ${r.total} orders checked${held}.`;
+  return `Ledger refreshed${reason ? ` after ${reason}` : ''}: ${r.total} orders checked${held}.`;
 }

@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { callFunction } from '../lib/edgeCall';
 import { usePermissions } from '../contexts/PermissionsContext';
-import { refreshLedger, progressText, doneText } from '../lib/ledgerRefresh';
+import { refreshLedgerNow } from '../lib/ledgerRefreshNow';
+import { useLedgerRefresh } from '../lib/useLedgerRefresh';
+import LedgerRefreshStatus from '../components/LedgerRefreshStatus';
 import { sortRows, inRange, clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pills, EmptyState, downloadCsv, useUrlParams, wideScreen } from '../components/AnalyticsKit';
 import { RefreshCw, AlertCircle, ChevronDown, ChevronRight, Search, X, ExternalLink, Download, Info, FileText, SlidersHorizontal, Clock, RotateCcw } from 'lucide-react';
@@ -290,31 +291,17 @@ export default function LedgerSection({ showToast }) {
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
 
-  // "Refresh now" (admins): recalculate the ledger straight away instead of waiting for the hourly run. "Reload" only re-reads what is stored.
+  // "Refresh now" (admins): recalculate the ledger straight away instead of waiting for the hourly run. "Reload" only re-reads what is
+  // stored. The refresh is shared with the automatic one after a GoKwik or Velocity upload (lib/ledgerRefreshStore.js): this page
+  // reloads its rows whenever one finishes, whoever started it.
   const { isAdmin } = usePermissions();
-  const [refreshing, setRefreshing] = useState(false);
-  const [progress, setProgress] = useState(null);
-  const [refreshMsg, setRefreshMsg] = useState(null);       // { ok, text } about the last refresh
-  const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const readLatestRun = useCallback(async () => {
-    const { data } = await supabase.from('ledger_runs').select('id, status, pos, total, updated_at').order('started_at', { ascending: false }).limit(1);
-    return data?.[0] ?? null;
-  }, []);
-  const refreshNow = async () => {
-    setRefreshing(true); setRefreshMsg(null); setProgress(null);
-    try {
-      const r = await refreshLedger({ call: (body) => callFunction('accounting-ledger', body), readLatestRun, onProgress: (pr) => { if (alive.current) setProgress(pr); }, shouldStop: () => !alive.current });
-      if (!alive.current) return;
-      await load();
-      setRefreshMsg({ ok: r.ok, text: doneText(r) });
-      if (r.ok) showToast?.('Ledger refreshed');
-    } catch (e) {
-      if (alive.current) setRefreshMsg({ ok: false, text: e?.message || 'The refresh failed. Try again in a minute.' });
-    } finally {
-      if (alive.current) { setRefreshing(false); setProgress(null); }
-    }
-  };
+  const rf = useLedgerRefresh();
+  const refreshing = rf.running;
+  const wasRunning = useRef(rf.running);
+  useEffect(() => {
+    if (wasRunning.current && !rf.running) { load(); if (rf.result?.ok) showToast?.('Ledger refreshed'); }
+    wasRunning.current = rf.running;
+  }, [rf.running, rf.result, load, showToast]);
 
   // The dates filter says WHICH orders the page is about: the cards, counts and lists all follow it.
   const dated = useMemo(() => orders.filter(o => o.status === 'not_a_sale' && !p.lfrom && !p.lto ? true : inRange(o.sale_date, p.lfrom, p.lto)), [orders, p.lfrom, p.lto]);
@@ -406,20 +393,14 @@ export default function LedgerSection({ showToast }) {
             <RotateCcw className={`w-3.5 h-3.5 ${loading && !refreshing ? 'animate-spin' : ''}`} /> Reload
           </button>
           {isAdmin && (
-            <button onClick={refreshNow} disabled={refreshing} title="Recalculate the ledger now, from Shopify, Unicommerce, Return Prime and Velocity" className="inline-flex items-center gap-1 h-8 px-2.5 text-xs rounded-md border border-stone-900 bg-stone-900 text-white hover:bg-stone-700 disabled:opacity-60">
+            <button onClick={() => refreshLedgerNow()} disabled={refreshing} title="Recalculate the ledger now, from Shopify, Unicommerce, Return Prime and Velocity" className="inline-flex items-center gap-1 h-8 px-2.5 text-xs rounded-md border border-stone-900 bg-stone-900 text-white hover:bg-stone-700 disabled:opacity-60">
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} /> {refreshing ? 'Refreshing…' : 'Refresh now'}
             </button>
           )}
         </div>
       </div>
 
-      {refreshing && <div role="status" className="text-xs text-stone-700 bg-stone-50 border border-stone-200 rounded px-3 py-2">{progressText(progress)} <span className="text-stone-500">Safe to leave this page open; it can take a minute or two.</span></div>}
-      {!refreshing && refreshMsg && (
-        <div role="status" className={`text-xs rounded px-3 py-2 border flex items-start justify-between gap-3 ${refreshMsg.ok ? 'text-emerald-900 bg-emerald-50 border-emerald-200' : 'text-red-700 bg-red-50 border-red-200'}`}>
-          <span>{refreshMsg.text}</span>
-          <button type="button" onClick={() => setRefreshMsg(null)} aria-label="Dismiss" className="shrink-0 opacity-60 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
-        </div>
-      )}
+      <LedgerRefreshStatus />
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
@@ -442,7 +423,7 @@ export default function LedgerSection({ showToast }) {
               <li><b>Prepaid orders</b> stay <i>Awaiting GoKwik payout</i> until GoKwik's settlement report (uploaded on the Bank &amp; card page) shows the payout. The payout entry books the bank receipt, GoKwik's fee and the GST on the fee.</li>
               <li><b>Open amount</b> is what is still owed on the order (money to collect, or a sale still to be reversed). <b>COD with Velocity</b> is cash the courier collected and has not yet paid into the bank.</li>
               <li>Where Unicommerce's documents fall short, the ERP issues the credit note or invoice itself (<i>ERP issues a document</i>), so Tally always receives balanced orders.</li>
-              <li><b>Refresh now</b> (admins) recalculates the ledger straight away and shows how far it has got; the ledger also refreshes itself about every hour. <b>Reload</b> only reads the stored ledger again, so it shows a change only after a refresh has happened.</li>
+              <li><b>Refresh now</b> (admins) recalculates the ledger straight away and shows how far it has got; the ledger also refreshes itself about every hour, and straight after a GoKwik or Velocity upload. <b>Reload</b> only reads the stored ledger again, so it shows a change only after a refresh has happened.</li>
               <li>The date filter is the date of sale. Open an order to see its double-entry lines; grey lines are dated before the accounting start date and are never exported.</li>
             </ul>
           </Collapsible>

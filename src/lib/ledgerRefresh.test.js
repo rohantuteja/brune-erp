@@ -16,13 +16,15 @@ test('nothing running: sync is called until it finishes, and says how far it got
   assert.deepEqual(r, { ok: true, processed: 207, total: 207, held: 0 });
 });
 
-test('a run the schedule is doing right now is waited for, never started a second time', async () => {
-  const c = clock(); let reads = 0; let called = 0; const seen = [];
+test('a run the schedule is doing right now is waited for, then a run of our own follows (it may have read its inputs before the change)', async () => {
+  const c = clock(); let reads = 0; const calls = []; const seen = [];
   const readLatestRun = async () => (++reads <= 3 ? run({ status: 'running', pos: reads * 50, total: 207, updated_at: new Date(c.now() - 5000).toISOString() }) : run({ status: 'done' }));
-  const r = await refreshLedger({ ...c, readLatestRun, call: async () => { called++; return { ok: true, json: {} }; }, onProgress: p => seen.push(p) });
-  assert.equal(called, 0);
-  assert.deepEqual(r, { ok: true, joined: true });
-  assert.ok(seen.length >= 2 && seen.every(p => p.joined));
+  const r = await refreshLedger({ ...c, readLatestRun, call: async (b) => { calls.push(b); return { ok: true, json: { finished: true, processed: 207, total: 207, held: 0 } }; }, onProgress: p => seen.push(p) });
+  assert.equal(calls.length, 1);                                   // ours runs only after the other one has ended
+  assert.ok(reads >= 4);
+  assert.ok(seen.slice(0, 2).every(p => p.joined));                // told the user it is waiting for the other run
+  assert.ok(!seen[seen.length - 1].joined);
+  assert.deepEqual(r, { ok: true, processed: 207, total: 207, held: 0 });
 });
 
 test('a running run nobody has touched for 3 minutes has stalled: sync continues it', async () => {
@@ -65,10 +67,12 @@ test('leaving the page stops it between calls', async () => {
 test('the button and the page say plain things', () => {
   assert.equal(progressText(null), 'Refreshing…');
   assert.equal(progressText({ processed: 120, total: 207 }), 'Refreshing… 120 of 207 orders');
-  assert.equal(progressText({ processed: 50, total: 207, joined: true }), 'Refresh in progress… 50 of 207 orders');
+  assert.equal(progressText({ processed: 50, total: 207, joined: true }), 'Another ledger refresh is running (50 of 207 orders); this one starts when it ends.');
+  assert.equal(progressText(null, 'the GoKwik upload'), 'Updating the ledger after the GoKwik upload…');
+  assert.equal(progressText({ processed: 80, total: 207 }, 'the GoKwik upload'), 'Updating the ledger after the GoKwik upload… 80 of 207 orders');
   assert.equal(doneText({ ok: true, total: 207, held: 0 }), 'Ledger refreshed: 207 orders checked.');
+  assert.equal(doneText({ ok: true, total: 207, held: 0 }, 'the GoKwik upload'), 'Ledger refreshed after the GoKwik upload: 207 orders checked.');
   assert.match(doneText({ ok: true, total: 207, held: 1 }), /1 order is held back/);
   assert.match(doneText({ ok: true, total: 207, held: 3 }), /3 orders are held back/);
-  assert.equal(doneText({ ok: true, joined: true }), 'The ledger was already being refreshed and now is.');
   assert.equal(doneText({ ok: false, error: 'Forbidden: admin only' }), 'Forbidden: admin only');
 });
