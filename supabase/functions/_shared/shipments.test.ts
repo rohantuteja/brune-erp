@@ -2,7 +2,7 @@
 // Shapes are the real Shopify and Return Prime responses for orders 37874, 37875, 37852, 36354 (Oct 2026).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, applyVelocity, istText, parseCharges, parseNote, parseTracking, paymentOf, shipmentsOfOrder, shipmentsOfReturn } from './shipments.ts';
+import { DEFAULTS, applyVelocity, isVelocityCarried, istText, parseCharges, parseNote, parseTracking, paymentOf, shipmentsOfOrder, shipmentsOfReturn, staysClosed } from './shipments.ts';
 
 const m = (amount: number) => ({ shopMoney: { amount: String(amount) } });
 const ev = (...xs: Array<[string, string]>) => ({ nodes: xs.map(([status, happenedAt]) => ({ status, happenedAt })) });   // newest first
@@ -159,6 +159,52 @@ test('old orders whose AWB was only typed in (FULFILLED, no courier tracking) ar
   const rows = shipmentsOfOrder(o, inp('2026-10-12'));
   assert.deepEqual(rows.map(r => [r.awb, r.status, r.state]), [['7D121923861', 'untracked', 'closed'], ['7D121922685', 'cancelled', 'closed']]);
   assert.equal(rows.every(r => !r.claim_eligible && !r.escalation), true);
+});
+
+// ── Parcels dispatched from Unicommerce (order 37929, 13 Oct 2026) ───────────────────────────────
+// Unicommerce books the AWB with Velocity but names the carrier SHIPFAST on the Shopify fulfilment. Shopify cannot follow that name:
+// the fulfilment stays plain FULFILLED with no events, which used to be read as an old hand-typed AWB and dropped.
+const uniware = (over: any = {}) => order({ name: '37929', legacyResourceId: '7378135515395', createdAt: '2026-10-13T05:56:26Z', tags: ['UPI'], paymentGatewayNames: ['Gokwik Upi'],
+  totalPriceSet: m(1449), transactions: [{ kind: 'CAPTURE', status: 'SUCCESS', gateway: 'Gokwik Upi', amountSet: m(1449) }],
+  fulfillments: [{ createdAt: '2026-10-13T08:49:22Z', displayStatus: 'FULFILLED', deliveredAt: null, inTransitAt: null, trackingInfo: [{ company: 'SHIPFAST', number: '34812018365350' }], events: ev() }], ...over });
+
+test('a parcel dispatched from Unicommerce (carrier SHIPFAST, plain FULFILLED) is followed: pending, so Velocity is asked and decides', () => {
+  const [s] = shipmentsOfOrder(uniware(), inp('2026-10-14'));
+  assert.equal(s.awb, '34812018365350'); assert.equal(s.state, 'pending'); assert.equal(s.status, 'label_created'); assert.equal(s.kind, 'forward');
+  assert.equal(s.courier, 'SHIPFAST'); assert.equal(s.dispatched_on, '2026-10-13'); assert.equal(s.payment_type, 'prepaid');
+  // Velocity's answer then decides, like any other parcel
+  const track = { status: 'in_transit', lastActivity: 'Shipment picked up', lastAt: '2026-10-14T06:00:00Z', promisedOn: null, attempts: 0, ndr: false, pickupFailed: false, delivered: false, deliveryScan: false, history: [] } as any;
+  const done = applyVelocity(s, parseTracking({ tracking_data: { shipment_track: [{ current_status: 'IN TRANSIT' }] } }) ?? track, undefined, inp('2026-10-14'), '2026-10-14T08:30:00Z');
+  assert.equal(done.velocity_checked_at, '2026-10-14T08:30:00Z');
+});
+
+test('Velocity not knowing a SHIPFAST AWB flags it for a person instead of hiding it', () => {
+  const [s] = shipmentsOfOrder(uniware(), inp('2026-10-14'));
+  const r = applyVelocity(s, null, undefined, inp('2026-10-14'), '2026-10-14T08:30:00Z');
+  assert.equal(r.attention, 'unverified'); assert.match(r.attention_reason!, /no record of this tracking number/);
+});
+
+test('only Velocity-carried names are followed: a hand-typed DTDC AWB is still untracked, and "velocity" counts too', () => {
+  assert.equal(isVelocityCarried('SHIPFAST'), true); assert.equal(isVelocityCarried('shipfast'), true); assert.equal(isVelocityCarried('Velocity'), true);
+  assert.equal(isVelocityCarried('dtdc'), false); assert.equal(isVelocityCarried('delhivery'), false); assert.equal(isVelocityCarried(null), false);
+  const typed = order({ fulfillments: [{ createdAt: '2026-06-05T05:40:30Z', displayStatus: 'FULFILLED', trackingInfo: [{ company: 'dtdc', number: '7D121923861' }], events: ev() }] });
+  assert.deepEqual(shipmentsOfOrder(typed, inp('2026-10-12')).map(r => [r.status, r.state]), [['untracked', 'closed']]);
+});
+
+test('a SHIPFAST parcel that Velocity writes an RTO note for is an RTO; a cancelled order is closed; Shopify DELIVERED is delivered', () => {
+  assert.deepEqual(shipmentsOfOrder(uniware({ note: 'RTO In Transit on 2026-10-16 09:19:31' }), inp('2026-10-17')).map(r => [r.kind, r.status]), [['rto', 'rto_in_transit']]);
+  assert.deepEqual(shipmentsOfOrder(uniware({ cancelledAt: '2026-10-13T10:00:00Z' }), inp('2026-10-14')).map(r => [r.status, r.state]), [['cancelled', 'closed']]);
+  const f = uniware().fulfillments[0];
+  assert.equal(shipmentsOfOrder(uniware({ fulfillments: [{ ...f, displayStatus: 'DELIVERED', deliveredAt: '2026-10-15T10:00:00Z' }] }), inp('2026-10-16'))[0].state, 'closed');
+});
+
+test('once Velocity has closed a SHIPFAST parcel it stays closed, even though Shopify keeps listing it as undelivered', () => {
+  const [s] = shipmentsOfOrder(uniware(), inp('2026-10-14'));          // this scan builds a pending row again
+  assert.equal(staysClosed({ state: 'closed' }, s), true);
+  assert.equal(staysClosed({ state: 'pending' }, s), false);           // still open: keep asking Velocity
+  assert.equal(staysClosed(undefined, s), false);                      // never seen: add it
+  const [d] = shipmentsOfOrder(order(), inp('2026-10-12'));            // a delhivery parcel Shopify follows itself
+  assert.equal(staysClosed({ state: 'closed' }, d), false);            // not this rule's business
 });
 
 test('a cancelled fulfilment is not turned into an RTO just because the order is returning', () => {

@@ -115,6 +115,20 @@ const FORWARD_STATUS: Record<string, string> = {
   READY_FOR_PICKUP: 'ready_for_pickup', DELAYED: 'delayed', FAILURE: 'failed', NOT_DELIVERED: 'failed',
 };
 const UNTRACKED = new Set(['FULFILLED', 'MARKED_AS_FULFILLED']);
+
+// Parcels a Unicommerce dispatch hands to Velocity. Unicommerce books the AWB with Velocity (the same 14-digit series) but names the
+// carrier SHIPFAST on the Shopify fulfilment: a name Shopify cannot follow, so the fulfilment stays plain FULFILLED with no courier
+// events and never turns DELIVERED. They are not hand-typed old AWBs: Velocity carries them, so they stay pending and Velocity's own
+// tracking decides, like any other parcel (order 37929, 13 Oct 2026, was dropped as "untracked" before this).
+const VELOCITY_CARRIED = /^(shipfast|velocity)/i;
+export const isVelocityCarried = (company?: string | null) => VELOCITY_CARRIED.test(String(company ?? '').trim());
+
+/**
+ * Shopify never says DELIVERED for those parcels, so every scan lists them as undelivered again and builds a pending row: once
+ * Velocity has closed one, it stays closed (and is not asked of Velocity again). `prev` is the stored row, if any.
+ */
+export const staysClosed = (prev: { state?: string } | undefined, row: Pick<Shipment, 'state' | 'courier' | 'raw_status'>) =>
+  prev?.state === 'closed' && row.state === 'pending' && isVelocityCarried(row.courier) && UNTRACKED.has(String(row.raw_status ?? ''));
 const VOIDED = new Set(['CANCELED', 'CANCELLED', 'LABEL_VOIDED']);
 
 type Inputs = { today: string; settings: Settings };
@@ -186,7 +200,10 @@ export function shipmentsOfOrder(o: any, inp: Inputs): Shipment[] {
     else if (rtoState) status = rtoState === 'initiated' ? 'rto_initiated' : 'rto_in_transit';
     else if (delivered) { status = 'delivered'; state = 'closed'; closedOn = f.deliveredAt ? istDay(f.deliveredAt) : null; }
     else if (cancelled) { status = 'cancelled'; state = 'closed'; closedOn = istDay(o.cancelledAt); }
-    else if (UNTRACKED.has(ds)) { status = 'untracked'; state = 'closed'; }
+    else if (UNTRACKED.has(ds)) {
+      if (isVelocityCarried(t.company)) status = 'label_created';      // dispatched from Unicommerce: no courier scan known yet; Velocity says more
+      else { status = 'untracked'; state = 'closed'; }
+    }
     else status = FORWARD_STATUS[ds] ?? (ds.toLowerCase() || 'unknown');
 
     out.push(withFlags({

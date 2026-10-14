@@ -1,4 +1,4 @@
-// shipment-watch v5
+// shipment-watch v6
 // Follows every parcel the business is waiting on and stores it in `shipments` (migration 020):
 //   forward parcels not delivered, parcels coming back to origin (RTO), and customer returns on their way.
 // Sources: Shopify (Velocity writes its tracking on the fulfilment and its promise and RTO state in the order
@@ -15,7 +15,7 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { CORS, type Ctx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
-import { DEFAULTS, NO_AWB, type Settings, type Shipment, type VelocityMoney, type VelocityTrack, applyVelocity, parseCharges, parseNote, parseTracking, shipmentsOfOrder, shipmentsOfReturn } from '../_shared/shipments.ts';
+import { DEFAULTS, NO_AWB, type Settings, type Shipment, type VelocityMoney, type VelocityTrack, applyVelocity, parseCharges, parseNote, parseTracking, shipmentsOfOrder, shipmentsOfReturn, staysClosed } from '../_shared/shipments.ts';
 
 const RP_API = 'https://api.returnprime.co';
 const RP_PAGES = 40;
@@ -102,7 +102,7 @@ async function scan(ctx: Ctx, dry: boolean) {
     for (const o of page.nodes) {
       seenOrders.add(Number(o.legacyResourceId));
       note(o, anomalies);
-      for (const r of shipmentsOfOrder(o, inp)) rows.set(r.awb, r);
+      for (const r of shipmentsOfOrder(o, inp)) if (!staysClosed(known.get(r.awb), r)) rows.set(r.awb, r);
     }
     if (!page.next) break;
     after = page.next;
