@@ -286,7 +286,12 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
   const text = rows.map(r => r.text).join('\n');
   const company = opts.companyGstin;
   const companyWords = /rethought/i;
-  const { supplier, buyerIsUs } = gstinsOf(rows, company);
+  const { supplier, buyerIsUs: byGstin } = gstinsOf(rows, company);
+  // Some invoices (Google's) print the buyer's PAN and state code instead of the GSTIN: PAN + state code is the GSTIN's body, and the
+  // GST appears in GSTR-2B against it. Our PAN on its own is not enough.
+  const ourPan = panOf(company), ourState = company.slice(0, 2);
+  const byPan = !byGstin && new RegExp(`\\b${ourPan}\\b`).test(text) && new RegExp(`state\\s*code\\s*:?\\s*${ourState}\\b`, 'i').test(text);
+  const buyerIsUs = byGstin || byPan;
 
   const invoice_no = valueAfter(rows, /^(tax\s+)?invoice\s*(no|number|#)\.?\s*:?/i, v => !/^(date|dated|gr|l\.?r|e-?way|ack|irn)/i.test(v) && v.length <= 40, /date/i)
     ?? valueAfter(rows, /^bill\s*(no|number)\.?\s*:?/i, v => v.length <= 40);
@@ -314,7 +319,7 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
   const checks: Check[] = [];
   const add = (id: string, ok: boolean, detail: string) => checks.push({ id, ok, detail });
   add('supplier_gstin', !!supplier && supplier.valid, !supplier ? 'no supplier GSTIN found' : supplier.valid ? `${supplier.gstin} is a valid GSTIN (${state ?? 'state ' + stateCode})` : `${supplier.gstin} fails the GSTIN check digit: misprinted or misread`);
-  add('billed_to_us', buyerIsUs, buyerIsUs ? 'billed to our GSTIN' : 'our GSTIN is not on the invoice: it may be addressed to someone else, and the input GST on it cannot be claimed');
+  add('billed_to_us', buyerIsUs, byGstin ? 'billed to our GSTIN' : byPan ? `billed to our PAN with state code ${ourState} (no GSTIN is printed: the GST is claimed from GSTR-2B)` : 'neither our GSTIN nor our PAN is on the invoice: it may be addressed to someone else');
   add('invoice_number', !!invoice_no, invoice_no ? `invoice ${invoice_no}` : 'no invoice number found');
   const future = invoice_date && opts.today && invoice_date > opts.today;
   add('invoice_date', !!invoice_date && !future, !invoice_date ? 'no valid invoice date found' : future ? `${invoice_date} is in the future` : `dated ${invoice_date}`);

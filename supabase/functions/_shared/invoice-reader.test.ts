@@ -103,11 +103,19 @@ test('a telecom bill from a supplier in our own state is CGST + SGST: the GST is
   assert.equal(only(edit(fixture('airtel').items, 'Uttar Pradesh', 'Uttar Pradesh')).tax_type, 'CGST+SGST');
 });
 
-test('a software invoice that does not carry our GSTIN (only our PAN) is held: its input GST cannot be claimed', () => {
+test('an invoice that prints our PAN and state code instead of the GSTIN (Google\'s format) is accepted: that is the body of the GSTIN, and the GST shows in GSTR-2B', () => {
   const inv = only(fixture('google').items);
-  assert.equal(inv.status, 'review'); assert.deepEqual(failedIds(inv), ['billed_to_us']);
-  assert.match(inv.checks.find(c => c.id === 'billed_to_us')!.detail, /input GST on it cannot be claimed/);
+  assert.equal(inv.status, 'ok', inv.checks.filter(c => !c.ok).map(c => c.detail).join('; '));
+  assert.equal(inv.buyer_gstin, OURS);
+  assert.match(inv.checks.find(c => c.id === 'billed_to_us')!.detail, /our PAN with state code 09/);
   assert.deepEqual([inv.taxable, inv.tax, inv.total, inv.invoice_date, inv.kind], [975, 175.5, 1150.5, '2026-09-30', 'service']);
+});
+
+test('but a different PAN, or our PAN with no state code, is not our invoice', () => {
+  const other = only(edit(fixture('google').items, /AALCR1014K/g, 'ZZZZZ9999Z'));
+  assert.equal(other.status, 'review'); assert.deepEqual(failedIds(other), ['billed_to_us']);
+  const noState = only(edit(fixture('google').items, /Place of Supply\/State Code: 09/, 'Place of Supply'));
+  assert.deepEqual(failedIds(noState), ['billed_to_us']);
 });
 
 test('a GoKwik commission invoice keeps the number of transactions and the GMV it was charged on, and the commission is 2% of that GMV', () => {
