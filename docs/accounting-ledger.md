@@ -450,6 +450,32 @@ and 37938-37940 → waiting, 54 entries removed); 4 Myntra orders with no invoic
 amount or entry changed; two further full syncs were stable. A fake waiting row planted under an already-invoiced Myntra order's
 code was deleted by the sync and the real row kept.
 
+## Refresh now, Reload, and the automatic refresh after an upload
+
+The stored ledger is recalculated by the server about every hour (an incremental run; a full one each night). The page used to have one
+button, "Refresh", which only re-read the stored rows: it looked as if nothing happened because nothing had been recalculated. On 14 Oct
+2026 a GoKwik settlement report was uploaded and its payouts did not show on the Ledger page for the same reason (the upload only stores
+the lines; the next recalculation books them).
+
+- **Reload** (everyone) reads the stored ledger again. It shows a change only after a recalculation has happened.
+- **Refresh now** (admins only; the function checks the admin's sign-in) recalculates now: it calls `accounting-ledger`
+  `{ action: "sync", kind: "incremental", budget_s: 40 }` again and again until it says `finished`, shows "Refreshing… N of M orders",
+  then the page reloads and says "Ledger refreshed: M orders checked" (and how many orders are held back, if any). It is the same run
+  the hourly schedule does.
+- **Automatic refresh after an upload** (no prompt, no click): a successful, new GoKwik report on Bank & card, a new Velocity wallet
+  ledger report or invoice on the Velocity page, and taking any of them back (delete) start the same refresh straight away, with the
+  progress shown at the top of the page ("Updating the ledger after the GoKwik upload… 80 of 207 orders"). An upload that was already
+  imported changes nothing and starts nothing. A bank or card statement does not change the order ledger and starts nothing.
+  *Only the GoKwik upload changes order entries today* (its payouts: Dr bank, Dr gateway fee, Dr IGST input, Cr Easebuzz, per payment,
+  dated by settlement); Velocity's wallet report and invoice are a separate book, so after one the refresh finds nothing new.
+- **One at a time, whichever page started it** (`src/lib/ledgerRefreshStore.js`, shared by all three pages): a refresh does not stop when
+  the user leaves the page; a request made while one is running (a second upload) queues exactly one more run behind it, because the
+  running one may have read its inputs before the change. A run the schedule (or a colleague) is already doing is waited for and our own
+  run follows it, for the same reason. A run nobody has touched for 3 minutes has stalled: `sync` continues it. It gives up after 12 calls
+  or 5 minutes of waiting with a plain message; the run itself keeps going on the server.
+- Logic and tests: `src/lib/ledgerRefresh.js`, `ledgerRefreshStore.js`; the call is `callFunction` (`src/lib/edgeCall.js`) via
+  `ledgerRefreshNow.js`; the bar is `src/components/LedgerRefreshStatus.jsx`.
+
 ## Cancelled orders, and refunds checked against Shopify (`accounting-ledger` v19)
 
 On 14 Oct 2026 order 37937 showed as a finished sale although Shopify had cancelled it 20 seconds after it was placed

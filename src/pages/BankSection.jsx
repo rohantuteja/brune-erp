@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { callFunction } from '../lib/edgeCall';
+import { refreshLedgerNow } from '../lib/ledgerRefreshNow';
+import LedgerRefreshStatus from '../components/LedgerRefreshStatus';
 import { sortRows, clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { effectiveRange, statusCounts, payeeGroups, bucketTotals, signed, toBase64 } from '../lib/financeView';
 import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pills, EmptyState, downloadCsv, useUrlParams, wideScreen } from '../components/AnalyticsKit';
@@ -157,6 +159,8 @@ function UploadPanel({ accounts, onDone }) {
       }
       setFile(null); if (input.current) input.current.value = '';
       onDone();
+      // A GoKwik report decides which orders are paid out: recalculate the ledger now, without being asked (a bank statement does not change it).
+      if (target === 'gokwik' && !json.already_imported) refreshLedgerNow('the GoKwik upload');
     } catch (err) {
       setResult({ ok: false, title: 'Nothing was imported', error: err.message || String(err) });
     } finally { setBusy(false); }
@@ -386,7 +390,7 @@ export default function BankSection({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   // Taking an upload back: a dry run is shown for confirmation first (see components/UploadDelete.jsx).
-  const flow = useDeleteFlow({ call: callImport, showToast, onDeleted: async () => { setSelected(new Set()); await load(); } });
+  const flow = useDeleteFlow({ call: callImport, showToast, onDeleted: async (json) => { setSelected(new Set()); await load(); if (json?.kind === 'gokwik_report') refreshLedgerNow('removing the GoKwik report'); } });
   const deleteStatement = (st) => flow.start({ action: 'delete_statement', statement_id: st.id });
   const deleteGokwik = (g) => flow.start({ action: 'delete_gokwik', source_file: g.source_file });
 
@@ -494,9 +498,12 @@ export default function BankSection({ showToast }) {
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
+      <LedgerRefreshStatus />
+
       <Collapsible id="bank-help" title="How this page works" icon={<Info className="w-4 h-4 text-stone-400" />}>
         <ul className="list-disc pl-5 space-y-1 text-xs text-stone-600">
           <li>Upload the ICICI statement (Excel), the Kotak card statement (PDF) and GoKwik’s settlement report (CSV). A file that does not add up is refused, and uploading the same lines twice never doubles them.</li>
+          <li>After a GoKwik report is uploaded (or taken back) the order ledger is recalculated automatically, so its payouts show on Analytics → Ledger within a couple of minutes; the progress is shown at the top of this page.</li>
           <li><b>Matched</b> lines are proved: a GoKwik or Velocity payout, a Meta invoice payment, or a payee you filed before. <b>Suggested</b> lines are the system’s guess; confirm or refile them. <b>Needs review</b> lines have no guess.</li>
           <li>When you file a line it is yours: re-matching never changes it. Tick <i>Remember this payee</i> to file every future line to the same payee automatically.</li>
           <li>The founder’s card: its purchases are company expenses the company owes him. Paying the card bill from the founder’s own money needs no company entry.</li>
