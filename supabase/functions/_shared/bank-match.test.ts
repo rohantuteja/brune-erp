@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
-import { BUCKETS, MERCHANTS, NOTE_BUCKET, COD_BUCKET, GATEWAY_BUCKET, META_BUCKET, RAZORPAY_BUCKET, MYNTRA_BUCKET, PURCHASE_BUCKET, SUSPENSE_BUCKET, classify, parseRemarks, type Ctx, type Line } from './bank-match.ts';
+import { BUCKETS, MERCHANTS, NOTE_BUCKET, COD_BUCKET, GATEWAY_BUCKET, META_BUCKET, RAZORPAY_BUCKET, MYNTRA_BUCKET, PURCHASE_BUCKET, SUSPENSE_BUCKET, classify, lineKeys, noteKey, parseRemarks, upiPayee, type Ctx, type Line, type NoteRule } from './bank-match.ts';
 import { VELOCITY_RECHARGE_BUCKET } from './velocity-ledger.ts';
 import { BANK, COD_RECEIVABLE, GATEWAY, GATEWAY_FEE, MYNTRA, RAZORPAY } from './ledger.ts';
 
@@ -84,9 +84,9 @@ test('a Meta payment is matched to its invoice by number and amount; paid net of
   assert.equal(unknown.status, 'suggested'); assert.match(unknown.reason, /upload that invoice/);
 });
 
-test('your own rule beats the built-in guesses and is applied as your decision', () => {
+test('your own rule is applied as your decision when the payment has no note of its own', () => {
   const ctx: Ctx = { ...empty, rules: [{ id: 7, match_type: 'payee', pattern: 'ramachal', bucket: 'Labour Charges' }] };
-  const m = one(bank('2026-10-02', 'UPI/1/trims/ramachal.55@okaxis//ICI3', { debit: 750 }), ctx);
+  const m = one(bank('2026-10-02', 'UPI/1/UPI Pay/ramachal.55@okaxis//ICI3', { debit: 750 }), ctx);
   assert.equal(m.status, 'matched'); assert.equal(m.bucket, 'Labour Charges'); assert.equal(m.rule_id, 7); assert.match(m.reason, /payments to ramachal/);
   const contains = one(bank('2026-10-02', 'UPI/1/UPI Pay/zippo@ybl//ICI3 ZIPPER HOUSE', { debit: 100 }), { ...empty, rules: [{ id: 8, match_type: 'contains', pattern: 'zipper house', bucket: 'Fabric and Consumbale' }] });
   assert.equal(contains.bucket, 'Fabric and Consumbale');
@@ -195,4 +195,113 @@ test('the latest bucket migration creates exactly the buckets the engine knows, 
   const rows = [...sql.matchAll(/^\s*\('((?:[^']|'')+)', '(\w+)', (true|false), '((?:[^']|'')*)', (\d+)\),?;?$/gm)].map(m => ({ name: m[1].replace(/''/g, "'"), kind: m[2], needs_bill: m[3] === 'true', note: m[4].replace(/''/g, "'") }));
   assert.deepEqual(rows.map(r => r.name), BUCKETS.map(b => b.name));
   assert.deepEqual(rows.map(r => [r.kind, r.needs_bill, r.note]), BUCKETS.map(b => [b.kind, b.needs_bill, b.note]));
+});
+
+// ── Who was paid: a masked UPI id is not a name ──────────────────────────────────────────────
+test('masked and numeric UPI handles are keyed by the whole handle; a handle with a name keeps the name', () => {
+  assert.equal(upiPayee('XX6586@ptsbi'), 'xx6586@ptsbi');
+  assert.equal(upiPayee('XX9240@okbizax'), 'xx9240@okbizax');
+  assert.notEqual(upiPayee('XX6586@ptsbi'), upiPayee('XX9240@okbizax'));          // twenty people used to share the key "xx"
+  assert.notEqual(upiPayee('XX6586@ptsbi'), upiPayee('XX6586@ybl'));              // the same last digits at another bank are not the same handle
+  assert.equal(upiPayee('9873178806@ptsb'), '9873178806@ptsb');                   // a phone number: used to fall back to the note word
+  assert.equal(upiPayee('XX91n1@pty'), 'xx91n1@pty');                             // "xxn" once merged XX91n1 and XXn272
+  assert.equal(upiPayee('XXn272@okhdfcb'), 'xxn272@okhdfcb');
+  assert.equal(upiPayee('seema.tailor@ybl'), 'seematailor');
+  assert.equal(upiPayee('ramachal.55@okaxis'), 'ramachal');
+  assert.equal(upiPayee('XXrgaf@ptys'), 'xxrgaf');                                // letters after the mask tell people apart: the owner's rules on these keep working
+  assert.equal(upiPayee('XXh2k9@axl'), 'xxhk');
+  assert.equal(upiPayee('XXt.cf@axisban'), 'xxtcf');
+  assert.equal(upiPayee('Ramesh Kumar'), 'rameshkumar');                          // a name, not a handle
+  assert.equal(upiPayee(''), null); assert.equal(upiPayee(undefined), null);
+  const p = (rem: string) => parseRemarks(rem);
+  assert.deepEqual(p('UPI/110606397471/jobwork/9873178806@ptsb//ICI6beb'), { type: 'UPI', note: 'jobwork', payee: '9873178806@ptsb' });
+  assert.equal(p('UPI/1/trims/XX6586@ptsbi//I').payee, 'xx6586@ptsbi');
+  assert.equal(p('UPI/1/trims').payee, null);                                     // no handle: not the note word
+});
+
+test('a rule made on one masked handle does not reach the other masked handles', () => {
+  const ctx: Ctx = { ...empty, rules: [{ id: 1, match_type: 'payee', pattern: upiPayee('XX6586@ptsbi')!, bucket: 'Cleaning Expenses Factory' }] };
+  const mine = one(bank('2026-10-10', 'UPI/1/UPI Pay/XX6586@ptsbi//I', { debit: 3800 }), ctx);
+  const other = one(bank('2026-10-07', 'UPI/2/UPI Pay/XX9240@okbizax//I', { debit: 190 }), ctx);
+  assert.equal(mine.bucket, 'Cleaning Expenses Factory'); assert.equal(mine.kind, 'rule');
+  assert.equal(other.bucket, null); assert.equal(other.status, 'needs_review');
+});
+
+// ── The note and the rule together ───────────────────────────────────────────────────────────
+test('the note words you used on masked-handle payments decide them, whatever other handle was filed before', () => {
+  const rows: Array<[string, number, string]> = [
+    ['trims', 400, 'Fabric and Consumbale'], ['threads', 1000, 'Fabric and Consumbale'], ['tea', 850, 'Staff Welfare Expenses'], ['cab', 214, 'Travelling Expenses'],
+    ['pcrate', 2000, 'Labour Charges'], ['jobwork', 350, 'Labour Charges'], ['dorijobwork', 520, 'Labour Charges'], ['cutting', 8145, 'Labour Charges'],
+    ['transport', 1500, 'FREIGHT INWARD NON GST'], ['maintenance', 10000, 'Repair & Maintenance'], ['kwikchat', 15340, 'Goexcelsior Private Limited'], ['cleaning', 3800, 'Cleaning Expenses Factory'],
+  ];
+  for (const [note, amount, bucket] of rows) {
+    const m = one(bank('2026-10-07', `UPI/9/${note}/XX9240@okbizax//I`, { debit: amount }));
+    assert.equal(m.bucket, bucket, note); assert.equal(m.status, 'suggested', note); assert.equal(m.kind, 'note', note); assert.equal(m.note, note);
+  }
+  const generic = one(bank('2026-10-07', 'UPI/9/UPI Pay/XX9240@okbizax//I', { debit: 5100 }));     // "UPI Pay" says nothing about the purpose
+  assert.equal(generic.status, 'needs_review'); assert.equal(generic.note, null);
+});
+
+test('a rule and a note that agree are matched; when they disagree the line goes to review with both reasons, and nothing moves silently', () => {
+  const ctx: Ctx = { ...empty, rules: [{ id: 7, match_type: 'payee', pattern: 'ramachal', bucket: 'Salary Payable' }] };
+  const agree = one(bank('2026-10-02', 'UPI/1/salary/ramachal.55@okaxis//I', { debit: 9000 }), ctx);
+  assert.equal(agree.status, 'matched'); assert.equal(agree.kind, 'rule'); assert.match(agree.reason, /note "salary" agrees/);
+  const clash = one(bank('2026-10-02', 'UPI/1/trims/ramachal.55@okaxis//I', { debit: 750 }), ctx);
+  assert.equal(clash.status, 'needs_review'); assert.equal(clash.kind, 'conflict'); assert.equal(clash.rule_id, 7);
+  assert.equal(clash.bucket, 'Fabric and Consumbale');                              // the more specific signal is the pick shown
+  assert.match(clash.reason, /Your rule sends payments to ramachal to Salary Payable, but the note "trims" .* Fabric and Consumbale/);
+  const noNote = one(bank('2026-10-02', 'UPI/1/UPI Pay/ramachal.55@okaxis//I', { debit: 750 }), ctx);
+  assert.equal(noNote.status, 'matched'); assert.equal(noNote.bucket, 'Salary Payable');
+  const contains = one(bank('2026-10-02', 'UPI/1/trims/zippo@ybl//I ZIPPER HOUSE', { debit: 100 }), { ...empty, rules: [{ id: 8, match_type: 'contains', pattern: 'zipper house', bucket: 'Fabric and Consumbale' }] });
+  assert.equal(contains.status, 'matched'); assert.equal(contains.bucket, 'Fabric and Consumbale');
+});
+
+test('a note word you have filed yourself is trusted (matched); a built-in one stays a suggestion; your list overrides the built-in table', () => {
+  const learned: NoteRule[] = [{ note: 'threads', bucket: 'Fabric and Consumbale', learned: true }, { note: 'chai', bucket: 'Staff Welfare Expenses', learned: true }, { note: 'trims', bucket: 'Packaging Expenses', learned: false }];
+  const ctx: Ctx = { ...empty, notes: learned };
+  const a = one(bank('2026-10-07', 'UPI/9/threads/XX9240@okbizax//I', { debit: 1000 }), ctx);
+  assert.equal(a.status, 'matched'); assert.equal(a.kind, 'note'); assert.match(a.reason, /always file "threads"/);
+  assert.equal(one(bank('2026-10-07', 'UPI/9/chai/XX9240@okbizax//I', { debit: 90 }), ctx).bucket, 'Staff Welfare Expenses');
+  assert.equal(one(bank('2026-10-07', 'UPI/9/trims/XX9240@okbizax//I', { debit: 90 }), ctx).bucket, 'Packaging Expenses');
+  assert.equal(one(bank('2026-10-07', 'UPI/9/cutting/XX9240@okbizax//I', { debit: 90 }), ctx).bucket, null);       // not in the list given: no built-in fallback once a list exists
+  assert.equal(one(bank('2026-10-07', 'UPI/9/trims/XX9240@okbizax//I', { debit: 90 })).bucket, 'Fabric and Consumbale');   // no list given: the built-in words
+  // a note that points at a bucket that no longer exists is ignored
+  assert.equal(one(bank('2026-10-07', 'UPI/9/zap/XX9240@okbizax//I', { debit: 90 }), { ...empty, notes: [{ note: 'zap', bucket: 'No such bucket', learned: true }] }).status, 'needs_review');
+});
+
+test('"fabric" under ₹5,000 is petty fabric, not a supplier bill; "fabricadv" and a word you filed yourself are left as they are', () => {
+  const small = one(bank('2026-10-07', 'UPI/9/fabric/XX9240@okbizax//I', { debit: 3000 }));
+  assert.equal(small.bucket, 'Fabric and Consumbale'); assert.equal(small.status, 'suggested'); assert.match(small.reason, /under ₹5,000/);
+  assert.equal(one(bank('2026-10-07', 'UPI/9/fabric/XX9240@okbizax//I', { debit: 5000 })).bucket, 'Purchase Accounts');
+  assert.equal(one(bank('2026-10-07', 'UPI/9/fabricadv/XX9240@okbizax//I', { debit: 3000 })).bucket, 'Purchase Accounts');
+  const mine: Ctx = { ...empty, notes: [{ note: 'fabric', bucket: 'Purchase Accounts', learned: true }] };
+  assert.equal(one(bank('2026-10-07', 'UPI/9/fabric/XX9240@okbizax//I', { debit: 3000 }), mine).bucket, 'Purchase Accounts');
+});
+
+test('the note and payee of a line are worked out the same way for lines a person has already decided', () => {
+  assert.deepEqual(lineKeys({ account_kind: 'bank', remarks: 'UPI/1/Trims Stationary/XX6586@ptsbi//I' }), { payee: 'xx6586@ptsbi', note: 'trimsstationary' });
+  assert.deepEqual(lineKeys({ account_kind: 'bank', remarks: 'UPI/1/UPI Pay/XX6586@ptsbi//I' }), { payee: 'xx6586@ptsbi', note: '' });
+  assert.deepEqual(lineKeys({ account_kind: 'card', remarks: 'GOOGLE WORKSPACE CYBS MUMBAI IN' }), { payee: 'googleworkspacecybsmumba', note: '' });
+  assert.equal(noteKey(' Trims Stationary '), 'trimsstationary');
+});
+
+// The database list of note words (finance_note_rules) is seeded by migration 033 from NOTE_BUCKET: they must not drift apart.
+test('the note-word migration seeds exactly the built-in words, with the same buckets', () => {
+  const dir = new URL('../../migrations/', import.meta.url);
+  const file = readdirSync(dir).filter(f => /finance_note_rules/.test(f)).sort().pop()!;
+  const sql = readFileSync(new URL(file, dir), 'utf8');
+  const rows = [...sql.matchAll(/^\s*\('(\w+)', '((?:[^']|'')+)', '(built_in|learned)'\),?;?$/gm)].map(m => ({ note: m[1], bucket: m[2].replace(/''/g, "'"), origin: m[3] }));
+  assert.deepEqual(Object.fromEntries(rows.map(r => [r.note, r.bucket])), NOTE_BUCKET);
+  assert.equal(new Set(rows.map(r => r.note)).size, rows.length, 'no word is seeded twice');
+});
+
+test('a UPI reversal cancels the payment whose reference it names, not another payment of the same amount', () => {
+  const first = bank('2026-09-21', 'UPI/110730656849/tea/XX9175@pthdfc//ICIa', { debit: 1275 });
+  const second = bank('2026-09-21', 'UPI/110730661632/tea/XX9175@pthdfc//ICIb', { debit: 1275 });
+  const back = bank('2026-09-21', 'UPI/RVSL110730656849/tea/XX9175@pthdfc//ICIc', { credit: 1275 });
+  const m = classify([second, first, back], empty);
+  assert.equal(m.get(first.key)!.status, 'ignored'); assert.equal(m.get(back.key)!.status, 'ignored'); assert.equal(m.get(back.key)!.match_ref, first.key);
+  assert.equal(m.get(second.key)!.bucket, 'Staff Welfare Expenses');       // the other tea payment stands
+  const orphan = one(bank('2026-09-21', 'UPI/RVSL999999999999/tea/XX9175@pthdfc//ICId', { credit: 50 }));
+  assert.notEqual(orphan.status, 'ignored');                                // a reversal with no payment to undo is left for a person
 });

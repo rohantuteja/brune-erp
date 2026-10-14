@@ -61,3 +61,25 @@ export function bucketTotals(lines) {
 
 /** A statement line's amount with its direction: negative for money out. */
 export const signed = (l) => money(Number(l.credit) - Number(l.debit));
+
+/** Who or what put an undecided line under its bucket, in a few words (the reason says the rest). */
+const ORIGIN = {
+  rule: 'Your payee rule', note: 'From the note you wrote', conflict: 'Your rule and the note disagree', unknown: 'Nothing explains it yet',
+  gokwik_payout: 'Proved by a GoKwik payout', velocity_remittance: 'Proved by a Velocity payout', velocity_recharge: 'Velocity wallet top-up', meta_invoice: 'Meta invoice',
+  returned_payment: 'Cancelled out: returned', reversed_charge: 'Cancelled out: reversed', card_payment: 'Founder card payment',
+  merchant: 'Recognised merchant', bank_charge: 'Bank charge', card_fee: 'Card fee', category: 'Card category', cash_deposit: 'Cash deposit', rtgs_in: 'Large transfer in',
+};
+export function originOf(l) {
+  if (l.kind === 'manual') return `Filed by ${l.decided_by_name || 'you'}`;
+  if (l.decided_at) return `Confirmed by ${l.decided_by_name || 'you'}`;
+  return ORIGIN[l.kind] || '';
+}
+
+/** The note words on these lines, and which of them the note list does not know yet. */
+export function noteWordsOf(lines, known) {
+  const words = [...new Set(lines.map(l => l.note).filter(Boolean))].sort();
+  return { words, unknown: words.filter(w => !known.has(w)) };
+}
+
+/** A line of the "this would also move" list: where it is now and where it would go. */
+export const moveText = (m) => `${m.from || 'no bucket'} → ${m.to || 'no bucket'}`;
