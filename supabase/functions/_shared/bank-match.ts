@@ -4,11 +4,14 @@
 // Order of decision, first match wins:
 //   1. pairs that cancel out        a payment the bank returned the same day, a charge reversed on the card
 //   2. proof from another system    a GoKwik or Velocity payout (amount and date agree), a Meta invoice (number and amount agree)
-//   3. the owner's own rules        "this payee is always that bucket", learned from a confirmation
-//   4. built-in guesses             the note typed on a UPI payment ("trims", "pcrate"), the card merchant, the narration
+//   3. the owner's rules and notes  a payee rule ("this payee is always that bucket"), and the note typed on a payment ("trims" means
+//                                   Fabric and Consumbale). The note says what the payment was for, the payee says who was paid:
+//                                   they agree -> matched; only one speaks -> it decides; they disagree -> needs_review, never a silent move
+//   4. built-in guesses             the card merchant, the narration
 //   5. nothing                      the line is left for a person
 //
-// status: matched (proof, or the owner's own rule)  suggested (a guess to confirm)  needs_review  ignored (no entry needed)
+// status: matched (proof, a rule of the owner's, or a note word he has filed himself)  suggested (a guess to confirm)
+//         needs_review (no guess, or a rule and a note disagree)  ignored (no entry needed)
 // Lines a person has decided are never touched (the caller leaves them out).
 
 import { VELOCITY_HANDLE, VELOCITY_RECHARGE_BUCKET, type TopUp } from './velocity-ledger.ts';
@@ -26,10 +29,14 @@ export type Line = {
 export type Payout = { source: 'gokwik' | 'velocity'; utr: string; date: string; amount: number; payments: number };
 export type VendorInvoice = { vendor: string; invoice_no: string; invoice_date: string; period: string | null; subtotal: number; tax: number; total: number };
 export type Rule = { id: number; match_type: 'payee' | 'contains'; pattern: string; bucket: string };
-export type Ctx = { payouts: Payout[]; invoices: VendorInvoice[]; rules: Rule[]; topups?: TopUp[] };   // topups: what Velocity's wallet ledger says was added
+// A note word ("trims") and where it goes. `learned`: the owner filed it himself (or taught it), so it is trusted (matched);
+// a built-in one is a guess to confirm (suggested).
+export type NoteRule = { note: string; bucket: string; learned: boolean };
+// topups: what Velocity's wallet ledger says was added. notes: the owner's note list; without it the built-in words are used.
+export type Ctx = { payouts: Payout[]; invoices: VendorInvoice[]; rules: Rule[]; topups?: TopUp[]; notes?: NoteRule[] };
 export type Status = 'matched' | 'suggested' | 'needs_review' | 'ignored';
 export type Classification = {
-  status: Status; kind: string; bucket: string | null; match_ref: string | null; reason: string; needs_bill: boolean; payee: string | null; rule_id: number | null;
+  status: Status; kind: string; bucket: string | null; match_ref: string | null; reason: string; needs_bill: boolean; payee: string | null; rule_id: number | null; note: string | null;
 };
 
 export type Bucket = { name: string; kind: 'expense' | 'asset' | 'liability' | 'income' | 'transfer' | 'ignore' | 'review'; needs_bill: boolean; note: string };
@@ -103,12 +110,15 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const dayNum = (d: string) => Math.round(Date.parse(`${d}T00:00:00Z`) / 86_400_000);
 const near = (a: number, b: number, tol = 0.011) => Math.abs(a - b) <= tol;
 
-// ── Built-in guesses ─────────────────────────────────────────────────────────────────────────
+// ── The note you type on a payment ───────────────────────────────────────────────────────────
+// Built-in words: where a note goes until the owner says otherwise. The owner's list lives in finance_note_rules (seeded from this
+// table by migration 033, which a test keeps in step) and is what the matching uses; this table is the fallback when none is given.
 export const NOTE_BUCKET: Record<string, string> = {
   fabric: PURCHASE_BUCKET, fabricadv: PURCHASE_BUCKET, purchase: PURCHASE_BUCKET,
-  trims: 'Fabric and Consumbale', zipper: 'Fabric and Consumbale',
-  cutting: 'Labour Charges', pcrate: 'Labour Charges', marker: 'Labour Charges',
-  transport: 'FREIGHT INWARD NON GST', cleaning: 'Cleaning Expenses Factory',
+  trims: 'Fabric and Consumbale', trim: 'Fabric and Consumbale', trimsstationary: 'Fabric and Consumbale', zipper: 'Fabric and Consumbale',
+  thread: 'Fabric and Consumbale', threads: 'Fabric and Consumbale',
+  cutting: 'Labour Charges', pcrate: 'Labour Charges', marker: 'Labour Charges', pattern: 'Labour Charges', jobwork: 'Labour Charges', dorijobwork: 'Labour Charges',
+  transport: 'FREIGHT INWARD NON GST', cab: 'Travelling Expenses', tea: 'Staff Welfare Expenses', cleaning: 'Cleaning Expenses Factory',
   maintenance: 'Repair & Maintenance', servicing: 'Repair & Maintenance',
   machine: 'Sewing Machine GST',
   software: 'Software Expenses @ 18%', kwikchat: 'Goexcelsior Private Limited',
@@ -117,24 +127,51 @@ export const NOTE_BUCKET: Record<string, string> = {
   salary: 'Salary Payable', fsalary: 'Salary Payable', advance: SUSPENSE_BUCKET,
   card: SUSPENSE_BUCKET,
 };
+/** The key a note is stored and looked up under: lower case, no spaces. */
+export const noteKey = (note: string) => note.replace(/\s+/g, '').toLowerCase();
+/** A fabric payment under this is petty fabric (Fabric and Consumbale), not a supplier bill (Purchase Accounts): a hint on a built-in guess only. */
+export const PETTY_FABRIC_BELOW = 5000;
+
 // ── Who was paid, and what the owner wrote ───────────────────────────────────────────────────
 const squash = (s: string) => s.replace(/\d+/g, '').replace(/@.*$/, '').replace(/[^a-z]/gi, '').toLowerCase();
 
-/** The transfer type, the owner's note, and a key for the other party (digits and bank handles removed). */
-export function parseRemarks(remarks: string): { type: string; note: string; payee: string | null } {
+/**
+ * The key for the other party of a UPI payment, from the handle the statement shows.
+ * A handle with a real name in it ("seema.tailor@ybl") is keyed by the name, so the same person on two apps is one payee.
+ * A masked or numeric handle ("XX6586@ptsbi", "9876543210@ybl") says nothing about who it is: squashing it leaves "xx" or nothing,
+ * which used to put twenty different people under one key. The whole handle, bank included, is the key for those.
+ */
+export function upiPayee(handle: string | undefined): string | null {
+  const h = (handle ?? '').trim();
+  if (!h) return null;
+  const name = squash(h);
+  if (!h.includes('@')) return name || null;                 // a name rather than a handle
+  if (name.length >= 4 && !/^x+$/.test(name)) return name;
+  return h.toLowerCase().replace(/\s+/g, '');
+}
+
+/** The transfer type, the owner's note, and a key for the other party (digits and bank handles removed). `isNote` tells a note word from a name. */
+const builtInNote = (key: string) => Object.prototype.hasOwnProperty.call(NOTE_BUCKET, key);
+export function parseRemarks(remarks: string, isNote: (key: string) => boolean = builtInNote): { type: string; note: string; payee: string | null } {
   const parts = remarks.split('/').map(p => p.trim());
   const type = (parts[0] || '').toUpperCase().split(/[-\s]/)[0];
   const clean = (s: string | undefined) => (s && squash(s) ? squash(s) : null);
   const plain = (s: string) => (/^(upi pay|upi|payment from phone|na)$/i.test(s) || /^[#\d]*$/.test(s) ? '' : s.toLowerCase());
-  if (type === 'UPI') return { type, note: plain(parts[2] ?? ''), payee: clean(parts[3]) ?? clean(parts[2]) };
+  if (type === 'UPI') return { type, note: plain(parts[2] ?? ''), payee: upiPayee(parts[3]) };
   if (type === 'MMT' || type === 'IMPS') return { type, note: plain(parts[3] ?? ''), payee: clean(parts[4]) };
   if (type === 'INF') {
     // The note and the name come in either order ("…/Salary /Asha" or "…/Asha/FSalary"): the known note word is the note.
     const [a, b] = [parts[parts.length - 2] ?? '', parts[parts.length - 1] ?? ''];
-    const known = (x: string) => x.replace(/\s+/g, '').toLowerCase() in NOTE_BUCKET;
+    const known = (x: string) => isNote(noteKey(x));
     return known(b) && !known(a) ? { type, note: plain(b), payee: clean(a) } : { type, note: plain(a), payee: clean(b) };
   }
   return { type, note: '', payee: null };
+}
+
+/** What a line stores about the other party and the note (the engine and the importer both need it, for decided lines too). */
+export function lineKeys(l: Pick<Line, 'account_kind' | 'remarks'>, isNote?: (key: string) => boolean): { payee: string | null; note: string } {
+  if (l.account_kind === 'bank') { const r = parseRemarks(l.remarks, isNote); return { payee: r.payee, note: noteKey(r.note) }; }
+  return { payee: squash(l.remarks.replace(/\(.*?\)/g, '')).slice(0, 24) || null, note: '' };
 }
 
 const has = (remarks: string, re: RegExp) => re.test(remarks);
@@ -157,22 +194,25 @@ const merchantFor = (remarks: string, account: 'bank' | 'card') => MERCHANTS.fin
 function result(c: Partial<Classification> & Pick<Classification, 'status' | 'kind' | 'reason'>, payee: string | null): Classification {
   const bucket = c.bucket ?? null;
   if (bucket && !BUCKET_NAMES.has(bucket)) throw new Error(`unknown bucket: ${bucket}`);
-  return { bucket, match_ref: null, needs_bill: needsBill(bucket), payee, rule_id: null, ...c };
+  return { bucket, match_ref: null, needs_bill: needsBill(bucket), payee, rule_id: null, note: null, ...c };
 }
 
 export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
   const out = new Map<string, Classification>();
   const paired = new Set<string>();
+  const notes = new Map<string, NoteRule>((ctx.notes ?? Object.entries(NOTE_BUCKET).map(([note, bucket]) => ({ note, bucket, learned: false }))).map(n => [n.note, n]));
 
   // 1. Pairs that cancel out. A bank return credit looks back for the payment it undoes; a card reversal for its charge.
   const byDay = [...lines].sort((a, b) => a.txn_date.localeCompare(b.txn_date));
   // A bank credit that says it is a return; a card credit among the purchases (a refund or reversal) that repeats a charge.
-  const undoes = (l: Line) => l.credit > 0 && (l.account_kind === 'bank' ? has(l.remarks, /RETURN|REVERS/i) : l.section !== 'credit');
+  // A UPI reversal names the payment it undoes: "UPI/RVSL110730656849/…" undoes "UPI/110730656849/…".
+  const rvslRef = (l: Line) => (l.account_kind === 'bank' ? /^UPI\/RVSL(\d+)\//i.exec(l.remarks)?.[1] : undefined);
+  const undoes = (l: Line) => l.credit > 0 && (l.account_kind === 'bank' ? has(l.remarks, /RETURN|REVERS/i) || !!rvslRef(l) : l.section !== 'credit');
   for (const ret of byDay.filter(undoes)) {
     if (paired.has(ret.key)) continue;
     const other = byDay.find(d => d.debit > 0 && !paired.has(d.key) && near(d.debit, ret.credit)
       && dayNum(ret.txn_date) - dayNum(d.txn_date) >= 0 && dayNum(ret.txn_date) - dayNum(d.txn_date) <= 5
-      && (ret.account_kind === 'bank' || d.remarks === ret.remarks));
+      && (rvslRef(ret) ? d.remarks.startsWith(`UPI/${rvslRef(ret)}/`) : ret.account_kind === 'bank' || d.remarks === ret.remarks));
     if (!other) continue;
     paired.add(ret.key); paired.add(other.key);
     const bank = ret.account_kind === 'bank';
@@ -200,8 +240,8 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
 
   for (const l of lines) {
     if (out.has(l.key)) continue;
-    const { note, payee } = l.account_kind === 'bank' ? parseRemarks(l.remarks) : { note: '', payee: squash(l.remarks.replace(/\(.*?\)/g, '')).slice(0, 24) || null };
-    const done = (c: Classification) => { out.set(l.key, c); };
+    const { note, payee } = lineKeys(l, k => notes.has(k));
+    const done = (c: Classification) => { out.set(l.key, { ...c, note: note || null }); };
 
     // The founder's card: his own payment of the bill needs no company entry; every purchase is a company expense he paid.
     if (l.account_kind === 'card' && l.credit > 0 && /PAYMENT RECEIVED/i.test(l.remarks)) {
@@ -245,17 +285,25 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
       continue;
     }
 
-    // 3. The owner's own rules.
+    // 3. The owner's rules and the note he typed. The note says what the payment was for, the rule says who was paid.
     const rule = ctx.rules.find(r => (r.match_type === 'payee' ? !!payee && payee === r.pattern : l.remarks.toLowerCase().includes(r.pattern.toLowerCase())) && BUCKET_NAMES.has(r.bucket));
+    const noteRule = l.account_kind === 'bank' && note ? notes.get(note) : undefined;
+    const fromNote = noteRule && BUCKET_NAMES.has(noteRule.bucket) ? noteGuess(noteRule, l) : null;
+    if (rule && fromNote && fromNote.bucket !== rule.bucket) {
+      // Two signals, two answers: nothing moves silently. The note is the more specific of the two, so it is the one shown as the pick.
+      done(result({ status: 'needs_review', kind: 'conflict', bucket: fromNote.bucket, rule_id: rule.id,
+        reason: `Your rule sends ${describeRule(rule)} to ${rule.bucket}, but the note "${note}" on this payment means ${fromNote.bucket}: choose one` }, payee));
+      continue;
+    }
     if (rule) {
-      done(result({ status: 'matched', kind: 'rule', bucket: rule.bucket, reason: `Your rule: ${describeRule(rule)} go to ${rule.bucket}`, rule_id: rule.id }, payee));
+      done(result({ status: 'matched', kind: 'rule', bucket: rule.bucket, rule_id: rule.id,
+        reason: `Your rule: ${describeRule(rule)} go to ${rule.bucket}${fromNote ? `, and the note "${note}" agrees` : ''}` }, payee));
       continue;
     }
 
     // 4. Built-in guesses.
     if (l.account_kind === 'bank') {
-      const bucket = NOTE_BUCKET[note.replace(/\s+/g, '')];
-      if (bucket) { done(result({ status: 'suggested', kind: 'note', bucket, reason: `You wrote "${note.trim()}" on this payment` }, payee)); continue; }
+      if (fromNote) { done(result({ status: fromNote.status, kind: 'note', bucket: fromNote.bucket, reason: fromNote.reason }, payee)); continue; }
       const m = merchantFor(l.remarks, 'bank');
       if (m && (l.debit > 0 || /RAZORPAY/i.test(l.remarks))) { done(result({ status: 'suggested', kind: 'merchant', bucket: m[1], reason: m[2] }, payee)); continue; }
       if (l.debit > 0 && has(l.remarks, /\bchgs?\b|charges|^GIB\//i)) { done(result({ status: 'suggested', kind: 'bank_charge', bucket: 'Bank Charges', reason: 'Looks like a bank charge (or the GST on one)' }, payee)); continue; }
@@ -272,6 +320,15 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
     done(result({ status: 'needs_review', kind: 'unknown', reason: 'No rule or note explains this line' }, payee));
   }
   return out;
+}
+
+// What a note word says about a line. A built-in "fabric" under ₹5,000 is petty fabric, not a supplier bill (a hint on a guess only: a word the owner has filed himself is taken as he filed it).
+function noteGuess(rule: NoteRule, l: Line): { bucket: string; status: Status; reason: string } {
+  if (rule.learned) return { bucket: rule.bucket, status: 'matched', reason: `You always file "${rule.note}" under ${rule.bucket}` };
+  if (rule.bucket === PURCHASE_BUCKET && (rule.note === 'fabric' || rule.note === 'purchase') && l.debit > 0 && l.debit < PETTY_FABRIC_BELOW) {
+    return { bucket: 'Fabric and Consumbale', status: 'suggested', reason: `You wrote "${rule.note}" on this payment, and it is under ₹${PETTY_FABRIC_BELOW.toLocaleString('en-IN')}: petty fabric` };
+  }
+  return { bucket: rule.bucket, status: 'suggested', reason: `You wrote "${rule.note}" on this payment` };
 }
 
 // Wording for a learned rule in a reason line.

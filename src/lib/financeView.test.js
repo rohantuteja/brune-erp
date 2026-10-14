@@ -47,3 +47,25 @@ test('a line is signed by direction: money out is negative', () => {
   assert.equal(signed(L(1, 'x', { debit: 10.1 })), -10.1);
   assert.equal(signed(L(1, 'x', { credit: 25 })), 25);
 });
+
+import { moveText, noteWordsOf, originOf } from './financeView.js';
+
+test('where a line came from is said in a few words', () => {
+  assert.equal(originOf({ kind: 'manual', decided_at: '2026-10-10T00:00:00Z', decided_by_name: 'rohan' }), 'Filed by rohan');
+  assert.equal(originOf({ kind: 'note', decided_at: '2026-10-10T00:00:00Z', decided_by_name: 'rohan' }), 'Confirmed by rohan');
+  assert.equal(originOf({ kind: 'rule', decided_at: null }), 'Your payee rule');
+  assert.equal(originOf({ kind: 'note', decided_at: null }), 'From the note you wrote');
+  assert.equal(originOf({ kind: 'conflict', decided_at: null }), 'Your rule and the note disagree');
+  assert.equal(originOf({ kind: 'something_new', decided_at: null }), '');
+});
+
+test('the note words on the chosen lines, and the ones the list does not know', () => {
+  const lines = [{ note: 'trims' }, { note: 'trims' }, { note: 'chai' }, { note: null }, {}];
+  assert.deepEqual(noteWordsOf(lines, new Set(['trims'])), { words: ['chai', 'trims'], unknown: ['chai'] });
+  assert.deepEqual(noteWordsOf([{ note: null }], new Set()), { words: [], unknown: [] });
+});
+
+test('a move is shown as from → to', () => {
+  assert.equal(moveText({ from: 'Cleaning Expenses Factory', to: 'Fabric and Consumbale' }), 'Cleaning Expenses Factory → Fabric and Consumbale');
+  assert.equal(moveText({ from: null, to: 'Labour Charges' }), 'no bucket → Labour Charges');
+});

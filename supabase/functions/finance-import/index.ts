@@ -1,4 +1,4 @@
-// finance-import v5
+// finance-import v6
 // Takes an uploaded bank statement (ICICI .xlsx), credit card statement (Kotak .pdf) or GoKwik settlement report (.csv),
 // checks that it adds up, stores the LINES (never the file), and works out what each line is. Admins only (an admin's
 // login, or the project's internal x-cron-key for server-to-server calls).
@@ -8,6 +8,8 @@
 //   statement  { account_id, filename, data }   data = the file, base64. Refused whole if its own totals do not add up.
 //   gokwik     { filename, csv }                GoKwik's rawSettlementReport (or settlement_v2) as text
 //   rematch    {}                               re-run the matching on every line no person has decided
+//   preview    { ids, bucket, payee, note }     read-only: if these lines were filed under `bucket` and the payee and/or the note word
+//                                               remembered, which OTHER open lines would move to a different bucket? Saves nothing.
 //   delete_statement { statement_id, dry_run }  take back a statement and the lines it brought in (see migration 026)
 //   delete_gokwik    { source_file, dry_run }   take back a GoKwik report's payments
 //   A delete is a DRY RUN (counts only, nothing changes) unless dry_run is exactly false; a real delete re-runs the matching.
@@ -19,7 +21,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { extractText, getDocumentProxy } from 'npm:unpdf@0.12.1';
 import { CORS, cronKeyValid, json, requireAdmin } from '../_shared/shopify-admin.ts';
 import { fileKind, parseBankRows, parseCardText, xlsxRows, type ParsedStatement } from '../_shared/statements.ts';
-import { classify, type Ctx, type Line, type Payout } from '../_shared/bank-match.ts';
+import { BUCKETS, classify, lineKeys, type Ctx, type Line, type NoteRule, type Payout, type Rule } from '../_shared/bank-match.ts';
 import { parseGokwikReport, payoutsOf } from '../_shared/gokwik-report.ts';
 import { matchTopUps, VELOCITY_RECHARGE_BUCKET } from '../_shared/velocity-ledger.ts';
 
@@ -44,9 +46,10 @@ serve(async (req) => {
       case 'statement': return await uploadStatement(admin, user, body);
       case 'gokwik':    return await uploadGokwik(admin, body);
       case 'rematch':   return json(await rematch(admin));
+      case 'preview':   return await previewRemember(admin, body);
       case 'delete_statement': return await removeUpload(admin, user, 'finance_delete_statement', { p_id: String(body.statement_id ?? '') }, body.dry_run);
       case 'delete_gokwik':    return await removeUpload(admin, user, 'gokwik_delete_report', { p_source_file: String(body.source_file ?? '') }, body.dry_run);
-      default:          return json({ error: 'action must be statement, gokwik, rematch, delete_statement or delete_gokwik' }, 400);
+      default:          return json({ error: 'action must be statement, gokwik, rematch, preview, delete_statement or delete_gokwik' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -185,18 +188,23 @@ async function loadContext(admin: any): Promise<Ctx> {
   for (const v of vel ?? []) payouts.push({ source: 'velocity', utr: v.utr, date: v.paid_on, amount: Number(v.amount), payments: v.payments });
   const invoices = await fetchAll<any>((f, t) => admin.from('vendor_invoices').select('vendor, invoice_no, invoice_date, period, subtotal, tax, total').range(f, t));
   const rules = await fetchAll<any>((f, t) => admin.from('finance_rules').select('id, match_type, pattern, bucket').range(f, t));
+  // The note words (what a "trims" or "tea" on a payment means). 'learned' ones were filed by the owner and are trusted.
+  const noteRows = await fetchAll<any>((f, t) => admin.from('finance_note_rules').select('note, bucket, origin').order('note').range(f, t));
+  const notes: NoteRule[] = noteRows.map(n => ({ note: n.note, bucket: n.bucket, learned: n.origin === 'learned' }));
   // Top-ups Velocity's wallet ledger shows: they prove the bank payments that funded the wallet.
   const wallet = await fetchAll<any>((f, t) => admin.from('velocity_wallet_lines').select('line_key, txn_at, txn_date, amount').eq('kind', 'recharge').order('id').range(f, t));
   return {
-    payouts, rules,
+    payouts, rules, notes,
     topups: wallet.map(w => ({ key: w.line_key, at: String(w.txn_at).replace('T', ' ').slice(0, 19), date: w.txn_date, amount: Number(w.amount) })),
     invoices: invoices.map(i => ({ vendor: i.vendor, invoice_no: i.invoice_no, invoice_date: i.invoice_date, period: i.period, subtotal: Number(i.subtotal), tax: Number(i.tax), total: Number(i.total) })),
   };
 }
 
-async function rematch(admin: any) {
+// What the matching works from: every line, the ones nobody has decided, and the reference data (with the adjustments for
+// what a person has already tied to a payout or a wallet top-up).
+async function prepare(admin: any) {
   const accounts = new Map<string, 'bank' | 'card'>(((await admin.from('finance_accounts').select('id, kind')).data ?? []).map((a: any) => [a.id, a.kind]));
-  const all = await fetchAll<any>((f, t) => admin.from('finance_lines').select('id, account_id, txn_date, remarks, debit, credit, category, section, kind, match_ref, decided_at, bucket').order('id').range(f, t));
+  const all = await fetchAll<any>((f, t) => admin.from('finance_lines').select('id, account_id, txn_date, remarks, debit, credit, category, section, kind, match_ref, decided_at, bucket, payee, note').order('id').range(f, t));
   const open = all.filter(l => !l.decided_at);
   const ctx = await loadContext(admin);
   // A payout a person has already filed against a line cannot explain another credit.
@@ -210,15 +218,67 @@ async function rematch(admin: any) {
     .map(l => ({ id: l.id, date: l.txn_date, amount: Number(l.debit), remarks: l.remarks, filed: true }));
   const reserved = matchTopUps(ctx.topups, filedByHand);
   ctx.topups = ctx.topups.filter(t => !reserved.has(t.key));
-  const lines: Line[] = open.map(l => ({ key: String(l.id), account_kind: accounts.get(l.account_id) ?? 'bank', txn_date: l.txn_date, remarks: l.remarks, debit: Number(l.debit), credit: Number(l.credit), category: l.category, section: l.section }));
-  const result = classify(lines, ctx);
+  return { accounts, all, open, ctx };
+}
+
+const toLine = (accounts: Map<string, 'bank' | 'card'>) => (l: any): Line =>
+  ({ key: String(l.id), account_kind: accounts.get(l.account_id) ?? 'bank', txn_date: l.txn_date, remarks: l.remarks, debit: Number(l.debit), credit: Number(l.credit), category: l.category, section: l.section });
+
+async function rematch(admin: any) {
+  const { accounts, all, open, ctx } = await prepare(admin);
+  const result = classify(open.map(toLine(accounts)), ctx);
   const rows = open.map(l => ({ id: l.id, ...result.get(String(l.id))! })).map(r => ({
-    id: r.id, status: r.status, kind: r.kind, bucket: r.bucket, match_ref: r.match_ref, reason: r.reason, needs_bill: r.needs_bill, payee: r.payee, rule_id: r.rule_id,
+    id: r.id, status: r.status, kind: r.kind, bucket: r.bucket, match_ref: r.match_ref, reason: r.reason, needs_bill: r.needs_bill, payee: r.payee, rule_id: r.rule_id, note: r.note,
   }));
   for (let i = 0; i < rows.length; i += 500) {
     const { error } = await admin.rpc('finance_apply_matches', { p_rows: rows.slice(i, i + 500) });
     if (error) throw new Error(`saving matches: ${error.message}`);
   }
+  // The payee and note of lines a person has decided are read the same way (they never change the decision).
+  const noteWords = new Set((ctx.notes ?? []).map(n => n.note));
+  const keys = all.filter(l => l.decided_at).map(l => ({ id: l.id, ...lineKeys({ account_kind: accounts.get(l.account_id) ?? 'bank', remarks: l.remarks }, k => noteWords.has(k)), had: l }))
+    .filter(k => (k.payee ?? null) !== (k.had.payee ?? null) || k.note !== (k.had.note ?? ''))
+    .map(({ id, payee, note }) => ({ id, payee, note }));
+  for (let i = 0; i < keys.length; i += 500) {
+    const { error } = await admin.rpc('finance_set_keys', { p_rows: keys.slice(i, i + 500) });
+    if (error) throw new Error(`saving payees: ${error.message}`);
+  }
   const count = (s: string) => rows.filter(r => r.status === s).length;
-  return { lines: all.length, decided_by_you: all.length - open.length, matched: count('matched'), suggested: count('suggested'), needs_review: count('needs_review'), ignored: count('ignored') };
+  const moved = open.filter(l => l.bucket && result.get(String(l.id))!.bucket !== l.bucket).length;       // lines the matching put under a different bucket than before
+  return { lines: all.length, decided_by_you: all.length - open.length, matched: count('matched'), suggested: count('suggested'), needs_review: count('needs_review'), ignored: count('ignored'), moved };
+}
+
+// ── "What would remembering this move?" ──────────────────────────────────────────────────────
+// The screen asks before it saves: if the chosen lines were filed under `bucket` and their payee and/or note word remembered, which
+// other lines nobody has decided would end up under a different bucket? Nothing is written.
+async function previewRemember(admin: any, body: any) {
+  const ids = new Set((Array.isArray(body.ids) ? body.ids : []).map(Number).filter(Number.isFinite).slice(0, 1000));
+  const bucket = String(body.bucket ?? '');
+  if (!ids.size) return json({ error: 'choose the lines first' }, 400);
+  if (!BUCKETS.some(b => b.name === bucket)) return json({ error: 'choose a bucket first' }, 400);
+  const { accounts, all, open, ctx } = await prepare(admin);
+  const others = open.filter(l => !ids.has(l.id));            // the chosen lines become decided: they do not move again
+  const lines = others.map(toLine(accounts));
+  const before = classify(lines, ctx);
+  const chosen = all.filter(l => ids.has(l.id));
+  const rules: Rule[] = [...ctx.rules];
+  if (body.payee) {
+    for (const pattern of new Set<string>(chosen.map(l => l.payee).filter((p: string | null) => !!p && !/^x+$/.test(p)))) {
+      const at = rules.findIndex(r => r.match_type === 'payee' && r.pattern === pattern);
+      const rule: Rule = { id: at >= 0 ? rules[at].id : -1, match_type: 'payee', pattern, bucket };
+      if (at >= 0) rules[at] = rule; else rules.push(rule);
+    }
+  }
+  const notes: NoteRule[] = [...(ctx.notes ?? [])];
+  if (body.note) {
+    for (const note of new Set<string>(chosen.map(l => l.note).filter((n: string | null) => !!n))) {
+      const at = notes.findIndex(n => n.note === note);
+      if (at >= 0) notes[at] = { note, bucket, learned: true }; else notes.push({ note, bucket, learned: true });
+    }
+  }
+  const after = classify(lines, { ...ctx, rules, notes });
+  const moves = others.filter(l => (before.get(String(l.id))?.bucket ?? null) !== (after.get(String(l.id))?.bucket ?? null))
+    .map(l => ({ id: l.id, txn_date: l.txn_date, remarks: l.remarks, debit: Number(l.debit), credit: Number(l.credit), from: before.get(String(l.id))?.bucket ?? null, to: after.get(String(l.id))?.bucket ?? null }));
+  const money = Math.round(moves.reduce((s, m) => s + m.debit + m.credit, 0) * 100) / 100;
+  return json({ count: moves.length, amount: money, lines: moves.slice(0, 40) });
 }

@@ -4,10 +4,10 @@ import { callFunction } from '../lib/edgeCall';
 import { refreshLedgerNow } from '../lib/ledgerRefreshNow';
 import LedgerRefreshStatus from '../components/LedgerRefreshStatus';
 import { sortRows, clampPage, pageSizeOf } from '../lib/analyticsKit';
-import { effectiveRange, statusCounts, payeeGroups, bucketTotals, signed, toBase64 } from '../lib/financeView';
+import { effectiveRange, statusCounts, payeeGroups, bucketTotals, signed, toBase64, originOf, noteWordsOf, moveText } from '../lib/financeView';
 import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pills, EmptyState, downloadCsv, useUrlParams, wideScreen } from '../components/AnalyticsKit';
 import { useDeleteFlow, DeleteButton, DeletionLog } from '../components/UploadDelete';
-import { RefreshCw, Upload, FileSpreadsheet, Search, X, Download, Info, Landmark, Tags, ListChecks, CheckCircle2, AlertCircle, Undo2, Check } from 'lucide-react';
+import { RefreshCw, Upload, FileSpreadsheet, Search, X, Download, Info, Landmark, Tags, ListChecks, CheckCircle2, AlertCircle, Undo2, Check, History, StickyNote } from 'lucide-react';
 
 // Analytics → Bank & card (admin only). Upload the bank statement (Excel), the credit card statement (PDF) and GoKwik's
 // settlement report (CSV); every line is matched to what it is, and the rest is filed by a person under a bucket.
@@ -200,7 +200,8 @@ function UploadPanel({ accounts, onDone }) {
   );
 }
 
-const matchingLine = (m) => m ? `Matching now: ${m.matched} matched, ${m.suggested} suggested, ${m.needs_review} need review, ${m.ignored} need no entry.` : null;
+const rememberedText = (payee, note) => payee && note ? ' and remembered the payee and the note' : payee ? ' and remembered the payee' : note ? ' and remembered the note' : '';
+const matchingLine = (m) => m ? `Matching now: ${m.matched} matched, ${m.suggested} suggested, ${m.needs_review} need review, ${m.ignored} need no entry${m.moved ? `; ${m.moved} open line${m.moved === 1 ? ' was' : 's were'} moved to another bucket (see History on a line)` : ''}.` : null;
 
 // ── Statements already uploaded ─────────────────────────────────────────────────────────────────
 function StatementsList({ statements, accountName, gokwik, gokwikReports, flow, onDeleteStatement, onDeleteGokwik, logKey }) {
@@ -298,7 +299,65 @@ function PayeePanel({ groups, buckets, busy, onFile }) {
   );
 }
 
+// ── Note words ──────────────────────────────────────────────────────────────────────────────────
+// The note you type on a UPI payment says what it was for. This list says where each word goes; changing it re-runs the matching
+// on the lines nobody has decided, and a word you have filed yourself is trusted (matched) instead of only suggested.
+function NotesPanel({ notes, buckets, busy, onSave, onRemove }) {
+  const [word, setWord] = useState('');
+  const [bucket, setBucket] = useState('');
+  const key = word.trim().toLowerCase().replace(/\s+/g, '');
+  const taken = notes.some(n => n.note === key);
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-stone-600">When a payment carries one of these words, it goes to that bucket: <i>yours</i> are matched, <i>built in</i> words are suggested for you to confirm. If a payee rule and the note disagree, the line is left for you to choose, never moved silently.</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input value={word} onChange={e => setWord(e.target.value)} placeholder="Note word, e.g. chai" aria-label="New note word" className={`${field} w-40`} />
+        <BucketSelect buckets={buckets} value={bucket} onChange={setBucket} label="Bucket for the new note word" className="w-52 max-w-full" />
+        <button type="button" disabled={!key || !bucket || busy} onClick={() => { onSave(key, bucket); setWord(''); setBucket(''); }} className="h-8 px-2.5 text-xs rounded-md bg-stone-900 text-white disabled:opacity-40 whitespace-nowrap">{taken ? 'Change word' : 'Add word'}</button>
+      </div>
+      <div className="divide-y divide-stone-100">
+        {notes.map(n => (
+          <div key={n.note} className="py-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span className="font-medium text-stone-900 w-36 break-words">{n.note}</span>
+            <span className={`text-[11px] px-1.5 py-0.5 rounded border ${n.origin === 'learned' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-stone-100 text-stone-600 border-stone-200'}`}>{n.origin === 'learned' ? 'yours' : 'built in'}</span>
+            <BucketSelect buckets={buckets} value={n.bucket} onChange={b => b && b !== n.bucket && onSave(n.note, b)} label={`Bucket for ${n.note}`} className="w-52 max-w-full" />
+            <button type="button" disabled={busy} onClick={() => onRemove(n.note)} aria-label={`Remove ${n.note}`} className="p-1 text-stone-400 hover:text-red-700 disabled:opacity-40"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        ))}
+        {notes.length === 0 && <div className="py-2 text-xs text-stone-500">No note words yet: payments are matched by payee only.</div>}
+      </div>
+    </div>
+  );
+}
+
 // ── Lines ───────────────────────────────────────────────────────────────────────────────────────
+const LOG_ACTION = { assigned: 'Filed by', confirmed: 'Confirmed by', reset: 'Reopened by', auto: 'Moved by the matching' };
+
+/** Every change to one line, newest first: who filed it, and where the matching moved it on its own. Fetched when opened. */
+function LineHistory({ lineId }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState(null);
+  const toggle = async () => {
+    const next = !open; setOpen(next);
+    if (next && rows === null) {
+      const { data, error } = await supabase.from('finance_line_log').select('action, bucket_from, bucket_to, by_name, reason, at').eq('line_id', lineId).order('at', { ascending: false });
+      setRows(error ? [] : data || []);
+    }
+  };
+  return (
+    <div className="mt-0.5">
+      <button type="button" onClick={toggle} aria-expanded={open} className="inline-flex items-center gap-1 text-[11px] text-stone-500 hover:text-stone-800 underline decoration-dotted"><History className="w-3 h-3" />History</button>
+      {open && (
+        <ul className="mt-1 space-y-0.5 text-[11px] text-stone-600">
+          {rows === null ? <li>Loading…</li> : rows.length === 0 ? <li>No changes recorded: this line is where the matching first put it.</li> : rows.map((r, i) => (
+            <li key={i}>{fmtDate(String(r.at).slice(0, 10))} · {LOG_ACTION[r.action] || r.action}{r.action === 'auto' ? '' : ` ${r.by_name || ''}`}: {r.bucket_from || 'no bucket'} → {r.bucket_to || 'no bucket'}{r.reason ? <span className="text-stone-400"> ({r.reason})</span> : null}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function Amounts({ l }) {
   const out = Number(l.debit), inn = Number(l.credit);
   return out ? <span className="text-stone-900">−{inr(out)}</span> : <span className="text-emerald-800">+{inr(inn)}</span>;
@@ -312,7 +371,8 @@ function LineRow({ l, accountName, selected, onSelect }) {
       <td className="py-2 px-2 text-xs text-stone-600 min-w-[260px] max-w-[26rem]">
         <div className="text-stone-800 break-words">{l.remarks}</div>
         {l.reason && <div className="text-[11px] text-stone-500 mt-0.5">{l.reason}</div>}
-        <div className="text-[11px] text-stone-400 mt-0.5">{accountName(l.account_id)}{l.needs_bill ? ' · needs the vendor’s bill for GST credit' : ''}</div>
+        <div className="text-[11px] text-stone-400 mt-0.5">{accountName(l.account_id)}{originOf(l) ? ` · ${originOf(l)}` : ''}{l.needs_bill ? ' · needs the vendor’s bill for GST credit' : ''}</div>
+        <LineHistory lineId={l.id} />
       </td>
       <td className="py-2 px-2 text-xs"><StatusBadge status={l.status} /><div className="text-stone-700 mt-1">{l.bucket || <span className="text-stone-400">no bucket yet</span>}</div></td>
       <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap"><Amounts l={l} /></td>
@@ -336,6 +396,8 @@ function LineCard({ l, accountName, selected, onSelect }) {
             <span className="text-[11px] text-stone-700">{l.bucket || <span className="text-stone-400">no bucket yet</span>}</span>
           </div>
           {l.reason && <div className="text-[11px] text-stone-500 mt-1">{l.reason}</div>}
+          {originOf(l) && <div className="text-[11px] text-stone-400 mt-0.5">{originOf(l)}</div>}
+          <LineHistory lineId={l.id} />
         </div>
       </div>
     </div>
@@ -356,24 +418,28 @@ export default function BankSection({ showToast }) {
   const [selected, setSelected] = useState(() => new Set());
   const [working, setWorking] = useState(false);
   const [bulkBucket, setBulkBucket] = useState('');
-  const [remember, setRemember] = useState(true);
+  const [notes, setNotes] = useState([]);
+  const [rememberPayee, setRememberPayee] = useState(false);       // remembering is always the owner's explicit choice
+  const [rememberNote, setRememberNote] = useState(false);
+  const [preview, setPreview] = useState(null);                    // what remembering would move: { loading } | { count, amount, lines } | { error }
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      const [acc, bk, st, gc, gl, gr] = await Promise.all([
+      const [acc, bk, st, gc, gl, gr, nr] = await Promise.all([
         supabase.from('finance_accounts').select('id, name, kind, holder').order('name'),
         supabase.from('finance_buckets').select('name, kind, needs_bill, note, sort').order('sort'),
         supabase.from('finance_statements').select('id, account_id, filename, period_from, period_to, opening, closing, line_count, new_lines, duplicate_lines, checks, uploaded_by_name, uploaded_at').order('uploaded_at', { ascending: false }),
         supabase.from('gokwik_payments').select('payment_id', { count: 'exact', head: true }),
         supabase.from('gokwik_payments').select('settlement_date').not('settlement_date', 'is', null).order('settlement_date', { ascending: false }).limit(1),
         supabase.rpc('gokwik_reports'),
+        supabase.from('finance_note_rules').select('note, bucket, origin').order('note'),
       ]);
       for (const r of [acc, bk, st]) if (r.error) throw new Error(r.error.message);
       const all = [];
       for (let from = 0; ; from += 1000) {
         const { data, error: err } = await supabase.from('finance_lines')
-          .select('id, account_id, txn_date, remarks, debit, credit, status, kind, bucket, match_ref, reason, needs_bill, payee, decided_at, decided_by_name')
+          .select('id, account_id, txn_date, remarks, debit, credit, status, kind, bucket, match_ref, reason, needs_bill, payee, note, decided_at, decided_by_name')
           .order('txn_date', { ascending: false }).order('id', { ascending: false }).range(from, from + 999);
         if (err) throw new Error(err.message);
         all.push(...(data || []));
@@ -382,6 +448,7 @@ export default function BankSection({ showToast }) {
       setAccounts(acc.data || []); setBuckets(bk.data || []); setStatements(st.data || []); setLines(all);
       setGokwik({ count: gc.count || 0, latest: gl.data?.[0]?.settlement_date ?? null });
       setGokwikReports(gr.error ? [] : gr.data || []);
+      setNotes(nr.error ? [] : nr.data || []);
     } catch (err) {
       setError('Could not load the bank lines'); showToast?.('Could not load the bank lines', 'error');
     }
@@ -429,6 +496,22 @@ export default function BankSection({ showToast }) {
   const picked = useMemo(() => [...selected].filter(id => shownIds.has(id)), [selected, shownIds]);
   const pickedLines = useMemo(() => { const set = new Set(picked); return shown.filter(l => set.has(l.id)); }, [shown, picked]);
   const pickedMoney = pickedLines.reduce((s, l) => s + signed(l), 0);
+  const noteSet = useMemo(() => new Set(notes.map(n => n.note)), [notes]);
+  const pickedNotes = useMemo(() => noteWordsOf(pickedLines, noteSet), [pickedLines, noteSet]);
+  useEffect(() => { if (pickedNotes.words.length === 0) setRememberNote(false); }, [pickedNotes.words.length]);
+  // What remembering would move: asked of the server (it runs the real matching on a copy) a moment after the choice settles. Nothing is saved.
+  useEffect(() => {
+    if (!(rememberPayee || rememberNote) || !bulkBucket || !picked.length) { setPreview(null); return undefined; }
+    let stale = false;
+    setPreview({ loading: true });
+    const timer = setTimeout(async () => {
+      try {
+        const { ok, json } = await callImport({ action: 'preview', ids: picked, bucket: bulkBucket, payee: rememberPayee, note: rememberNote && pickedNotes.words.length > 0 });
+        if (!stale) setPreview(ok ? json : { error: json.error || 'Could not check what this would move' });
+      } catch (err) { if (!stale) setPreview({ error: err.message || String(err) }); }
+    }, 350);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [rememberPayee, rememberNote, bulkBucket, picked, pickedNotes.words.length]);
   const pageAllOn = pageRows.length > 0 && pageRows.every(l => selected.has(l.id));
   const toggle = (id) => setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const togglePage = () => setSelected(prev => { const n = new Set(prev); for (const l of pageRows) { if (pageAllOn) n.delete(l.id); else n.add(l.id); } return n; });
@@ -440,15 +523,33 @@ export default function BankSection({ showToast }) {
     catch (err) { showToast?.(`Could not save: ${err.message || err}`, 'error'); setError(`Could not save: ${err.message || err}`); }
     setWorking(false);
   };
-  // Remembering a payee only stores the rule; re-matching applies it to that payee's other open lines straight away.
-  const fileLines = (ids, bucket, rememberPayee) => act(async () => {
-    const n = await inChunks('finance_line_assign', ids, { p_bucket: bucket, p_remember: rememberPayee });
-    if (rememberPayee) {
+  // Remembering a payee or a note word only stores the rule; re-matching applies it to the other open lines straight away
+  // (the bar shows which ones before you file).
+  const fileLines = (ids, bucket, payee, note) => act(async () => {
+    const n = await inChunks('finance_line_assign', ids, { p_bucket: bucket, p_remember: payee, p_remember_note: note });
+    let moved = 0;
+    if (payee || note) {
       const { ok, json } = await callImport({ action: 'rematch' });
       if (!ok) throw new Error(`the lines are filed, but re-matching failed: ${json.error || 'unknown error'}`);
+      moved = json.moved || 0;
     }
-    return n;
-  }, n => `Filed ${n} line${n === 1 ? '' : 's'} under ${bucket}${rememberPayee ? ' and remembered the payee' : ''}`);
+    setRememberPayee(false); setRememberNote(false);           // remembering is asked for every time
+    return { n, moved };
+  }, ({ n, moved }) => `Filed ${n} line${n === 1 ? '' : 's'} under ${bucket}${rememberedText(payee, note)}${moved ? `; ${moved} other open line${moved === 1 ? '' : 's'} moved` : ''}`);
+  const saveNote = (note, bucket) => act(async () => {
+    const { error: e } = await supabase.rpc('finance_note_set', { p_note: note, p_bucket: bucket });
+    if (e) throw new Error(e.message);
+    const { ok, json } = await callImport({ action: 'rematch' });
+    if (!ok) throw new Error(`the note word is saved, but re-matching failed: ${json.error || 'unknown error'}`);
+    return { note, bucket, moved: json.moved || 0 };
+  }, ({ note, bucket, moved }) => `“${note}” now goes to ${bucket}${moved ? `; ${moved} open line${moved === 1 ? '' : 's'} moved` : ''}`);
+  const removeNote = (note) => act(async () => {
+    const { error: e } = await supabase.rpc('finance_note_delete', { p_note: note });
+    if (e) throw new Error(e.message);
+    const { ok, json } = await callImport({ action: 'rematch' });
+    if (!ok) throw new Error(`the note word is removed, but re-matching failed: ${json.error || 'unknown error'}`);
+    return { note, moved: json.moved || 0 };
+  }, ({ note, moved }) => `Removed “${note}”${moved ? `; ${moved} open line${moved === 1 ? '' : 's'} moved` : ''}`);
   const confirmPicked = () => act(() => inChunks('finance_line_confirm', picked), n => `Confirmed ${n} line${n === 1 ? '' : 's'}`);
   const reopen = () => act(() => inChunks('finance_line_reset', picked), n => `Reopened ${n} line${n === 1 ? '' : 's'}`);
   const rematch = async () => {
@@ -505,7 +606,9 @@ export default function BankSection({ showToast }) {
           <li>Upload the ICICI statement (Excel), the Kotak card statement (PDF) and GoKwik’s settlement report (CSV). A file that does not add up is refused, and uploading the same lines twice never doubles them.</li>
           <li>After a GoKwik report is uploaded (or taken back) the order ledger is recalculated automatically, so its payouts show on Analytics → Ledger within a couple of minutes; the progress is shown at the top of this page.</li>
           <li><b>Matched</b> lines are proved: a GoKwik or Velocity payout, a Meta invoice payment, or a payee you filed before. <b>Suggested</b> lines are the system’s guess; confirm or refile them. <b>Needs review</b> lines have no guess.</li>
-          <li>When you file a line it is yours: re-matching never changes it. Tick <i>Remember this payee</i> to file every future line to the same payee automatically.</li>
+          <li>When you file a line it is yours: re-matching never changes it. Nothing is remembered unless you tick it: <i>Remember payee</i> files this payee’s other open lines the same way, <i>Remember note</i> does the same for the note word you typed (“trims”, “tea”). The grey bar shows which other lines that would move before you file.</li>
+          <li>The note you type on a payment says what it was for; the payee says who was paid. If your payee rule and the note disagree the line waits in <i>Needs review</i> with both reasons, and nothing is moved silently. Every automatic move is recorded: open <i>History</i> on a line.</li>
+          <li>Masked UPI ids (XX6586@ptsbi) are told apart by the whole id, so one rule never reaches another person’s payments.</li>
           <li>The founder’s card: its purchases are company expenses the company owes him. Paying the card bill from the founder’s own money needs no company entry.</li>
           <li>A wrong upload can be taken back from <i>Statements uploaded</i>: you see what would change before anything is deleted, and the matching is re-run afterwards.</li>
           <li>Dates start at {fmtDate(START_DATE)}, the accounting start date. {beforeStart ? `${beforeStart} earlier line${beforeStart === 1 ? ' is' : 's are'} stored; choose “All dates” to see them.` : ''}</li>
@@ -541,9 +644,13 @@ export default function BankSection({ showToast }) {
       {groups.length > 0 && (
         <Collapsible id="bank-payees" title="Label by payee" tone="amber" defaultOpen={wideScreen()} count={groups.length} icon={<Tags className="w-4 h-4 text-amber-700" />}
           summary={`${groups.reduce((n, g) => n + g.count, 0)} lines wait on a decision`}>
-          <PayeePanel groups={groups} buckets={buckets} busy={working} onFile={(ids, bucket) => fileLines(ids, bucket, true)} />
+          <PayeePanel groups={groups} buckets={buckets} busy={working} onFile={(ids, bucket) => fileLines(ids, bucket, true, false)} />
         </Collapsible>
       )}
+
+      <Collapsible id="bank-notes" title="Note words" icon={<StickyNote className="w-4 h-4 text-stone-400" />} count={notes.length} summary="what the note you type on a payment means">
+        <NotesPanel notes={notes} buckets={buckets} busy={working} onSave={saveNote} onRemove={removeNote} />
+      </Collapsible>
 
       {byBucket.length > 0 && (
         <Collapsible id="bank-buckets" title="By bucket" icon={<Tags className="w-4 h-4 text-stone-400" />} count={byBucket.length} summary="where the money went and came from">
@@ -582,11 +689,33 @@ export default function BankSection({ showToast }) {
             {picked.length < shown.length && <button type="button" onClick={selectAllShown} className="underline text-stone-200 hover:text-white">Select all {shown.length}</button>}
             <span className="flex-1" />
             <BucketSelect buckets={buckets} value={bulkBucket} onChange={setBulkBucket} label="File selected lines under" placeholder="File under…" className="w-48 max-w-full text-stone-900" />
-            <label className="inline-flex items-center gap-1 text-stone-200"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />Remember payee</label>
-            <button type="button" disabled={!bulkBucket || working} onClick={() => fileLines(picked, bulkBucket, remember)} className="h-8 px-2.5 rounded-md bg-white text-stone-900 disabled:opacity-40">File</button>
+            <label className="inline-flex items-center gap-1 text-stone-200"><input type="checkbox" checked={rememberPayee} onChange={e => setRememberPayee(e.target.checked)} />Remember payee</label>
+            {pickedNotes.words.length > 0 && (
+              <label className="inline-flex items-center gap-1 text-stone-200"><input type="checkbox" checked={rememberNote} onChange={e => setRememberNote(e.target.checked)} />Remember note{pickedNotes.words.length === 1 ? ` “${pickedNotes.words[0]}”` : 's'}</label>
+            )}
+            <button type="button" disabled={!bulkBucket || working} onClick={() => fileLines(picked, bulkBucket, rememberPayee, rememberNote && pickedNotes.words.length > 0)} className="h-8 px-2.5 rounded-md bg-white text-stone-900 disabled:opacity-40">File</button>
             <button type="button" disabled={working} onClick={confirmPicked} className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-stone-500 hover:border-white disabled:opacity-40"><Check className="w-3.5 h-3.5" />Confirm suggestions</button>
             <button type="button" disabled={working} onClick={reopen} className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-stone-500 hover:border-white disabled:opacity-40"><Undo2 className="w-3.5 h-3.5" />Reopen</button>
             <button type="button" onClick={() => setSelected(new Set())} aria-label="Clear selection" className="p-1 text-stone-300 hover:text-white"><X className="w-4 h-4" /></button>
+          </div>
+        )}
+        {picked.length > 0 && (rememberPayee || rememberNote || pickedNotes.unknown.length > 0) && (
+          <div role="status" className="px-3 sm:px-4 py-2 text-xs bg-amber-50 border-b border-amber-200 text-amber-950">
+            {!(rememberPayee || rememberNote) ? (
+              <span>{pickedNotes.unknown.length === 1 ? `“${pickedNotes.unknown[0]}” is not in your note list yet.` : `${pickedNotes.unknown.map(w => `“${w}”`).join(', ')} are not in your note list yet.`} Tick <i>Remember note</i> to add {pickedNotes.unknown.length === 1 ? 'it' : 'them'}, so the next payment with {pickedNotes.unknown.length === 1 ? 'that word' : 'those words'} is filed for you.</span>
+            ) : !bulkBucket ? <span>Choose a bucket to see which other lines this would move.</span>
+              : !preview || preview.loading ? <span>Checking which other open lines this would move…</span>
+              : preview.error ? <span className="text-red-800">{preview.error}</span>
+              : preview.count === 0 ? <span>Remembering this would not move any other open line.</span>
+              : (
+                <div>
+                  <div className="font-medium">Remembering this will also move {preview.count} other open line{preview.count === 1 ? '' : 's'} ({inr(preview.amount, 0)}).</div>
+                  <ul className="mt-1 space-y-0.5 text-[11px]">
+                    {preview.lines.slice(0, 6).map(m => <li key={m.id} className="break-words">{fmtDate(m.txn_date)} · {m.remarks.length > 56 ? `${m.remarks.slice(0, 56)}…` : m.remarks} · {inr(m.debit || m.credit, 0)}: {moveText(m)}</li>)}
+                    {preview.count > 6 && <li>…and {preview.count - 6} more.</li>}
+                  </ul>
+                </div>
+              )}
           </div>
         )}
 
