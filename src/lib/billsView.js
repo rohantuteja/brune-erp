@@ -49,9 +49,72 @@ export function outcomeText(r) {
 }
 
 /** The new-vendor form, filled with what the invoice says about the vendor. */
-export function newVendorDraft(bill) {
+// ── Tally's own ledgers ─────────────────────────────────────────────────────────────────────
+// `ledgers` is the tally_ledgers table: every ledger of the owner's Tally (his trial balance), plus the renames and new ledgers agreed
+// with his accountant. A vendor's own ledger and its expense ledger are chosen from it, never typed: a typo would make Tally create a
+// second ledger.
+
+const COMPANY_WORDS = /\b(pvt|private|limited|ltd|llp|the|m\/s)\b/g;
+const GENERIC = new Set(['enterprises', 'enterprise', 'traders', 'trading', 'fashion', 'fashions', 'textile', 'textiles', 'industries', 'company', 'india', 'services', 'solutions', 'technologies', 'exports', 'fabrics', 'fabric']);
+
+/** A name reduced to what identifies it: no case, brackets, punctuation or company suffix ("Mittal Hosiery Private Limited (Delhi)" → "mittalhosiery"). */
+export const normLedger = (s) => String(s ?? '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(COMPANY_WORDS, ' ').replace(/[^a-z0-9]/g, '');
+
+/** The ledger a name stands for: exactly as Tally has it, or the one party ledger that is the same name spelled differently. */
+export function findLedger(name, ledgers) {
+  const n = String(name ?? '');
+  if (!n.trim()) return null;
+  const exact = ledgers.find(l => l.name === n);
+  if (exact) return exact;
+  const key = normLedger(n);
+  if (key.length < 4) return null;
+  const hits = ledgers.filter(l => l.role === 'party' && normLedger(l.name) === key);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Up to three party ledgers that share a distinctive word with the name: "did you mean". */
+export function similarLedgers(name, ledgers, limit = 3) {
+  const words = String(name ?? '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(COMPANY_WORDS, ' ').split(/[^a-z0-9]+/).filter(w => w.length >= 4 && !GENERIC.has(w));
+  if (!words.length) return [];
+  return ledgers
+    .filter(l => l.role === 'party' && l.name !== name)
+    .map(l => ({ l, hits: words.filter(w => l.name.toLowerCase().includes(w)).length }))
+    .filter(x => x.hits > 0)
+    .sort((a, b) => b.hits - a.hits || a.l.name.localeCompare(b.l.name))
+    .slice(0, limit).map(x => x.l);
+}
+
+/** What to tell a person about the ledger name in front of them (null when it is empty). tone: ok | info | warn. */
+export function ledgerNote(name, ledgers) {
+  const n = String(name ?? '');
+  if (!n.trim()) return null;
+  const hit = ledgers.find(l => l.name === n);
+  if (hit) {
+    if (hit.status === 'will_rename') return { kind: 'rename', tone: 'info', text: `Agreed rename: Tally still calls it "${hit.renamed_from}". Rename it there before the first import.`, ledger: hit };
+    if (hit.status === 'will_create') return { kind: 'create', tone: 'info', text: 'Agreed new ledger: create it in Tally before the first import.', ledger: hit };
+    return { kind: 'tally', tone: 'ok', text: `In your Tally, under ${hit.under}.`, ledger: hit };
+  }
+  const near = findLedger(n, ledgers);
+  if (near) return { kind: 'spelling', tone: 'warn', text: `Tally spells it "${near.name}": use that, or the export would create a second ledger.`, suggest: near.name };
+  return { kind: 'missing', tone: 'warn', text: 'Not in your Tally (trial balance of 30 Sep 2026).', similar: similarLedgers(n, ledgers).map(l => l.name) };
+}
+
+/** A vendor's own ledger is acceptable when Tally has it exactly, or the person has said it is a new one to create. */
+export const ledgerOk = (vendor, ledgers) => !!String(vendor.tally_ledger_name ?? '').trim() && (ledgers.some(l => l.name === vendor.tally_ledger_name) || vendor.ledger_new === true);
+
+/** The expense ledgers Tally has, by the group they sit under, for a grouped list. A ledger already chosen is kept in the list. */
+export function expenseGroups(ledgers, current = '') {
+  const items = ledgers.filter(l => l.role === 'expense' || (current && l.name === current));
+  const by = new Map();
+  for (const l of items) by.set(l.under, [...(by.get(l.under) ?? []), l]);
+  return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([under, list]) => ({ under, items: list.sort((a, b) => a.name.localeCompare(b.name)) }));
+}
+
+/** A new vendor is offered with what the invoice says: its name, the ledger Tally already has for it (when it has one), a goods invoice as a purchase and anything else as an expense. */
+export function newVendorDraft(bill, ledgers = []) {
   const name = String(bill.vendor ?? '').replace(/\s+/g, ' ').trim();
-  return { name, tally_ledger_name: name, gstin: bill.supplier_gstin ?? '', booking: bill.kind === 'goods' ? 'purchase' : 'expense', expense_ledger: '' };
+  const found = findLedger(name, ledgers);
+  return { name, tally_ledger_name: found ? found.name : name, gstin: bill.supplier_gstin ?? '', booking: bill.kind === 'goods' ? 'purchase' : 'expense', expense_ledger: '', ledger_new: false };
 }
 
 /** Which of the reader's own numbers a person has changed: only those are sent. */
