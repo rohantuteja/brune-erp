@@ -265,7 +265,7 @@ function VendorsPanel({ vendors, expenseLedgers, onChanged, showToast }) {
   };
   return (
     <div className="space-y-3">
-      <p className="text-xs text-stone-600">Each vendor is booked one way, chosen once. <b>Expense</b> vendors become a GST EXPENSES voucher (the expense ledger and the input GST debited, the vendor credited); <b>goods purchase</b> a Purchase UP voucher; <b>tie-out only</b> is never posted, only compared (Easebuzz: its fee is booked from the GoKwik settlement report). A vendor turns automatic after you confirm its first bill.</p>
+      <p className="text-xs text-stone-600">Each vendor is booked one way, chosen once. <b>Expense</b> vendors become a GST EXPENSES voucher (the expense ledger and the input GST debited, the vendor credited); <b>goods purchase</b> a Purchase UP voucher; <b>tie-out only</b> is never posted, only compared with something else. (Easebuzz is an expense vendor like the rest: its invoice is posted, and the fee and GST calculated from the GoKwik settlement report are the check on it.) A vendor turns automatic after you confirm its first bill.</p>
       <div className="overflow-x-auto -mx-1">
         <table className="w-full min-w-[640px] text-xs">
           <thead><tr className="text-left text-stone-500 border-b border-stone-200"><th className="py-1.5 px-2 font-medium">Vendor</th><th className="py-1.5 px-2 font-medium">Booked as</th><th className="py-1.5 px-2 font-medium">Tally ledger</th><th className="py-1.5 px-2 font-medium">Automatic</th><th /></tr></thead>
