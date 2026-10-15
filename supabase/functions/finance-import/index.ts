@@ -1,4 +1,4 @@
-// finance-import v6
+// finance-import v7
 // Takes an uploaded bank statement (ICICI .xlsx), credit card statement (Kotak .pdf) or GoKwik settlement report (.csv),
 // checks that it adds up, stores the LINES (never the file), and works out what each line is. Admins only (an admin's
 // login, or the project's internal x-cron-key for server-to-server calls).
@@ -186,7 +186,8 @@ async function loadContext(admin: any): Promise<Ctx> {
   const { data: vel, error: ve } = await admin.rpc('finance_velocity_payouts');
   if (ve) throw new Error(`velocity payouts: ${ve.message}`);
   for (const v of vel ?? []) payouts.push({ source: 'velocity', utr: v.utr, date: v.paid_on, amount: Number(v.amount), payments: v.payments });
-  const invoices = await fetchAll<any>((f, t) => admin.from('vendor_invoices').select('vendor, invoice_no, invoice_date, period, subtotal, tax, total').range(f, t));
+  // a voided bill (Analytics → Bills) no longer proves a payment
+  const invoices = await fetchAll<any>((f, t) => admin.from('vendor_invoices').select('vendor, invoice_no, invoice_date, period, subtotal, tax, total').neq('status', 'void').range(f, t));
   const rules = await fetchAll<any>((f, t) => admin.from('finance_rules').select('id, match_type, pattern, bucket').range(f, t));
   // The note words (what a "trims" or "tea" on a payment means). 'learned' ones were filed by the owner and are trusted.
   const noteRows = await fetchAll<any>((f, t) => admin.from('finance_note_rules').select('note, bucket, origin').order('note').range(f, t));
