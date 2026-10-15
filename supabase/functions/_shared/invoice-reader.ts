@@ -32,6 +32,9 @@ export type ReadInvoice = {
   invoice_date: string | null;                    // YYYY-MM-DD
   place_of_supply: string | null;                 // GST state name
   irn: string | null;                             // the e-invoice reference, when the invoice has one
+  period: string | null;                          // the billing period as printed ("Sep'26", "01/09/2026 to 30/09/2026")
+  period_from: string | null;                     // YYYY-MM-DD; a month alone is its first and last day
+  period_to: string | null;
   taxable: number | null;
   tax_type: 'IGST' | 'CGST+SGST' | null;
   tax_rate: number | null;                        // per cent, the whole GST (5 for 2.5 + 2.5)
@@ -77,6 +80,23 @@ export function parseInvoiceDate(s: string): string | null {
   const iso = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   const back = new Date(`${iso}T00:00:00Z`);
   return back.getUTCDate() === d && back.getUTCMonth() + 1 === mo ? iso : null;
+}
+
+/** "01/09/2026 to 30/09/2026", "11 Sep 2026 to 10 Oct 2026", "Sep'26", "September-2026" → { from, to }. */
+export function parsePeriod(raw: string): { from: string; to: string } | null {
+  const parts = raw.split(/\s+(?:to|-|–)\s+/i);
+  if (parts.length === 2) {
+    const [a, b] = [parseInvoiceDate(parts[0]), parseInvoiceDate(parts[1])];
+    if (a && b && a <= b) return { from: a, to: b };
+  }
+  const m = /^([A-Za-z]{3})[A-Za-z]*\.?[-'’ ]*\s*(\d{4}|\d{2})$/.exec(raw.trim());
+  const mo = m ? MONTHS[m[1].toLowerCase()] : undefined;
+  if (m && mo) {
+    const y = m[2].length === 2 ? 2000 + +m[2] : +m[2];
+    const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    return { from: `${y}-${String(mo).padStart(2, '0')}-01`, to: `${y}-${String(mo).padStart(2, '0')}-${String(last).padStart(2, '0')}` };
+  }
+  return null;
 }
 
 /** The units fabric comes in, as one spelling each: KGS, MTR, PCS; anything else as printed, upper case. */
@@ -301,6 +321,8 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
   const posRaw = valueAfter(rows, /^place\s*of\s*supply\s*:?/i);
   const pos = posRaw ? resolveState({ name: posRaw.replace(/\s*\(\d+\)\s*$/, ''), code: /\((\d{2})\)/.exec(posRaw)?.[1] ?? null }) : null;
   const irn = /\b[0-9a-f]{64}\b/i.exec(text)?.[0] ?? null;
+  const period = valueAfter(rows, /^(invoice|service|billing|bill|statement)\s*period\s*:?/i, v => parsePeriod(v) !== null);
+  const span = period ? parsePeriod(period) : null;
 
   const kind = kindOf(rows, text);
   // A service invoice is booked from its totals. Its lines are kept only when they are a plain table of SAC, description and
@@ -347,7 +369,7 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
     status, kind,
     supplier: { name: name?.name ?? null, name_source: name?.source ?? null, gstin: supplier?.gstin ?? null, pan: supplier ? panOf(supplier.gstin) : null, state_code: stateCode, state },
     buyer_gstin: buyerIsUs ? company : null,
-    invoice_no, invoice_date, place_of_supply: pos?.name ?? null, irn,
+    invoice_no, invoice_date, place_of_supply: pos?.name ?? null, irn, period, period_from: span?.from ?? null, period_to: span?.to ?? null,
     taxable: solved?.taxable ?? null, tax_type: solved?.kind ?? null, tax_rate: solved?.rate ?? null, tax: solved?.tax ?? null, round_off: solved?.round_off ?? null, total: solved?.total ?? null,
     lines, checks, copies: 1,
   };

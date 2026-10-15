@@ -4,8 +4,8 @@
 
 | Slice | What | State |
 |---|---|---|
-| 1 | The reader (`_shared/invoice-reader.ts`) and its tests: pure code, no database, no network | built |
-| 2 | The upload page (Analytics → Bills), the bill store, a private storage bucket for the original PDFs, vendor creation and a **booking profile per vendor**, layout memory, auto-accept after the first confirmed bill per vendor. The store extends the existing `vendor_invoices` table (4 Meta invoices and 1 Velocity invoice are in it, and the bank matching and the Velocity page already read it) instead of starting a parallel one; `suppliers` gains GSTIN / PAN / state / Tally name | not started |
+| 1 | The reader (`_shared/invoice-reader.ts`) and its tests: pure code, no database, no network | merged (PR #28) |
+| 2 | **Analytics → Bills**: upload any vendor's invoice PDF, the bill store, a private bucket for the originals, a booking profile per vendor, confirm-once then automatic | built, see below; applies to live data only on the owner's go-ahead |
 | 3 | Bank matching: advances waiting for an invoice (flag after 15 days) and unpaid invoices; the payee → supplier link | not started |
 | 4 | The "Tally-ready" purchase voucher preview and the item map | not started |
 
@@ -17,6 +17,25 @@
 - Invoices dated before 1 Oct 2026 are opening bills: used for matching, never exported.
 - The ERP inventory module (physical fabric, for production) is NOT matched to invoice lines. The purchase voucher follows the invoice as printed; stock in Tally is for value. Kilos go to `KNITTED FABRIC` (KGS), metres to `Shirting Fabric` (MTR), with the HSN of each invoice line. Whether closing stock is a month-end value entry from the ERP shelf value is the accountant's call.
 - Tally names, taken from the accountant's own sample `Purchase UP` voucher and trial balance: voucher type `Purchase UP`, the voucher number and reference are the supplier's invoice number, ledger `Purchase Raw Material`, GST on `IGST Input  UP` (two spaces; `CGST Input UP` + `SGST Input UP` for a supplier in Uttar Pradesh), rounding on `ROUND OFF`, godown `Main Location`, batch `Primary Batch`, supplier ledger under its trade name with GSTIN, state and PAN. Open question for the accountant: does he park purchase GST on `INPUT NOT CLAIMED FOR INV NOT IN 2A` until the invoice shows in GSTR-2B?
+
+## Slice 2: Analytics → Bills
+**Page** (`src/pages/BillsSection.jsx`, admin only, `/analytics/bills`): drop one or more PDFs (up to 5 MB each); each is read and lands as *Needs review* or *Accepted*. A bill opens beside the PDF of its original, with the eight checks, fields that can be corrected, the vendor and how it is booked, and Confirm / Void. A *Vendors* section lists each vendor's booking and Tally ledger.
+
+**Function** (`bills-import`, admin only): `upload` (hash, duplicate check, read, vendor match, store the original in the private `vendor-bills` bucket, one result per invoice found), `confirm`, `vendor_save`, `void`, `file_url` (a link to the original that expires in five minutes). The rules are in `_shared/bills.ts` (pure, tested).
+
+**Tables** (migration 034): `vendors` (name, its own Tally ledger, GSTIN, how it is booked, `auto_accept`), seven vendors already set up from the accountant's September vouchers and the owner's corrections (Meta, Velocity, Easebuzz, GoKwik, Goexcelsior, Google, Airtel); `vendor_invoices` gains the vendor, goods/service, `status` (`accepted` / `review` / `void`), `opening`, the checks, the original (`file_path`, `file_hash`, `file_name`), who confirmed it and what they edited, why a failed check was accepted, why it was voided; `app_settings.company_gstin`.
+
+**Behaviour**
+- **Booking per vendor**: `expense` (a GST EXPENSES voucher: Dr the expense ledger + input GST, Cr the vendor), `purchase` (a Purchase UP voucher), `tie_out` (never posted). The expense ledger is a bucket (a Tally ledger name). A vendor is found by GSTIN; one with no GSTIN yet (Goexcelsior) by name, and learns its GSTIN at its first confirmed bill.
+- **Accepted by itself** only when the invoice read cleanly, every check passed, the vendor is complete and **one bill of it was confirmed before**. Anything else is *Needs review*, with the reasons. A goods invoice from an expense vendor (or a service invoice from a purchase vendor) is held.
+- **Confirming**: choose or set up the vendor; correct the invoice number, date and amounts if needed (taxable + GST = total within ₹1 is enforced); a failed check blocks the bill unless it is accepted anyway with a reason of at least five characters, which is kept. Confirming a clean bill turns the vendor automatic.
+- **A bill already in the system without a PDF** (the Meta and Velocity invoices, typed in before there was an upload) takes the PDF when it is uploaded; the figures stored are compared with the PDF and any difference is shown. The same file twice, or the same invoice twice, changes nothing.
+- **Void**, never delete. A voided bill no longer proves a bank payment (`finance-import` v7 ignores `status = 'void'`). A Velocity bill is voided on the Velocity wallet page, which also reads it.
+- **Opening bills** (dated before `accounting_start_date`) are kept and matched, never exported.
+- A PDF with no text (a scan) or that is not an invoice is refused with the reason; nothing is stored.
+- pdf.js takes over the buffer it is given: the function reads a copy, because the original is stored from the same bytes (a test caught this: the stored file was empty).
+
+**Rollout order** (each step needs the owner's go-ahead): apply migration 034; deploy `bills-import` (new); deploy `finance-import` v7 (needs the `status` column); merge the page.
 
 ## The reader (slice 1)
 `readInvoicePdf(items, { companyGstin, today })` takes the text of the PDF with its position (pdf.js through `unpdf`, the library the card-statement reader already uses; **not pypdf, which garbles TallyPrime PDFs**) and returns every invoice in the file.

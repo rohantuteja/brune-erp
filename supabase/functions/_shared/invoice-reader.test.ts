@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { gstinChecksumOk, normalizeUnit, panOf, parseInvoiceDate, readInvoicePdf, solveAmounts, type ReadInvoice, type TextItem } from './invoice-reader.ts';
+import { gstinChecksumOk, normalizeUnit, panOf, parseInvoiceDate, parsePeriod, readInvoicePdf, solveAmounts, type ReadInvoice, type TextItem } from './invoice-reader.ts';
 
 const OURS = '09AALCR1014K1ZB';
 const fixture = (name: string): { pages: number; items: TextItem[] } => JSON.parse(readFileSync(new URL(`./fixtures/invoices/${name}.json`, import.meta.url), 'utf8'));
@@ -240,4 +240,20 @@ test('the amounts are solved among every number on the page: IGST, CGST + SGST, 
   assert.equal(rounded?.round_off, -0.29); assert.equal(rounded?.total, 1296);
   assert.equal(solveAmounts('Taxable 1,000.00\nIGST 5% 50.00\nTotal 1,300.00'), null);          // nothing agrees
   assert.equal(solveAmounts('Page 1 of 1'), null);
+});
+
+test('the billing period: a range, or a month alone (its first and last day)', () => {
+  assert.deepEqual(parsePeriod('01/09/2026 to 30/09/2026'), { from: '2026-09-01', to: '2026-09-30' });
+  assert.deepEqual(parsePeriod('11 Sep 2026 to 10 Oct 2026'), { from: '2026-09-11', to: '2026-10-10' });
+  assert.deepEqual(parsePeriod("Sep'26"), { from: '2026-09-01', to: '2026-09-30' });
+  assert.deepEqual(parsePeriod('Sep-26'), { from: '2026-09-01', to: '2026-09-30' });
+  assert.deepEqual(parsePeriod('February-2028'), { from: '2028-02-01', to: '2028-02-29' });
+  assert.equal(parsePeriod('30/09/2026 to 01/09/2026'), null);       // backwards
+  assert.equal(parsePeriod('whenever'), null);
+  const p = (f: string) => { const i = only(fixture(f).items); return [i.period, i.period_from, i.period_to]; };
+  assert.deepEqual(p('velocity'), ['01/09/2026 to 30/09/2026', '2026-09-01', '2026-09-30']);      // what the Velocity wallet page needs
+  assert.deepEqual(p('meta'), ['Sep-26', '2026-09-01', '2026-09-30']);
+  assert.deepEqual(p('gokwik-pp-cod'), ["Sep'26", '2026-09-01', '2026-09-30']);
+  assert.deepEqual(p('airtel'), ['11 Sep 2026 to 10 Oct 2026', '2026-09-11', '2026-10-10']);
+  assert.deepEqual(p('a'), [null, null, null]);                                                   // a fabric invoice has no period
 });
