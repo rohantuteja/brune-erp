@@ -24,6 +24,7 @@ export function filterBills(bills, { status = 'review', vendor = '', q = '' } = 
   const needle = q.trim().toLowerCase();
   return bills.filter(b => {
     if (status === 'open') { if (b.status === 'void') return false; }
+    else if (status === 'nofile') { if (b.status === 'void' || b.file_path) return false; }   // the "No PDF yet" card: bills still waiting for their PDF
     else if (status !== 'all' && b.status !== status) return false;
     if (vendor && String(b.vendor_id ?? '') !== vendor) return false;
     if (needle && ![b.vendor, b.invoice_no, b.supplier_gstin, String(money(b.total))].some(v => v && String(v).toLowerCase().includes(needle))) return false;

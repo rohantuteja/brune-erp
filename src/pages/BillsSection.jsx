@@ -13,7 +13,7 @@ import { RefreshCw, Upload, FileText, X, CheckCircle2, AlertCircle, Building2, S
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const URL_DEFAULTS = { lstatus: 'review', lvendor: '', lq: '', lpage: '1', lsize: '25' };
-const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
+const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'nofile', label: 'No PDF yet' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
 const STATUS_STYLE = { review: 'bg-amber-50 text-amber-900 border-amber-300', accepted: 'bg-emerald-50 text-emerald-800 border-emerald-200', void: 'bg-stone-100 text-stone-500 border-stone-200' };
 const TONE = { ok: 'bg-emerald-50 border-emerald-200 text-emerald-900', warn: 'bg-amber-50 border-amber-300 text-amber-950', info: 'bg-stone-50 border-stone-200 text-stone-700', bad: 'bg-red-50 border-red-200 text-red-800' };
 
@@ -394,7 +394,7 @@ export default function BillsSection({ showToast }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="Needs review" value={summary.review} sub={`${inr(summary.reviewAmount)} waiting for you`} tone={summary.review ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'review'} onClick={() => setP({ lstatus: 'review' })} />
         <StatCard label="Accepted" value={summary.accepted} sub={`${summary.opening} opening bill${summary.opening === 1 ? '' : 's'}`} tone="text-emerald-800" active={p.lstatus === 'accepted'} onClick={() => setP({ lstatus: 'accepted' })} />
-        <StatCard label="No PDF yet" value={summary.noFile} sub="upload the PDF to attach it" tone={summary.noFile ? 'text-stone-900' : 'text-stone-500'} />
+        <StatCard label="No PDF yet" value={summary.noFile} sub="upload the PDF to attach it" tone={summary.noFile ? 'text-stone-900' : 'text-stone-500'} active={p.lstatus === 'nofile'} onClick={() => setP({ lstatus: 'nofile' })} />
         <StatCard label="Voided" value={summary.void} sub="kept, never deleted" active={p.lstatus === 'void'} onClick={() => setP({ lstatus: 'void' })} />
       </div>
 
@@ -416,7 +416,7 @@ export default function BillsSection({ showToast }) {
           {shown.length === 0 ? (
             bills.length === 0
               ? <EmptyState title="No bills yet" hint="Drop an invoice PDF above and it appears here." />
-              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint="Every bill that was read has been accepted or voided." action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
+              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint={p.lstatus === 'nofile' ? 'Every bill has its PDF attached.' : 'Every bill that was read has been accepted or voided.'} action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
           ) : (
             <>
               <div className="hidden md:block overflow-x-auto -mx-1">

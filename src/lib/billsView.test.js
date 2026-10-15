@@ -16,6 +16,10 @@ test('the filters: status (review by default), vendor, and a search over vendor,
   assert.deepEqual(filterBills(bills, { status: 'open' }).map(b => b.id), [1, 2]);        // everything not voided
   assert.deepEqual(filterBills(bills, { status: 'all' }).map(b => b.id), [1, 2, 3]);
   assert.deepEqual(filterBills(bills, { status: 'all', vendor: '4' }).map(b => b.id), [2]);
+  // "No PDF yet": bills still waiting for their PDF, whatever their status, never a voided one
+  const noPdf = [B(1, 'review', { file_path: null }), B(2, 'accepted', { file_path: 'p' }), B(3, 'accepted', { file_path: null }), B(4, 'void', { file_path: null })];
+  assert.deepEqual(filterBills(noPdf, { status: 'nofile' }).map(b => b.id), [1, 3]);
+  assert.equal(filterBills(noPdf, { status: 'nofile' }).length, billSummary(noPdf).noFile);   // the card and the list always agree
   assert.deepEqual(filterBills(bills, { status: 'all', q: 'gkhr' }).map(b => b.id), [2]);
   assert.deepEqual(filterBills(bills, { status: 'all', q: '845' }).map(b => b.id), [2]);
   assert.deepEqual(filterBills(bills, { status: 'all', q: '06AABC' }).map(b => b.id), [1, 2, 3]);
