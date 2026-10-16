@@ -295,6 +295,39 @@ function VendorLedgerLine({ v, ledgers }) {
   return <div className="text-[11px] text-amber-900">not in your Tally: Edit to pick the right ledger</div>;
 }
 
+/** Edit or add a vendor in a pop-up, so that clicking Edit visibly does something: Escape, the cross and Cancel close it, Save closes it when it worked. */
+function VendorDialog({ title, form, setForm, ledgers, busy, error, canSave, onSave, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', onKey);
+    const before = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = before; };
+  }, [busy, onClose]);
+  return (
+    <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-50 bg-stone-900/40 flex items-stretch sm:items-center justify-center p-0 sm:p-4">
+      <div className="bg-white w-full max-w-2xl max-h-full flex flex-col sm:rounded-lg border border-stone-200 shadow-xl">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-stone-200">
+          <div className="text-sm font-semibold text-stone-900">{title}</div>
+          <button type="button" onClick={onClose} disabled={busy} aria-label="Close" className="p-1 text-stone-500 hover:text-stone-900 disabled:opacity-40"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 space-y-3 overflow-y-auto">
+          <VendorFields value={form} onChange={setForm} ledgers={ledgers} />
+          <div className="flex flex-wrap items-center gap-4 text-xs text-stone-700">
+            <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={form.auto_accept} onChange={e => setForm({ ...form, auto_accept: e.target.checked })} />Accept its bills automatically when every check passes</label>
+            <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={form.active} onChange={e => setForm({ ...form, active: e.target.checked })} />In use</label>
+          </div>
+          {error && <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+        </div>
+        <div className="flex gap-2 px-4 py-3 border-t border-stone-200">
+          <button type="button" onClick={onSave} disabled={busy || !canSave} className="h-8 px-3 text-xs rounded-md bg-stone-900 text-white disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
+          <button type="button" onClick={onClose} disabled={busy} className="h-8 px-2 text-xs text-stone-600 underline disabled:opacity-40">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function VendorsPanel({ vendors, ledgers, onChanged, showToast }) {
   const [editing, setEditing] = useState(null);       // a vendor row, or {} for a new one
   const [form, setForm] = useState(null);
@@ -329,21 +362,10 @@ function VendorsPanel({ vendors, ledgers, onChanged, showToast }) {
           </tbody>
         </table>
       </div>
-      {!editing && <button type="button" onClick={() => open({})} className="h-8 px-3 text-xs rounded-md border border-stone-300 bg-white hover:border-stone-500">Add a vendor</button>}
+      <button type="button" onClick={() => open({})} className="h-8 px-3 text-xs rounded-md border border-stone-300 bg-white hover:border-stone-500">Add a vendor</button>
       {editing && form && (
-        <div className="rounded-md border border-stone-200 p-3 space-y-2">
-          <div className="text-[11px] font-medium text-stone-700">{editing.id ? `Edit ${editing.name}` : 'A new vendor'}</div>
-          <VendorFields value={form} onChange={setForm} ledgers={ledgers} />
-          <div className="flex flex-wrap items-center gap-4 text-xs text-stone-700">
-            <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={form.auto_accept} onChange={e => setForm({ ...form, auto_accept: e.target.checked })} />Accept its bills automatically when every check passes</label>
-            <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={form.active} onChange={e => setForm({ ...form, active: e.target.checked })} />In use</label>
-          </div>
-          {error && <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
-          <div className="flex gap-2">
-            <button type="button" onClick={save} disabled={busy || !form.name.trim() || !ledgerOk(form, ledgers)} className="h-8 px-3 text-xs rounded-md bg-stone-900 text-white disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
-            <button type="button" onClick={() => setEditing(null)} className="h-8 px-2 text-xs text-stone-600 underline">Cancel</button>
-          </div>
-        </div>
+        <VendorDialog title={editing.id ? `Edit ${editing.name}` : 'A new vendor'} form={form} setForm={setForm} ledgers={ledgers} busy={busy} error={error}
+          canSave={!!form.name.trim() && ledgerOk(form, ledgers)} onSave={save} onClose={() => setEditing(null)} />
       )}
     </div>
   );
