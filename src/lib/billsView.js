@@ -8,12 +8,11 @@ const money = (n) => Math.round(Number(n || 0) * 100) / 100;
 
 /** Counts for the status cards. Opening bills (dated before the books start) are counted apart: they are matched, never exported. */
 export function billSummary(bills) {
-  const out = { review: 0, accepted: 0, void: 0, opening: 0, noFile: 0, reviewAmount: 0 };
+  const out = { review: 0, accepted: 0, void: 0, opening: 0, reviewAmount: 0 };
   for (const b of bills) {
     out[b.status] = (out[b.status] ?? 0) + 1;
     if (b.status === 'void') continue;
     if (b.opening) out.opening++;
-    if (!b.file_path) out.noFile++;
     if (b.status === 'review') out.reviewAmount = money(out.reviewAmount + Number(b.total));
   }
   return out;
@@ -24,7 +23,6 @@ export function filterBills(bills, { status = 'review', vendor = '', q = '' } = 
   const needle = q.trim().toLowerCase();
   return bills.filter(b => {
     if (status === 'open') { if (b.status === 'void') return false; }
-    else if (status === 'nofile') { if (b.status === 'void' || b.file_path) return false; }   // the "No PDF yet" card: bills still waiting for their PDF
     else if (status !== 'all' && b.status !== status) return false;
     if (vendor && String(b.vendor_id ?? '') !== vendor) return false;
     if (needle && ![b.vendor, b.invoice_no, b.supplier_gstin, String(money(b.total))].some(v => v && String(v).toLowerCase().includes(needle))) return false;

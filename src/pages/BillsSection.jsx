@@ -13,7 +13,7 @@ import { RefreshCw, Upload, FileText, X, CheckCircle2, AlertCircle, Building2, S
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const URL_DEFAULTS = { lstatus: 'review', lvendor: '', lq: '', lpage: '1', lsize: '25' };
-const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'nofile', label: 'No PDF yet' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
+const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
 const STATUS_STYLE = { review: 'bg-amber-50 text-amber-900 border-amber-300', accepted: 'bg-emerald-50 text-emerald-800 border-emerald-200', void: 'bg-stone-100 text-stone-500 border-stone-200' };
 const TONE = { ok: 'bg-emerald-50 border-emerald-200 text-emerald-900', warn: 'bg-amber-50 border-amber-300 text-amber-950', info: 'bg-stone-50 border-stone-200 text-stone-700', bad: 'bg-red-50 border-red-200 text-red-800' };
 
@@ -357,7 +357,7 @@ function BillRow({ b, onOpen }) {
       <td className="py-2 px-2 min-w-[200px]"><div className="text-stone-900">{b.vendor}</div><div className="text-[11px] text-stone-500 break-all">{b.invoice_no}{b.opening ? ' · opening' : ''}</div></td>
       <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap"><div className="text-stone-900">{inr(b.total)}</div><div className="text-[11px] text-stone-500">{inr(b.subtotal)} + {inr(b.tax)}</div></td>
       <td className="py-2 px-2"><StatusBadge status={b.status} />{failedChecks(b).length > 0 && b.status === 'review' && <div className="text-[11px] text-amber-800 mt-0.5">{failedChecks(b).length} check{failedChecks(b).length === 1 ? '' : 's'} failed</div>}</td>
-      <td className="py-2 px-2 text-[11px] text-stone-500 whitespace-nowrap">{b.file_path ? 'PDF kept' : 'no PDF yet'}</td>
+      <td className="py-2 px-2 text-[11px] text-stone-500 whitespace-nowrap">{b.file_path ? 'PDF kept' : '—'}</td>
     </tr>
   );
 }
@@ -368,7 +368,7 @@ function BillCard({ b, onOpen }) {
       <div className="flex items-center justify-between gap-2 text-xs"><span className="text-stone-600">{fmtDate(b.invoice_date)}</span><span className="tabular-nums font-medium text-stone-900">{inr(b.total)}</span></div>
       <div className="text-xs text-stone-900 mt-1">{b.vendor}</div>
       <div className="text-[11px] text-stone-500 break-all">{b.invoice_no}</div>
-      <div className="flex items-center gap-2 mt-1.5"><StatusBadge status={b.status} /><span className="text-[11px] text-stone-500">{b.file_path ? 'PDF kept' : 'no PDF yet'}</span></div>
+      <div className="flex items-center gap-2 mt-1.5"><StatusBadge status={b.status} /><span className="text-[11px] text-stone-500">{b.file_path ? 'PDF kept' : '—'}</span></div>
     </button>
   );
 }
@@ -432,16 +432,15 @@ export default function BillsSection({ showToast }) {
           <li>Eight checks run on every invoice: the GSTIN’s check digit, billed to our GSTIN (or our PAN with state code 09, as Google prints it), the number and date, taxable + GST = total, IGST or CGST + SGST for the states, the lines adding up, and quantity × rate = amount.</li>
           <li><b>The first bill of a vendor is confirmed once</b>: you say how it is booked, and from then on its bills that pass every check are accepted by themselves. Anything that fails a check, or belongs to an unknown vendor, waits under <i>Needs review</i>.</li>
           <li>You can correct the invoice number, the date and the amounts (they must still add up). A bill that fails a check can be accepted anyway, with the reason kept.</li>
-          <li>The same invoice uploaded twice is recognised. A bill typed in earlier (the Meta and Velocity ones) takes its PDF when you upload it, and any difference from the stored figures is shown.</li>
+          <li>The same invoice uploaded twice is recognised.</li>
           <li>Bills dated before the books start (1 Oct 2026) are <i>opening bills</i>: kept and matched with payments, never exported. A bill can be voided, never deleted.</li>
           <li>A PDF that is a scan or a photo has no text to read: ask the vendor for the original PDF.</li>
         </ul>
       </Collapsible>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <StatCard label="Needs review" value={summary.review} sub={`${inr(summary.reviewAmount)} waiting for you`} tone={summary.review ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'review'} onClick={() => setP({ lstatus: 'review' })} />
         <StatCard label="Accepted" value={summary.accepted} sub={`${summary.opening} opening bill${summary.opening === 1 ? '' : 's'}`} tone="text-emerald-800" active={p.lstatus === 'accepted'} onClick={() => setP({ lstatus: 'accepted' })} />
-        <StatCard label="No PDF yet" value={summary.noFile} sub="upload the PDF to attach it" tone={summary.noFile ? 'text-stone-900' : 'text-stone-500'} active={p.lstatus === 'nofile'} onClick={() => setP({ lstatus: 'nofile' })} />
         <StatCard label="Voided" value={summary.void} sub="kept, never deleted" active={p.lstatus === 'void'} onClick={() => setP({ lstatus: 'void' })} />
       </div>
 
@@ -463,7 +462,7 @@ export default function BillsSection({ showToast }) {
           {shown.length === 0 ? (
             bills.length === 0
               ? <EmptyState title="No bills yet" hint="Drop an invoice PDF above and it appears here." />
-              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint={p.lstatus === 'nofile' ? 'Every bill has its PDF attached.' : 'Every bill that was read has been accepted or voided.'} action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
+              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint="Every bill that was read has been accepted or voided." action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
           ) : (
             <>
               <div className="hidden md:block overflow-x-auto -mx-1">
