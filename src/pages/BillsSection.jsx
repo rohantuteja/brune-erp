@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, useId } from 'react';
 import { supabase } from '../lib/supabase';
 import { callFunction } from '../lib/edgeCall';
 import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { toBase64 } from '../lib/financeView';
-import { STATUS_LABEL, BOOKING_LABEL, BOOKING_SHORT, billSummary, filterBills, failedChecks, outcomeText, newVendorDraft, changedEdits } from '../lib/billsView';
+import { STATUS_LABEL, BOOKING_LABEL, BOOKING_SHORT, billSummary, filterBills, failedChecks, outcomeText, newVendorDraft, changedEdits, ledgerNote, ledgerOk, expenseGroups } from '../lib/billsView';
 import { Pagination, Collapsible, StatCard, Pills, EmptyState, useUrlParams, wideScreen } from '../components/AnalyticsKit';
 import { RefreshCw, Upload, FileText, X, CheckCircle2, AlertCircle, Building2, Search, ExternalLink, Ban } from 'lucide-react';
 
@@ -13,7 +13,7 @@ import { RefreshCw, Upload, FileText, X, CheckCircle2, AlertCircle, Building2, S
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const URL_DEFAULTS = { lstatus: 'review', lvendor: '', lq: '', lpage: '1', lsize: '25' };
-const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
+const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'nofile', label: 'No PDF yet' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
 const STATUS_STYLE = { review: 'bg-amber-50 text-amber-900 border-amber-300', accepted: 'bg-emerald-50 text-emerald-800 border-emerald-200', void: 'bg-stone-100 text-stone-500 border-stone-200' };
 const TONE = { ok: 'bg-emerald-50 border-emerald-200 text-emerald-900', warn: 'bg-amber-50 border-amber-300 text-amber-950', info: 'bg-stone-50 border-stone-200 text-stone-700', bad: 'bg-red-50 border-red-200 text-red-800' };
 
@@ -96,12 +96,44 @@ function Checks({ checks }) {
   );
 }
 
-function VendorFields({ value, onChange, expenseLedgers, lockName = false }) {
+const NOTE_TONE = { ok: 'text-emerald-800', info: 'text-stone-600', warn: 'text-amber-900' };
+
+/** What the page knows about a ledger name, in a line: it is in his Tally, an agreed rename, or not there (with a way out). */
+function LedgerNote({ value, ledgers, onChange }) {
+  const note = ledgerNote(value.tally_ledger_name, ledgers);
+  if (!note) return null;
+  const use = (name) => onChange({ ...value, tally_ledger_name: name, ledger_new: false });
+  return (
+    <div className="sm:col-span-2 space-y-1">
+      <div className={`text-[11px] ${NOTE_TONE[note.tone]}`}>{note.text}</div>
+      {note.kind === 'spelling' && <button type="button" onClick={() => use(note.suggest)} className="text-[11px] underline text-stone-700 hover:text-stone-900">Use “{note.suggest}”</button>}
+      {note.kind === 'missing' && (
+        <>
+          {note.similar.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-stone-600">Did you mean:
+              {note.similar.map(n => <button key={n} type="button" onClick={() => use(n)} className="underline text-stone-800 hover:text-stone-950">{n}</button>)}
+            </div>
+          )}
+          <label className="inline-flex items-start gap-1.5 text-[11px] text-stone-700"><input type="checkbox" className="mt-0.5" checked={value.ledger_new === true} onChange={e => onChange({ ...value, ledger_new: e.target.checked })} />It is not in my Tally yet: the export creates it as a new ledger with exactly this name</label>
+        </>
+      )}
+    </div>
+  );
+}
+
+function VendorFields({ value, onChange, ledgers, lockName = false }) {
   const set = (k, v) => onChange({ ...value, [k]: v });
+  const listId = useId();
+  const parties = useMemo(() => ledgers.filter(l => l.role === 'party').sort((a, b) => a.name.localeCompare(b.name)), [ledgers]);
+  const groups = useMemo(() => expenseGroups(ledgers, value.expense_ledger ?? ''), [ledgers, value.expense_ledger]);
   return (
     <div className="grid gap-2 sm:grid-cols-2">
       <label className="block text-[11px] text-stone-600">Vendor name<input value={value.name} onChange={e => set('name', e.target.value)} disabled={lockName} className={`${field} w-full mt-0.5`} /></label>
-      <label className="block text-[11px] text-stone-600">Its own ledger in Tally<input value={value.tally_ledger_name} onChange={e => set('tally_ledger_name', e.target.value)} className={`${field} w-full mt-0.5`} /></label>
+      <label className="block text-[11px] text-stone-600">Its own ledger in Tally
+        <input value={value.tally_ledger_name} onChange={e => onChange({ ...value, tally_ledger_name: e.target.value, ledger_new: false })} list={listId} placeholder="Type to search the ledgers in your Tally" autoComplete="off" className={`${field} w-full mt-0.5`} />
+        <datalist id={listId}>{parties.map(l => <option key={l.name} value={l.name}>{l.under}</option>)}</datalist>
+      </label>
+      <LedgerNote value={value} ledgers={ledgers} onChange={onChange} />
       <label className="block text-[11px] text-stone-600">GSTIN<input value={value.gstin ?? ''} onChange={e => set('gstin', e.target.value.toUpperCase())} className={`${field} w-full mt-0.5`} placeholder="none (a foreign vendor)" /></label>
       <label className="block text-[11px] text-stone-600">How it is booked
         <select value={value.booking} onChange={e => set('booking', e.target.value)} className={`${field} w-full mt-0.5`}>
@@ -109,10 +141,14 @@ function VendorFields({ value, onChange, expenseLedgers, lockName = false }) {
         </select>
       </label>
       {value.booking === 'expense' && (
-        <label className="block text-[11px] text-stone-600 sm:col-span-2">Expense ledger
+        <label className="block text-[11px] text-stone-600 sm:col-span-2">Expense ledger (the ledgers in your Tally)
           <select value={value.expense_ledger ?? ''} onChange={e => set('expense_ledger', e.target.value)} className={`${field} w-full mt-0.5`}>
             <option value="">Choose a ledger…</option>
-            {expenseLedgers.map(n => <option key={n} value={n}>{n}</option>)}
+            {groups.map(g => (
+              <optgroup key={g.under} label={g.under}>
+                {g.items.map(l => <option key={l.name} value={l.name}>{l.name}{l.status === 'will_create' ? ' (to be created in Tally)' : ''}</option>)}
+              </optgroup>
+            ))}
           </select>
         </label>
       )}
@@ -120,11 +156,11 @@ function VendorFields({ value, onChange, expenseLedgers, lockName = false }) {
   );
 }
 
-function BillDetail({ bill, vendors, expenseLedgers, onClose, onChanged, showToast }) {
+function BillDetail({ bill, vendors, ledgers, onClose, onChanged, showToast }) {
   const review = bill.status === 'review';
   const [fields, setFields] = useState({ invoice_no: bill.invoice_no, invoice_date: bill.invoice_date ?? '', taxable: bill.subtotal, tax: bill.tax, total: bill.total });
   const [vendorId, setVendorId] = useState(bill.vendor_id ? String(bill.vendor_id) : 'new');
-  const [draft, setDraft] = useState(() => newVendorDraft(bill));
+  const [draft, setDraft] = useState(() => newVendorDraft(bill, ledgers));
   const [anyway, setAnyway] = useState(false);
   const [reason, setReason] = useState('');
   const [voiding, setVoiding] = useState(false);
@@ -148,7 +184,7 @@ function BillDetail({ bill, vendors, expenseLedgers, onClose, onChanged, showToa
     try {
       const { ok, json } = await callBills({
         action: 'confirm', id: bill.id, edits: changedEdits(bill, fields), accept_anyway: anyway, reason,
-        vendor: vendorId === 'new' ? { new: { ...draft, gstin: draft.gstin || null, expense_ledger: draft.booking === 'expense' ? draft.expense_ledger : null } } : { id: Number(vendorId) },
+        vendor: vendorId === 'new' ? { new: { ...draft, gstin: draft.gstin || null, expense_ledger: draft.booking === 'expense' ? draft.expense_ledger : null, ledger_new: draft.ledger_new === true } } : { id: Number(vendorId) },
       });
       if (!ok) { setError([json.error, ...(json.failed ?? [])].filter(Boolean).join(' — ')); setBusy(false); return; }
       showToast?.(`Accepted ${bill.invoice_no}${json.learned?.includes('auto_accept') ? `; the next bills of ${json.vendor} are accepted when every check passes` : ''}`, 'success');
@@ -164,7 +200,7 @@ function BillDetail({ bill, vendors, expenseLedgers, onClose, onChanged, showToa
     } catch (err) { setError(err.message || String(err)); setBusy(false); }
   };
 
-  const ready = review && (vendorId !== 'new' || (draft.name.trim() && draft.tally_ledger_name.trim() && (draft.booking !== 'expense' || draft.expense_ledger))) && (!failed.length || (anyway && reason.trim().length >= 5));
+  const ready = review && (vendorId !== 'new' || (draft.name.trim() && ledgerOk(draft, ledgers) && (draft.booking !== 'expense' || draft.expense_ledger))) && (!failed.length || (anyway && reason.trim().length >= 5));
 
   return (
     <div role="dialog" aria-modal="true" aria-label={`Bill ${bill.invoice_no}`} className="fixed inset-0 z-50 bg-stone-900/40 flex items-stretch sm:items-center justify-center p-0 sm:p-4">
@@ -215,7 +251,7 @@ function BillDetail({ bill, vendors, expenseLedgers, onClose, onChanged, showToa
                   {vendors.filter(v => v.active).map(v => <option key={v.id} value={String(v.id)}>{v.name} · {BOOKING_SHORT[v.booking]}{v.expense_ledger ? ` → ${v.expense_ledger}` : ''}</option>)}
                   <option value="new">A new vendor…</option>
                 </select>
-                {vendorId === 'new' && <VendorFields value={draft} onChange={setDraft} expenseLedgers={expenseLedgers} />}
+                {vendorId === 'new' && <VendorFields value={draft} onChange={setDraft} ledgers={ledgers} />}
                 {chosen && !chosen.auto_accept && <div className="text-[11px] text-stone-500">This is the first bill of {chosen.name} you confirm: after it, bills of {chosen.name} that pass every check are accepted by themselves.</div>}
               </div>
             )}
@@ -248,12 +284,23 @@ function BillDetail({ bill, vendors, expenseLedgers, onClose, onChanged, showToa
 }
 
 // ── Vendors ─────────────────────────────────────────────────────────────────────────────────────
-function VendorsPanel({ vendors, expenseLedgers, onChanged, showToast }) {
+/** The vendors table's one-line verdict on its Tally ledger: in Tally, to be renamed there, to be created, or not there at all. */
+function VendorLedgerLine({ v, ledgers }) {
+  const note = ledgerNote(v.tally_ledger_name, ledgers);
+  if (!note) return null;
+  if (note.kind === 'tally') return <div className="text-[11px] text-emerald-800">in your Tally</div>;
+  if (note.kind === 'rename') return <div className="text-[11px] text-stone-600">in Tally as “{note.ledger.renamed_from}” until it is renamed</div>;
+  if (note.kind === 'create') return <div className="text-[11px] text-stone-600">to be created in Tally</div>;
+  if (v.ledger_new) return <div className="text-[11px] text-stone-600">new: the export creates it</div>;
+  return <div className="text-[11px] text-amber-900">not in your Tally: Edit to pick the right ledger</div>;
+}
+
+function VendorsPanel({ vendors, ledgers, onChanged, showToast }) {
   const [editing, setEditing] = useState(null);       // a vendor row, or {} for a new one
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const open = (v) => { setEditing(v); setForm({ name: v.name ?? '', tally_ledger_name: v.tally_ledger_name ?? '', gstin: v.gstin ?? '', booking: v.booking ?? 'expense', expense_ledger: v.expense_ledger ?? '', auto_accept: !!v.auto_accept, active: v.active ?? true }); setError(''); };
+  const open = (v) => { setEditing(v); setForm({ name: v.name ?? '', tally_ledger_name: v.tally_ledger_name ?? '', gstin: v.gstin ?? '', booking: v.booking ?? 'expense', expense_ledger: v.expense_ledger ?? '', ledger_new: !!v.ledger_new, auto_accept: !!v.auto_accept, active: v.active ?? true }); setError(''); };
   const save = async () => {
     setBusy(true); setError('');
     try {
@@ -274,7 +321,7 @@ function VendorsPanel({ vendors, expenseLedgers, onChanged, showToast }) {
               <tr key={v.id} className={`border-b border-stone-100 align-top ${v.active ? '' : 'opacity-50'}`}>
                 <td className="py-1.5 px-2"><div className="text-stone-900">{v.name}</div><div className="text-[11px] text-stone-500">{v.gstin ?? 'no GSTIN yet'}</div></td>
                 <td className="py-1.5 px-2">{BOOKING_SHORT[v.booking]}{v.expense_ledger ? <div className="text-[11px] text-stone-500">{v.expense_ledger}</div> : null}</td>
-                <td className="py-1.5 px-2 text-stone-700">{v.tally_ledger_name}</td>
+                <td className="py-1.5 px-2 text-stone-700"><div>{v.tally_ledger_name}</div><VendorLedgerLine v={v} ledgers={ledgers} /></td>
                 <td className="py-1.5 px-2">{v.auto_accept ? <span className="text-emerald-700">yes</span> : <span className="text-stone-500">after the first bill</span>}</td>
                 <td className="py-1.5 px-2 text-right"><button type="button" onClick={() => open(v)} className="text-xs text-stone-600 underline hover:text-stone-900">Edit</button></td>
               </tr>
@@ -286,14 +333,14 @@ function VendorsPanel({ vendors, expenseLedgers, onChanged, showToast }) {
       {editing && form && (
         <div className="rounded-md border border-stone-200 p-3 space-y-2">
           <div className="text-[11px] font-medium text-stone-700">{editing.id ? `Edit ${editing.name}` : 'A new vendor'}</div>
-          <VendorFields value={form} onChange={setForm} expenseLedgers={expenseLedgers} />
+          <VendorFields value={form} onChange={setForm} ledgers={ledgers} />
           <div className="flex flex-wrap items-center gap-4 text-xs text-stone-700">
             <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={form.auto_accept} onChange={e => setForm({ ...form, auto_accept: e.target.checked })} />Accept its bills automatically when every check passes</label>
             <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={form.active} onChange={e => setForm({ ...form, active: e.target.checked })} />In use</label>
           </div>
           {error && <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
           <div className="flex gap-2">
-            <button type="button" onClick={save} disabled={busy} className="h-8 px-3 text-xs rounded-md bg-stone-900 text-white disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={save} disabled={busy || !form.name.trim() || !ledgerOk(form, ledgers)} className="h-8 px-3 text-xs rounded-md bg-stone-900 text-white disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
             <button type="button" onClick={() => setEditing(null)} className="h-8 px-2 text-xs text-stone-600 underline">Cancel</button>
           </div>
         </div>
@@ -330,7 +377,7 @@ export default function BillsSection({ showToast }) {
   const [p, setP] = useUrlParams(URL_DEFAULTS, 'lpage');
   const [bills, setBills] = useState([]);
   const [vendors, setVendors] = useState([]);
-  const [expenseLedgers, setExpenseLedgers] = useState([]);
+  const [ledgers, setLedgers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openId, setOpenId] = useState(null);
@@ -340,11 +387,11 @@ export default function BillsSection({ showToast }) {
     try {
       const [b, v, l] = await Promise.all([
         supabase.from('vendor_invoices').select('id, vendor, vendor_id, invoice_no, invoice_date, period_from, period_to, subtotal, tax, total, tax_type, tax_rate, kind, status, opening, supplier_gstin, checks, file_path, file_name, confirmed_by_name, confirmed_at, edited, accepted_anyway, void_reason, imported_at, place_of_supply').order('invoice_date', { ascending: false }).order('id', { ascending: false }),
-        supabase.from('vendors').select('id, name, tally_ledger_name, gstin, pan, state_code, booking, expense_ledger, auto_accept, active, note').order('name'),
-        supabase.from('finance_buckets').select('name').eq('kind', 'expense').order('name'),
+        supabase.from('vendors').select('id, name, tally_ledger_name, gstin, pan, state_code, booking, expense_ledger, auto_accept, active, note, ledger_new').order('name'),
+        supabase.from('tally_ledgers').select('name, under, section, role, status, renamed_from').order('name'),
       ]);
       for (const r of [b, v, l]) if (r.error) throw new Error(r.error.message);
-      setBills(b.data || []); setVendors(v.data || []); setExpenseLedgers((l.data || []).map(x => x.name));
+      setBills(b.data || []); setVendors(v.data || []); setLedgers(l.data || []);
     } catch (err) {
       setError('Could not load the bills'); showToast?.('Could not load the bills', 'error');
     }
@@ -394,7 +441,7 @@ export default function BillsSection({ showToast }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="Needs review" value={summary.review} sub={`${inr(summary.reviewAmount)} waiting for you`} tone={summary.review ? 'text-amber-800' : 'text-stone-500'} active={p.lstatus === 'review'} onClick={() => setP({ lstatus: 'review' })} />
         <StatCard label="Accepted" value={summary.accepted} sub={`${summary.opening} opening bill${summary.opening === 1 ? '' : 's'}`} tone="text-emerald-800" active={p.lstatus === 'accepted'} onClick={() => setP({ lstatus: 'accepted' })} />
-        <StatCard label="No PDF yet" value={summary.noFile} sub="upload the PDF to attach it" tone={summary.noFile ? 'text-stone-900' : 'text-stone-500'} />
+        <StatCard label="No PDF yet" value={summary.noFile} sub="upload the PDF to attach it" tone={summary.noFile ? 'text-stone-900' : 'text-stone-500'} active={p.lstatus === 'nofile'} onClick={() => setP({ lstatus: 'nofile' })} />
         <StatCard label="Voided" value={summary.void} sub="kept, never deleted" active={p.lstatus === 'void'} onClick={() => setP({ lstatus: 'void' })} />
       </div>
 
@@ -416,7 +463,7 @@ export default function BillsSection({ showToast }) {
           {shown.length === 0 ? (
             bills.length === 0
               ? <EmptyState title="No bills yet" hint="Drop an invoice PDF above and it appears here." />
-              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint="Every bill that was read has been accepted or voided." action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
+              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint={p.lstatus === 'nofile' ? 'Every bill has its PDF attached.' : 'Every bill that was read has been accepted or voided.'} action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
           ) : (
             <>
               <div className="hidden md:block overflow-x-auto -mx-1">
@@ -435,10 +482,10 @@ export default function BillsSection({ showToast }) {
       </div>
 
       <Collapsible id="bills-vendors" title="Vendors and how each is booked" icon={<Building2 className="w-4 h-4 text-stone-400" />} count={vendors.length} summary="the ledger each vendor’s bills go to">
-        <VendorsPanel vendors={vendors} expenseLedgers={expenseLedgers} onChanged={load} showToast={showToast} />
+        <VendorsPanel vendors={vendors} ledgers={ledgers} onChanged={load} showToast={showToast} />
       </Collapsible>
 
-      {open && <BillDetail key={open.id} bill={open} vendors={vendors} expenseLedgers={expenseLedgers} onClose={() => setOpenId(null)} onChanged={load} showToast={showToast} />}
+      {open && <BillDetail key={open.id} bill={open} vendors={vendors} ledgers={ledgers} onClose={() => setOpenId(null)} onChanged={load} showToast={showToast} />}
     </div>
   );
 }

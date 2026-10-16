@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { readInvoicePdf, type ReadInvoice, type TextItem } from './invoice-reader.ts';
-import { applyEdits, billRow, decide, matchVendor, newVendorFrom, normName, recheck, storagePath, vendorProblems, type Vendor } from './bills.ts';
+import { applyEdits, billRow, decide, matchVendor, newVendorFrom, normName, recheck, storagePath, vendorProblems, type LedgerBook, type Vendor } from './bills.ts';
 
 const OURS = '09AALCR1014K1ZB';
 const read = (f: string): ReadInvoice => {
   const { items } = JSON.parse(readFileSync(new URL(`./fixtures/invoices/${f}.json`, import.meta.url), 'utf8')) as { items: TextItem[] };
   return readInvoicePdf(items, { companyGstin: OURS, today: '2026-10-15' }).invoices[0];
 };
-const LEDGERS = new Set(['Marketing Expenses', 'Payment Gateway Expenses', 'Software Expenses @ 18%', 'Shipping Expenses @ 18%']);
+const EXPENSES = ['Marketing Expenses', 'Payment Gateway Expenses', 'Software Expenses @ 18%', 'Shipping Expenses @ 18%'];
+// What Tally has: the expense ledgers, and every ledger (the vendors' own ledgers among them).
+const LEDGERS: LedgerBook = { expense: new Set(EXPENSES), known: new Set([...EXPENSES, 'Vendor Ledger', 'Gokwik Commerce Solutions Private Limited']) };
 const V = (o: Partial<Vendor>): Vendor => ({ id: 1, name: 'Vendor', tally_ledger_name: 'Vendor Ledger', gstin: null, pan: null, state_code: null, booking: 'expense', expense_ledger: 'Marketing Expenses', auto_accept: true, active: true, ...o });
 
 test('a vendor is found by GSTIN; one with no GSTIN yet is found by name; one with a different GSTIN is never taken by name', () => {
@@ -46,6 +48,16 @@ test('goods are not booked as an expense and a service is not booked as a purcha
   assert.equal(decide(goods, V({ name: 'Fabric A', booking: 'purchase', expense_ledger: null }), LEDGERS).status, 'accepted');
   assert.match(decide(read('airtel'), V({ name: 'Airtel', booking: 'purchase', expense_ledger: null }), LEDGERS).reasons.join(' '), /goods purchase but this invoice has a service code/);
   assert.equal(decide(read('easebuzz'), V({ name: 'Easebuzz', booking: 'tie_out', expense_ledger: null }), LEDGERS).status, 'accepted');
+});
+
+test('a vendor ledger that Tally does not have is a problem, unless the vendor is marked as a new ledger to create', () => {
+  const ok = { name: 'Vipul', tally_ledger_name: 'VIPUL ENTERPRISES', gstin: null, pan: null, state_code: null, booking: 'purchase' as const, expense_ledger: null };
+  assert.match(vendorProblems(ok, LEDGERS).join(), /"VIPUL ENTERPRISES" is not a ledger in your Tally/);
+  assert.deepEqual(vendorProblems({ ...ok, ledger_new: true }, LEDGERS), []);
+  assert.deepEqual(vendorProblems({ ...ok, tally_ledger_name: 'Vendor Ledger' }, LEDGERS), []);                 // it is there
+  assert.match(vendorProblems({ ...ok, tally_ledger_name: 'vendor ledger' }, LEDGERS).join(), /not a ledger in your Tally/);   // Tally names are exact: a different spelling would create a second ledger
+  // a bill of such a vendor waits for a person until the ledger is right
+  assert.match(decide(read('gokwik-pp-cod'), V({ name: 'GoKwik', tally_ledger_name: 'Gokwik Commerce Solutions Pvt Ltd', expense_ledger: 'Payment Gateway Expenses' }), LEDGERS).reasons.join(' '), /booking is incomplete: "Gokwik Commerce Solutions Pvt Ltd" is not a ledger in your Tally/);
 });
 
 test('what a vendor profile must have', () => {

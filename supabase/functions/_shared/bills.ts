@@ -9,7 +9,10 @@ export const BOOKINGS: Booking[] = ['expense', 'purchase', 'tie_out'];
 export type Vendor = {
   id: number; name: string; tally_ledger_name: string; gstin: string | null; pan: string | null; state_code: string | null;
   booking: Booking; expense_ledger: string | null; auto_accept: boolean; active: boolean;
+  ledger_new?: boolean;   // its own ledger is not in Tally yet: the export creates it
 };
+/** The ledgers that exist in Tally (tally_ledgers, from the trial balance): which can take an expense, and every one there is. */
+export type LedgerBook = { expense: Set<string>; known: Set<string> };
 export const READER_VERSION = 'invoice-reader 2026-10-15';
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -40,12 +43,14 @@ export function matchVendor(vendors: Vendor[], inv: ReadInvoice): { vendor: Vend
 // ── Can it be accepted without a person ──────────────────────────────────────────────────────
 export type Decision = { status: 'accepted' | 'review'; reasons: string[] };
 
-export function vendorProblems(v: Pick<Vendor, 'name' | 'tally_ledger_name' | 'gstin' | 'pan' | 'state_code' | 'booking' | 'expense_ledger'>, expenseLedgers: Set<string>): string[] {
+export function vendorProblems(v: Pick<Vendor, 'name' | 'tally_ledger_name' | 'gstin' | 'pan' | 'state_code' | 'booking' | 'expense_ledger' | 'ledger_new'>, book: LedgerBook): string[] {
   const out: string[] = [];
   if (!v.name?.trim()) out.push('the vendor needs a name');
   if (!v.tally_ledger_name?.trim()) out.push("the vendor needs the name of its own ledger in Tally");
+  // A ledger name that Tally does not have would make the export create a second ledger: a person picks the real one, or says it is new.
+  else if (!book.known.has(v.tally_ledger_name) && !v.ledger_new) out.push(`"${v.tally_ledger_name}" is not a ledger in your Tally: choose it from the list, or say that it is a new ledger to create`);
   if (!BOOKINGS.includes(v.booking)) out.push('choose how the vendor is booked: expense, purchase or tie-out only');
-  if (v.booking === 'expense' && !(v.expense_ledger && expenseLedgers.has(v.expense_ledger))) out.push('an expense vendor needs an expense ledger (choose one from the list)');
+  if (v.booking === 'expense' && !(v.expense_ledger && book.expense.has(v.expense_ledger))) out.push('an expense vendor needs an expense ledger (choose one from the list)');
   if (v.gstin) {
     if (!gstinChecksumOk(v.gstin)) out.push(`${v.gstin} is not a valid GSTIN`);
     else {
@@ -60,11 +65,11 @@ export function vendorProblems(v: Pick<Vendor, 'name' | 'tally_ledger_name' | 'g
  * accepted: nothing needs a person's eyes: the invoice read and every check passed, the vendor is known with a complete booking, and
  * the owner has already confirmed one bill of it. review: anything else, with the reasons in plain words.
  */
-export function decide(inv: ReadInvoice, vendor: Vendor | null, expenseLedgers: Set<string>): Decision {
+export function decide(inv: ReadInvoice, vendor: Vendor | null, book: LedgerBook): Decision {
   const reasons: string[] = [];
   if (!vendor) reasons.push('A new vendor: say once how it is booked, and this bill is accepted');
   else {
-    const problems = vendorProblems(vendor, expenseLedgers);
+    const problems = vendorProblems(vendor, book);
     if (problems.length) reasons.push(`${vendor.name}'s booking is incomplete: ${problems.join('; ')}`);
     else if (!vendor.auto_accept) reasons.push(`The first bill from ${vendor.name}: confirm it once, and the next ones are accepted when every check passes`);
     if (vendor.booking === 'purchase' && inv.kind === 'service') reasons.push(`${vendor.name} is booked as a goods purchase but this invoice has a service code`);

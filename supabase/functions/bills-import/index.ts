@@ -17,12 +17,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getDocumentProxy } from 'npm:unpdf@0.12.1';
 import { CORS, json, requireAdmin, setting } from '../_shared/shopify-admin.ts';
 import { gstinChecksumOk, panOf, readInvoicePdf, type TextItem } from '../_shared/invoice-reader.ts';
-import { applyEdits, billRow, decide, matchVendor, newVendorFrom, recheck, storagePath, vendorProblems, BOOKINGS, type Edits, type Vendor } from '../_shared/bills.ts';
+import { applyEdits, billRow, decide, matchVendor, newVendorFrom, recheck, storagePath, vendorProblems, BOOKINGS, type Edits, type LedgerBook, type Vendor } from '../_shared/bills.ts';
 
 const BUCKET = 'vendor-bills';
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_PAGES = 30;
-const VENDOR_COLUMNS = 'id, name, tally_ledger_name, gstin, pan, state_code, booking, expense_ledger, auto_accept, active, note';
+const VENDOR_COLUMNS = 'id, name, tally_ledger_name, gstin, pan, state_code, booking, expense_ledger, auto_accept, active, note, ledger_new';
 const BILL_COLUMNS = 'id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, status, kind, checks, file_path, file_name, supplier_gstin, edited';
 
 serve(async (req) => {
@@ -61,10 +61,14 @@ const istToday = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice
 async function context(admin: any) {
   const { data: vendors, error } = await admin.from('vendors').select(VENDOR_COLUMNS).order('name');
   if (error) throw new Error(`vendors: ${error.message}`);
-  const { data: buckets } = await admin.from('finance_buckets').select('name').eq('kind', 'expense');
+  // The ledgers that exist in his Tally (from the trial balance he exported): a vendor's own ledger and its expense ledger are checked against them.
+  const { data: ledgers, error: le } = await admin.from('tally_ledgers').select('name, role');
+  if (le) throw new Error(`tally ledgers: ${le.message}`);
+  const book: LedgerBook = { expense: new Set<string>(), known: new Set<string>() };
+  for (const l of ledgers ?? []) { book.known.add(l.name); if (l.role === 'expense') book.expense.add(l.name); }
   return {
     vendors: (vendors ?? []) as Vendor[],
-    expenseLedgers: new Set<string>((buckets ?? []).map((b: any) => b.name)),
+    book,
     companyGstin: await setting(admin, 'company_gstin', '09AALCR1014K1ZB'),
     booksStart: await setting(admin, 'accounting_start_date', '2026-10-01'),
   };
@@ -111,7 +115,7 @@ async function upload(admin: any, user: User, body: any) {
   const plans: Plan[] = [];
   for (const inv of read.invoices) {
     const m = matchVendor(ctx.vendors, inv);
-    const dec = decide(inv, m.vendor, ctx.expenseLedgers);
+    const dec = decide(inv, m.vendor, ctx.book);
     const vendorName = m.vendor?.name ?? inv.supplier.name ?? 'Unknown vendor';
     const row = billRow(inv, { vendor: m.vendor, vendorName, companyGstin: ctx.companyGstin, file: { path, hash, name: file }, status: dec.status, booksStart: ctx.booksStart });
     if (!row) { plans.push({ kind: 'unreadable', invoice_no: inv.invoice_no, checks: inv.checks, reasons: inv.checks.filter(c => !c.ok).map(c => c.detail) }); continue; }
@@ -166,14 +170,16 @@ async function confirm(admin: any, user: User, body: any) {
   if (body.vendor?.id) vendor = ctx.vendors.find(v => v.id === Number(body.vendor.id));
   else if (body.vendor?.new) {
     const nv = { ...body.vendor.new, booking: body.vendor.new.booking, expense_ledger: body.vendor.new.expense_ledger || null } as Vendor;
-    const problems = vendorProblems(nv, ctx.expenseLedgers);
+    nv.ledger_new = body.vendor.new.ledger_new === true && !ctx.book.known.has(String(nv.tally_ledger_name ?? ''));   // only a ledger Tally lacks can be "new"
+    nv.tally_ledger_name = String(nv.tally_ledger_name ?? '').trim();
+    const problems = vendorProblems(nv, ctx.book);
     if (problems.length) return json({ error: `the new vendor is not complete: ${problems.join('; ')}` }, 400);
-    const { data, error } = await admin.from('vendors').insert({ name: nv.name.trim(), tally_ledger_name: nv.tally_ledger_name.trim(), gstin: nv.gstin || null, pan: nv.gstin ? panOf(nv.gstin) : nv.pan || null, state_code: nv.gstin ? nv.gstin.slice(0, 2) : nv.state_code || null, booking: nv.booking, expense_ledger: nv.expense_ledger, created_by_name: user.name }).select(VENDOR_COLUMNS).single();
+    const { data, error } = await admin.from('vendors').insert({ name: nv.name.trim(), tally_ledger_name: nv.tally_ledger_name.trim(), gstin: nv.gstin || null, pan: nv.gstin ? panOf(nv.gstin) : nv.pan || null, state_code: nv.gstin ? nv.gstin.slice(0, 2) : nv.state_code || null, booking: nv.booking, expense_ledger: nv.expense_ledger, ledger_new: nv.ledger_new, created_by_name: user.name }).select(VENDOR_COLUMNS).single();
     if (error) return json({ error: `creating the vendor: ${/duplicate/i.test(error.message) ? 'a vendor with that name or GSTIN already exists: choose it from the list' : error.message}` }, 409);
     vendor = data as Vendor;
   }
   if (!vendor) return json({ error: 'choose the vendor this bill belongs to' }, 400);
-  const problems = vendorProblems(vendor, ctx.expenseLedgers);
+  const problems = vendorProblems(vendor, ctx.book);
   if (problems.length) return json({ error: `${vendor.name} is not completely set up: ${problems.join('; ')}` }, 400);
 
   const done = applyEdits({ invoice_no: bill.invoice_no, invoice_date: bill.invoice_date, subtotal: Number(bill.subtotal), tax: Number(bill.tax), total: Number(bill.total) }, (body.edits ?? {}) as Edits);
@@ -212,10 +218,11 @@ async function vendorSave(admin: any, user: User, body: any) {
     gstin: body.gstin ? String(body.gstin).trim().toUpperCase() : null, pan: body.pan ? String(body.pan).trim().toUpperCase() : null, state_code: body.state_code ? String(body.state_code).trim() : null,
     booking: body.booking, expense_ledger: body.expense_ledger || null,
   } as Vendor;
+  v.ledger_new = body.ledger_new === true && !ctx.book.known.has(v.tally_ledger_name);   // only a ledger Tally lacks can be "new"
   if (v.gstin && gstinChecksumOk(v.gstin)) { v.pan = panOf(v.gstin); v.state_code = v.gstin.slice(0, 2); }
   if (!BOOKINGS.includes(v.booking)) return json({ error: 'choose how the vendor is booked' }, 400);
   if (v.booking !== 'expense' && v.booking !== 'tie_out') v.expense_ledger = null;
-  const problems = vendorProblems(v, ctx.expenseLedgers);
+  const problems = vendorProblems(v, ctx.book);
   if (problems.length) return json({ error: problems.join('; ') }, 400);
   const row = { ...v, auto_accept: body.auto_accept === true, active: body.active !== false, note: body.note ?? null, updated_at: new Date().toISOString() };
   const q = body.id ? admin.from('vendors').update(row).eq('id', Number(body.id)) : admin.from('vendors').insert({ ...row, created_by_name: user.name });
