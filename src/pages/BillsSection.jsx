@@ -82,6 +82,39 @@ function UploadPanel({ onDone }) {
   );
 }
 
+// ── Attach the PDF of a bill that has none ──────────────────────────────────────────────────────
+/** Only accepted when the PDF is that very invoice (the server checks the number and the supplier): otherwise nothing is stored. */
+function AttachPdf({ bill, onAttached }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const input = useRef(null);
+  const pick = async (file) => {
+    if (!file) return;
+    setError('');
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { setError('Choose a PDF file.'); return; }
+    if (file.size > MAX_UPLOAD_BYTES) { setError(`Files up to ${MAX_UPLOAD_BYTES / 1024 / 1024} MB are accepted.`); return; }
+    setBusy(true);
+    try {
+      const { ok, json } = await callBills({ action: 'upload', attach_id: bill.id, filename: file.name, data: toBase64(new Uint8Array(await file.arrayBuffer())) });
+      if (!ok) setError(json.error || 'The PDF could not be attached');
+      else onAttached((json.results ?? []).map(outcomeText));
+    } catch (err) { setError(err.message || String(err)); }
+    setBusy(false);
+    if (input.current) input.current.value = '';
+  };
+  return (
+    <div className="rounded border border-stone-200 bg-stone-50 p-3 space-y-2">
+      <div className="text-xs text-stone-700">No PDF is attached to invoice {bill.invoice_no} yet.</div>
+      <label className={`inline-flex items-center gap-1.5 h-8 px-3 text-xs rounded-md bg-stone-900 text-white cursor-pointer ${busy ? 'opacity-50 pointer-events-none' : ''}`}>
+        {busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}{busy ? 'Reading…' : 'Attach the PDF'}
+        <input ref={input} type="file" accept="application/pdf,.pdf" disabled={busy} onChange={e => pick(e.target.files?.[0])} aria-label={`Attach the PDF of invoice ${bill.invoice_no}`} className="sr-only" />
+      </label>
+      <div className="text-[11px] text-stone-500">It is read and checked against this bill. If it is another invoice, nothing is changed.</div>
+      {error && <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+    </div>
+  );
+}
+
 // ── One bill, open ──────────────────────────────────────────────────────────────────────────────
 function Checks({ checks }) {
   if (!checks?.length) return <div className="text-[11px] text-stone-500">No checks were stored for this bill.</div>;
@@ -168,6 +201,7 @@ function BillDetail({ bill, vendors, ledgers, onClose, onChanged, showToast }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [file, setFile] = useState({ state: bill.file_path ? 'loading' : 'none', url: null });
+  const [attachNote, setAttachNote] = useState([]);
   const set = (k, v) => setFields(f => ({ ...f, [k]: v }));
   const chosen = vendors.find(v => String(v.id) === vendorId);
   const failed = failedChecks(bill);
@@ -175,6 +209,7 @@ function BillDetail({ bill, vendors, ledgers, onClose, onChanged, showToast }) {
   useEffect(() => {
     if (!bill.file_path) return undefined;
     let stale = false;
+    setFile({ state: 'loading', url: null });
     callBills({ action: 'file_url', id: bill.id }).then(({ ok, json }) => { if (!stale) setFile(ok ? { state: 'ready', url: json.url } : { state: 'error', url: null }); }).catch(() => { if (!stale) setFile({ state: 'error', url: null }); });
     return () => { stale = true; };
   }, [bill.id, bill.file_path]);
@@ -226,7 +261,8 @@ function BillDetail({ bill, vendors, ledgers, onClose, onChanged, showToast }) {
             )}
             {file.state === 'loading' && <div className="text-xs text-stone-500">Opening the original…</div>}
             {file.state === 'error' && <div className="text-xs text-red-700">The original could not be opened.</div>}
-            {file.state === 'none' && <div className="rounded border border-stone-200 bg-stone-50 p-3 text-xs text-stone-600">No PDF is attached to this bill yet. Upload its PDF on this page and it is attached to this bill (its figures are compared with the PDF).</div>}
+            {file.state === 'none' && <AttachPdf bill={bill} onAttached={items => { setAttachNote(items); onChanged(); }} />}
+            {attachNote.map((it, i) => <div key={i} role="status" className={`mt-2 rounded-md border px-3 py-2 text-xs ${TONE[it.warn ? 'warn' : it.tone]}`}>{it.text}</div>)}
           </div>
           <div className="space-y-3 min-w-0">
             <div className="grid gap-2 grid-cols-2">
@@ -432,7 +468,7 @@ export default function BillsSection({ showToast }) {
           <li>Eight checks run on every invoice: the GSTIN’s check digit, billed to our GSTIN (or our PAN with state code 09, as Google prints it), the number and date, taxable + GST = total, IGST or CGST + SGST for the states, the lines adding up, and quantity × rate = amount.</li>
           <li><b>The first bill of a vendor is confirmed once</b>: you say how it is booked, and from then on its bills that pass every check are accepted by themselves. Anything that fails a check, or belongs to an unknown vendor, waits under <i>Needs review</i>.</li>
           <li>You can correct the invoice number, the date and the amounts (they must still add up). A bill that fails a check can be accepted anyway, with the reason kept.</li>
-          <li>The same invoice uploaded twice is recognised. A bill typed in earlier (the Meta and Velocity ones) takes its PDF when you upload it, and any difference from the stored figures is shown.</li>
+          <li>The same invoice uploaded twice is recognised. A bill typed in earlier (the Meta and Velocity ones) takes its PDF with the <b>Attach the PDF</b> button inside the bill, or when you drop the PDF above; any difference from the stored figures is shown.</li>
           <li>Bills dated before the books start (1 Oct 2026) are <i>opening bills</i>: kept and matched with payments, never exported. A bill can be voided, never deleted.</li>
           <li>A PDF that is a scan or a photo has no text to read: ask the vendor for the original PDF.</li>
         </ul>

@@ -97,6 +97,7 @@ async function upload(admin: any, user: User, body: any) {
 
   // the same file twice
   const { data: same } = await admin.from('vendor_invoices').select(BILL_COLUMNS).eq('file_hash', hash);
+  if (same?.length && body.attach_id !== undefined && body.attach_id !== null) return json({ error: `this file is already attached to ${same.map((b: any) => `${b.vendor} ${b.invoice_no}`).join(', ')}: nothing was changed` }, 409);
   if (same?.length) return json({ file, results: same.map((b: any) => ({ outcome: 'already_uploaded', id: b.id, vendor: b.vendor, invoice_no: b.invoice_no, status: b.status })) });
 
   let items: TextItem[];
@@ -108,6 +109,9 @@ async function upload(admin: any, user: User, body: any) {
   const read = readInvoicePdf(items, { companyGstin: ctx.companyGstin, today: istToday() });
   if (read.problem === 'no_text') return json({ error: 'this PDF has no text in it (it is a scan or a photo), so it cannot be read. Ask the vendor for the original PDF.' }, 422);
   if (read.problem === 'no_invoice') return json({ error: 'this does not look like a tax invoice: no supplier GSTIN or invoice number was found' }, 422);
+
+  // "Attach PDF" on a bill that has none: the PDF must be that bill's own invoice, or nothing is stored or changed
+  if (body.attach_id !== undefined && body.attach_id !== null) return await attachToBill(admin, body, { bytes, hash, file, read });
 
   // decide what to do with each invoice before anything is written
   type Plan = { kind: 'insert'; row: Record<string, unknown>; reasons: string[]; vendor: Vendor | null } | { kind: 'attach'; existing: any; inv: any; differs: string[] } | { kind: 'duplicate'; existing: any } | { kind: 'unreadable'; invoice_no: string | null; checks: unknown; reasons: string[] };
@@ -144,9 +148,7 @@ async function upload(admin: any, user: User, body: any) {
     if (p.kind === 'duplicate') { results.push({ outcome: 'duplicate', id: p.existing.id, vendor: p.existing.vendor, invoice_no: p.existing.invoice_no, status: p.existing.status }); continue; }
     if (p.kind === 'attach') {
       const i = p.inv;
-      const { error } = await admin.from('vendor_invoices').update({
-        file_path: path, file_hash: hash, file_name: file, kind: i.kind, checks: i.checks, place_of_supply: i.place_of_supply, irn: i.irn, tax_rate: i.tax_rate, round_off: i.round_off, reader: 'attached to a stored bill',
-      }).eq('id', p.existing.id);
+      const { error } = await admin.from('vendor_invoices').update(attachFields(i, path, hash, file)).eq('id', p.existing.id);
       if (error) throw new Error(`attaching the PDF: ${error.message}`);
       results.push({ outcome: 'attached', id: p.existing.id, vendor: p.existing.vendor, invoice_no: p.existing.invoice_no, status: p.existing.status, differs: p.differs });
       continue;
@@ -159,6 +161,38 @@ async function upload(admin: any, user: User, body: any) {
 }
 
 // ── A person accepts a bill held for review ──────────────────────────────────────────────────
+/** What a bill takes from the PDF that is attached to it: the file, and what the reader found in it. */
+const attachFields = (i: any, path: string, hash: string, file: string) => ({
+  file_path: path, file_hash: hash, file_name: file, kind: i.kind, checks: i.checks, place_of_supply: i.place_of_supply, irn: i.irn, tax_rate: i.tax_rate, round_off: i.round_off, reader: 'attached to a stored bill',
+});
+
+/** The "Attach PDF" button on a bill with no PDF. It is attached only when the PDF holds that very invoice (same number, and the same supplier when both say); otherwise nothing is stored and nothing changes. */
+async function attachToBill(admin: any, body: any, f: { bytes: Uint8Array; hash: string; file: string; read: { invoices: any[] } }) {
+  const { data: bill } = await admin.from('vendor_invoices').select(BILL_COLUMNS).eq('id', Number(body.attach_id)).maybeSingle();
+  if (!bill) return json({ error: 'that bill was not found' }, 404);
+  if (bill.status === 'void') return json({ error: 'that bill has been voided' }, 409);
+  if (bill.file_path) return json({ error: 'this bill already has its PDF' }, 409);
+  const wanted = String(bill.invoice_no).trim();
+  const inv = f.read.invoices.find(i => String(i.invoice_no ?? '').trim() === wanted);
+  if (!inv) {
+    const found = f.read.invoices.map(i => i.invoice_no ?? 'an invoice with no number').join(', ');
+    return json({ error: `this PDF is invoice ${found}, not ${wanted}: nothing was changed` }, 409);
+  }
+  if (bill.supplier_gstin && inv.supplier.gstin && bill.supplier_gstin !== inv.supplier.gstin) {
+    return json({ error: `invoice ${wanted} in this PDF is from another supplier (${inv.supplier.gstin}), not ${bill.vendor}: nothing was changed` }, 409);
+  }
+  const differs: string[] = [];
+  for (const [label, stored, now] of [['taxable value', bill.subtotal, inv.taxable], ['GST', bill.tax, inv.tax], ['total', bill.total, inv.total]] as const) {
+    if (now !== null && Math.abs(Number(stored) - now) > 0.011) differs.push(`${label}: stored ${stored}, the PDF says ${now}`);
+  }
+  const path = storagePath(istToday(), f.hash);
+  const { error: se } = await admin.storage.from(BUCKET).upload(path, f.bytes, { contentType: 'application/pdf', upsert: false });
+  if (se && !/already exists|duplicate/i.test(se.message)) throw new Error(`keeping the original: ${se.message}`);
+  const { error } = await admin.from('vendor_invoices').update(attachFields(inv, path, f.hash, f.file)).eq('id', bill.id);
+  if (error) throw new Error(`attaching the PDF: ${error.message}`);
+  return json({ file: f.file, results: [{ outcome: 'attached', id: bill.id, vendor: bill.vendor, invoice_no: bill.invoice_no, status: bill.status, differs }] });
+}
+
 async function confirm(admin: any, user: User, body: any) {
   const { data: bill } = await admin.from('vendor_invoices').select(BILL_COLUMNS).eq('id', Number(body.id)).maybeSingle();
   if (!bill) return json({ error: 'that bill was not found' }, 404);
