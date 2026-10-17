@@ -321,7 +321,8 @@ function readOne(items: Array<{ x: number; y: number; w: number; s: string }>, o
   const posRaw = valueAfter(rows, /^place\s*of\s*supply\s*:?/i);
   const pos = posRaw ? resolveState({ name: posRaw.replace(/\s*\(\d+\)\s*$/, ''), code: /\((\d{2})\)/.exec(posRaw)?.[1] ?? null }) : null;
   const irn = /\b[0-9a-f]{64}\b/i.exec(text)?.[0] ?? null;
-  const period = valueAfter(rows, /^(invoice|service|billing|bill|statement)\s*period\s*:?/i, v => parsePeriod(v) !== null);
+  const period = valueAfter(rows, /^(invoice|service|billing|bill|statement)\s*period\s*:?/i, v => parsePeriod(v) !== null)
+    ?? (/processed\s+for\s+the\s+month\s*~?[\s\S]{0,700}?\b([A-Za-z]{3,9}\s*-\s*\d{4})\b/i.exec(text)?.[1] ?? null);   // Easebuzz: "Transactions processed for the Month ~" and, a line below, "- September-2026"
   const span = period ? parsePeriod(period) : null;
 
   const kind = kindOf(rows, text);
