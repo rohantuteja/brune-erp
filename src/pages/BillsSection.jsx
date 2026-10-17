@@ -82,6 +82,105 @@ function UploadPanel({ onDone }) {
   );
 }
 
+// ── Tie-out of a gateway invoice (Easebuzz) with the payouts ─────────────────────────────────────
+const TIE_TONE = { opening: 'info', wait: 'warn', agrees: 'ok', adjust: 'warn', investigate: 'bad' };
+const cell = 'py-1 px-2 text-right tabular-nums whitespace-nowrap';
+const signed = (n) => (n < 0 ? `−${inr(-n)}` : inr(n));
+
+function VoucherLines({ lines }) {
+  if (!lines?.length) return null;
+  return (
+    <table className="w-full text-xs">
+      <thead><tr className="text-left text-stone-500 border-b border-stone-200"><th className="py-1 px-2 font-medium">Account</th><th className={`${cell} font-medium`}>Debit</th><th className={`${cell} font-medium`}>Credit</th></tr></thead>
+      <tbody>{lines.map((l, i) => (
+        <tr key={i} className="border-b border-stone-100"><td className="py-1 px-2 text-stone-800">{l.account}</td><td className={cell}>{l.debit ? inr(l.debit) : ''}</td><td className={cell}>{l.credit ? inr(l.credit) : ''}</td></tr>
+      ))}</tbody>
+    </table>
+  );
+}
+
+/** The monthly invoice against the fee and GST the order ledger booked at each GoKwik payout. A difference is trued up by one monthly voucher (the order ledger is never changed). */
+function TieOutPanel({ bill, onChanged, showToast }) {
+  const [data, setData] = useState(null);       // { tieout, confirmed }
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState('');
+  const [voiding, setVoiding] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const { ok, json } = await callBills({ action: 'tieout', id: bill.id });
+      if (!ok) setError(json.error || 'Could not work out the tie-out'); else { setData(json); setError(''); }
+    } catch (err) { setError(err.message || String(err)); }
+  }, [bill.id]);
+  useEffect(() => { load(); }, [load]);
+
+  const act = async (body, done) => {
+    setBusy(true); setError('');
+    try {
+      const { ok, json } = await callBills({ id: bill.id, ...body });
+      if (!ok) setError([json.error, ...(json.failed ?? [])].filter(Boolean).join(' — '));
+      else { setData(json); setReason(''); setVoiding(false); setVoidReason(''); showToast?.(done, 'success'); onChanged(); }
+    } catch (err) { setError(err.message || String(err)); }
+    setBusy(false);
+  };
+
+  const t = data?.tieout, c = data?.confirmed;
+  const opening = t?.status === 'opening';
+  const cmp = opening ? t?.report : t?.booked;
+  return (
+    <div className="space-y-2 rounded-md border border-stone-200 p-3">
+      <div className="text-[11px] font-medium text-stone-700">Tie-out with the GoKwik settlements{t ? `, ${fmtDate(t.period.from)} to ${fmtDate(t.period.to)}` : ''}</div>
+      {!t && !error && <div className="text-xs text-stone-500">Working it out…</div>}
+      {t && (
+        <>
+          <table className="w-full text-xs">
+            <thead><tr className="text-left text-stone-500 border-b border-stone-200"><th className="py-1 px-2 font-medium" /><th className={`${cell} font-medium`}>Invoice</th><th className={`${cell} font-medium`}>{opening ? 'GoKwik report' : 'Booked by the ledger'}</th><th className={`${cell} font-medium`}>Difference</th></tr></thead>
+            <tbody>
+              <tr className="border-b border-stone-100"><td className="py-1 px-2">Fee (taxable value)</td><td className={cell}>{inr(t.invoice.taxable)}</td><td className={cell}>{inr(cmp.fee)}</td><td className={cell}>{signed(t.diff.expense)}</td></tr>
+              <tr className="border-b border-stone-100"><td className="py-1 px-2">IGST</td><td className={cell}>{inr(t.invoice.gst)}</td><td className={cell}>{inr(cmp.gst)}</td><td className={cell}>{signed(t.diff.gst)}</td></tr>
+              <tr><td className="py-1 px-2 font-medium">Total</td><td className={`${cell} font-medium`}>{inr(t.invoice.total)}</td><td className={`${cell} font-medium`}>{inr(cmp.total)}</td><td className={`${cell} font-medium`}>{signed(t.diff.gateway)}</td></tr>
+            </tbody>
+          </table>
+          {t.period.assumed && <div className="text-[11px] text-stone-500">The invoice does not say which month it bills: the month of its date is used.</div>}
+          {t.reasons.map((r, i) => <div key={i} className={`rounded-md border px-3 py-2 text-xs ${TONE[TIE_TONE[t.status]]}`}>{r}</div>)}
+
+          {c ? (
+            <div className="space-y-2">
+              <div className="text-xs text-emerald-800">Tied out by {c.confirmed_by_name} on {fmtDate(String(c.confirmed_at).slice(0, 10))}{c.lines?.length ? `: this adjustment is kept, dated ${fmtDate(c.voucher_date)}, reference ${bill.invoice_no}` : ': nothing to adjust'}.{c.reason ? ` Reason: ${c.reason}` : ''}</div>
+              <VoucherLines lines={c.lines} />
+              {voiding ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input value={voidReason} onChange={e => setVoidReason(e.target.value)} placeholder="Why is it voided?" aria-label="Why the tie-out is voided" className={`${field} flex-1 min-w-[12rem]`} />
+                  <button type="button" onClick={() => act({ action: 'tieout_void', reason: voidReason }, 'Tie-out voided')} disabled={busy || voidReason.trim().length < 5} className="h-8 px-3 text-xs rounded-md border border-red-300 text-red-800 bg-white disabled:opacity-40">Void it</button>
+                  <button type="button" onClick={() => setVoiding(false)} className="h-8 px-2 text-xs text-stone-600 underline">Cancel</button>
+                </div>
+              ) : <button type="button" onClick={() => setVoiding(true)} className="text-[11px] text-stone-600 underline hover:text-stone-900">Void this tie-out</button>}
+            </div>
+          ) : (
+            <>
+              {t.lines.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[11px] text-stone-600">Adjustment voucher, dated {fmtDate(bill.invoice_date)}, reference {bill.invoice_no}:</div>
+                  <VoucherLines lines={t.lines} />
+                </div>
+              )}
+              {t.status === 'investigate' && <input value={reason} onChange={e => setReason(e.target.value)} placeholder="Why it is right to post this (at least 5 characters)" aria-label="Why the difference is posted" className={`${field} w-full`} />}
+              {(t.status === 'agrees' || t.status === 'adjust' || t.status === 'investigate') && (
+                <button type="button" onClick={() => act({ action: 'tieout_confirm', reason }, t.status === 'agrees' ? 'Marked as checked' : 'Adjustment confirmed')} disabled={busy || (t.status === 'investigate' && reason.trim().length < 5)}
+                  className="h-8 px-3 text-xs rounded-md bg-stone-900 text-white disabled:opacity-40">{busy ? 'Saving…' : t.status === 'agrees' ? 'Mark as checked' : t.status === 'investigate' ? 'Confirm anyway' : 'Confirm the adjustment'}</button>
+              )}
+            </>
+          )}
+        </>
+      )}
+      {error && <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+      <div className="text-[11px] text-stone-400">Nothing here posts to Tally yet: a confirmed adjustment is kept for the Tally export.</div>
+    </div>
+  );
+}
+
 // ── One bill, open ──────────────────────────────────────────────────────────────────────────────
 function Checks({ checks }) {
   if (!checks?.length) return <div className="text-[11px] text-stone-500">No checks were stored for this bill.</div>;
@@ -241,6 +340,7 @@ function BillDetail({ bill, vendors, ledgers, onClose, onChanged, showToast }) {
               <div className="text-[11px] font-medium text-stone-700 mb-1">What was checked</div>
               <Checks checks={bill.checks} />
             </div>
+            {vendors.find(v => v.id === bill.vendor_id)?.booking === 'tie_out' && bill.status !== 'void' && <TieOutPanel bill={bill} onChanged={onChanged} showToast={showToast} />}
             {bill.accepted_anyway && <div className="text-[11px] text-amber-900">Accepted with a failed check: {bill.accepted_anyway}</div>}
             {bill.void_reason && <div className="text-[11px] text-stone-600">Voided: {bill.void_reason}</div>}
 
@@ -372,25 +472,25 @@ function VendorsPanel({ vendors, ledgers, onChanged, showToast }) {
 }
 
 // ── The list ────────────────────────────────────────────────────────────────────────────────────
-function BillRow({ b, onOpen }) {
+function BillRow({ b, onOpen, tieOutDue }) {
   return (
     <tr onClick={() => onOpen(b)} className="border-b border-stone-100 align-top hover:bg-stone-50 cursor-pointer">
       <td className="py-2 px-2 whitespace-nowrap text-stone-600">{fmtDate(b.invoice_date)}</td>
       <td className="py-2 px-2 min-w-[200px]"><div className="text-stone-900">{b.vendor}</div><div className="text-[11px] text-stone-500 break-all">{b.invoice_no}{b.opening ? ' · opening' : ''}</div></td>
       <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap"><div className="text-stone-900">{inr(b.total)}</div><div className="text-[11px] text-stone-500">{inr(b.subtotal)} + {inr(b.tax)}</div></td>
       <td className="py-2 px-2"><StatusBadge status={b.status} />{failedChecks(b).length > 0 && b.status === 'review' && <div className="text-[11px] text-amber-800 mt-0.5">{failedChecks(b).length} check{failedChecks(b).length === 1 ? '' : 's'} failed</div>}</td>
-      <td className="py-2 px-2 text-[11px] text-stone-500 whitespace-nowrap">{b.file_path ? 'PDF kept' : '—'}</td>
+      <td className="py-2 px-2 text-[11px] text-stone-500 whitespace-nowrap">{b.file_path ? 'PDF kept' : '—'}{tieOutDue && <div className="text-amber-800">tie-out to do</div>}</td>
     </tr>
   );
 }
 
-function BillCard({ b, onOpen }) {
+function BillCard({ b, onOpen, tieOutDue }) {
   return (
     <button type="button" onClick={() => onOpen(b)} className="w-full text-left border-b border-stone-100 p-3 hover:bg-stone-50">
       <div className="flex items-center justify-between gap-2 text-xs"><span className="text-stone-600">{fmtDate(b.invoice_date)}</span><span className="tabular-nums font-medium text-stone-900">{inr(b.total)}</span></div>
       <div className="text-xs text-stone-900 mt-1">{b.vendor}</div>
       <div className="text-[11px] text-stone-500 break-all">{b.invoice_no}</div>
-      <div className="flex items-center gap-2 mt-1.5"><StatusBadge status={b.status} /><span className="text-[11px] text-stone-500">{b.file_path ? 'PDF kept' : '—'}</span></div>
+      <div className="flex items-center gap-2 mt-1.5"><StatusBadge status={b.status} /><span className="text-[11px] text-stone-500">{b.file_path ? 'PDF kept' : '—'}</span>{tieOutDue && <span className="text-[11px] text-amber-800">tie-out to do</span>}</div>
     </button>
   );
 }
@@ -400,6 +500,7 @@ export default function BillsSection({ showToast }) {
   const [bills, setBills] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [ledgers, setLedgers] = useState([]);
+  const [tiedOut, setTiedOut] = useState(() => new Set());     // invoice ids whose gateway tie-out is confirmed
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openId, setOpenId] = useState(null);
@@ -414,6 +515,9 @@ export default function BillsSection({ showToast }) {
       ]);
       for (const r of [b, v, l]) if (r.error) throw new Error(r.error.message);
       setBills(b.data || []); setVendors(v.data || []); setLedgers(l.data || []);
+      // an extra, never a reason to fail the page
+      const t = await supabase.from('gateway_trueups').select('invoice_id').is('voided_at', null);
+      setTiedOut(new Set((t.data || []).map(x => x.invoice_id)));
     } catch (err) {
       setError('Could not load the bills'); showToast?.('Could not load the bills', 'error');
     }
@@ -421,6 +525,9 @@ export default function BillsSection({ showToast }) {
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
 
+  // a tie-out vendor's bill (Easebuzz) that counts in the books and has not been tied out yet
+  const tieOutVendors = useMemo(() => new Set(vendors.filter(v => v.booking === 'tie_out').map(v => v.id)), [vendors]);
+  const tieOutDue = (b) => tieOutVendors.has(b.vendor_id) && b.status === 'accepted' && !b.opening && !tiedOut.has(b.id);
   const summary = useMemo(() => billSummary(bills), [bills]);
   const shown = useMemo(() => filterBills(bills, { status: p.lstatus, vendor: p.lvendor, q: p.lq }), [bills, p.lstatus, p.lvendor, p.lq]);
   const size = pageSizeOf(p.lsize);
@@ -492,10 +599,10 @@ export default function BillsSection({ showToast }) {
                   <thead><tr className="text-xs text-left text-stone-500 border-b border-stone-200">
                     <th scope="col" className="py-1.5 px-2 font-medium">Date</th><th scope="col" className="py-1.5 px-2 font-medium">Vendor and invoice</th><th scope="col" className="py-1.5 px-2 font-medium text-right">Amount</th><th scope="col" className="py-1.5 px-2 font-medium">Status</th><th scope="col" className="py-1.5 px-2 font-medium">Original</th>
                   </tr></thead>
-                  <tbody>{pageRows.map(b => <BillRow key={b.id} b={b} onOpen={x => setOpenId(x.id)} />)}</tbody>
+                  <tbody>{pageRows.map(b => <BillRow key={b.id} b={b} onOpen={x => setOpenId(x.id)} tieOutDue={tieOutDue(b)} />)}</tbody>
                 </table>
               </div>
-              <div className="md:hidden -mx-3 sm:-mx-4 border-t border-stone-100">{pageRows.map(b => <BillCard key={b.id} b={b} onOpen={x => setOpenId(x.id)} />)}</div>
+              <div className="md:hidden -mx-3 sm:-mx-4 border-t border-stone-100">{pageRows.map(b => <BillCard key={b.id} b={b} onOpen={x => setOpenId(x.id)} tieOutDue={tieOutDue(b)} />)}</div>
               <Pagination page={page} pageSize={size} total={shown.length} noun="bills" onPage={n => setP({ lpage: n })} onPageSize={n => setP({ lsize: n })} />
             </>
           )}

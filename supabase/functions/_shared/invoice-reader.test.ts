@@ -96,6 +96,12 @@ for (const [file, want] of VENDORS) {
   });
 }
 
+test('Easebuzz prints the month it bills as "Month ~ September-2026": that is the invoice period (the gateway tie-out compares the month\'s payouts)', () => {
+  const inv = only(fixture('easebuzz').items);
+  assert.deepEqual([inv.period, inv.period_from, inv.period_to], ['September-2026', '2026-09-01', '2026-09-30']);
+  for (const f of ['meta', 'velocity', 'google', 'airtel', 'gokwik-pp-cod']) assert.equal(only(fixture(f).items).period === 'September-2026', false, `${f} is not given Easebuzz's month`);
+});
+
 test('a telecom bill from a supplier in our own state is CGST + SGST: the GST is printed once, as a total, and the headings name CGST and SGST only', () => {
   const inv = only(fixture('airtel').items);
   assert.equal(inv.tax_type, 'CGST+SGST'); assert.equal(inv.supplier.state_code, '09'); assert.equal(inv.place_of_supply, 'Uttar Pradesh');
