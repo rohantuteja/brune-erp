@@ -65,7 +65,11 @@ export function planPackage(pkg: Pkg, known: Known, now: Date): Plan {
   }
   if (known?.status === 'attention') return { step: 'skip', why: 'needs a person' };
   if (known?.next_try_at && Date.parse(known.next_try_at) > now.getTime()) {
-    return { step: 'skip', why: known.status === 'held' ? 'Myntra not ready yet' : 'waiting to retry' };
+    // A wait or back-off belongs to the step that failed. An invoice that was refused (held) or failed leaves the package
+    // CREATED; if it is READY_TO_SHIP anyway (a person invoiced it, or the call timed out but Unicommerce did it), the
+    // invoice is done and only the dispatch is left, so it goes now.
+    const invoiceWait = known.status === 'held' || known.status === 'failed';
+    if (!(invoiceWait && pkg.status === 'READY_TO_SHIP')) return { step: 'skip', why: known.status === 'held' ? 'Myntra not ready yet' : 'waiting to retry' };
   }
   if (pkg.status === 'CREATED') return { step: 'invoice', why: 'no invoice yet' };
   if (pkg.status === 'READY_TO_SHIP') return { step: 'dispatch', why: 'invoiced, not dispatched' };

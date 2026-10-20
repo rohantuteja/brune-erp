@@ -9,13 +9,13 @@ const row = (over = {}) => ({
 });
 const TODAY = '2026-10-21';
 
-test('a label is to print only when the job made it and nobody printed it', () => {
+test('a label is to print once invoiced or dispatched and not marked printed, whoever invoiced it', () => {
   assert.equal(needsPrint(row()), true);
   assert.equal(needsPrint(row({ status: 'invoiced' })), true);          // still to dispatch, label already exists
+  assert.equal(needsPrint(row({ source: 'dashboard', label_url: null })), true);   // invoiced by a person: the label is fetched from Unicommerce
   assert.equal(needsPrint(row({ printed_at: '2026-10-21T05:00:00Z' })), false);
-  assert.equal(needsPrint(row({ source: 'dashboard' })), false);        // printed from the dashboard
-  assert.equal(needsPrint(row({ label_url: null })), false);
   assert.equal(needsPrint(row({ status: 'held' })), false);
+  assert.equal(needsPrint(row({ status: 'failed' })), false);
   assert.equal(needsPrint(row({ status: 'cancelled' })), false);
 });
 

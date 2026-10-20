@@ -30,7 +30,7 @@
 //   set_mode        — { mode: "dry"|"live", limit? } (admin JWT only)
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
-import { encode } from 'https://deno.land/std@0.177.0/encoding/base64.ts';
+import { decode, encode } from 'https://deno.land/std@0.177.0/encoding/base64.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PDFDocument } from 'https://esm.sh/pdf-lib@1.17.1';
 import { CORS, cronKeyValid, json, requireAdmin, setting } from '../_shared/shopify-admin.ts';
@@ -46,7 +46,7 @@ const SEARCH_WINDOW_MS = 30 * 86_400_000;   // Unicommerce's order search takes 
 
 type Row = {
   package_code: string; sale_order_code: string; status: string; source: string; attempts: number;
-  next_try_at: string | null; claimed_at: string | null; provider: string | null; label_url: string | null;
+  next_try_at: string | null; claimed_at: string | null; provider: string | null; label_url: string | null; invoiced_at: string | null;
 };
 
 serve(async (req) => {
@@ -117,12 +117,12 @@ async function setMode(admin: SupabaseClient, body: any) {
 
 async function status(admin: SupabaseClient) {
   const cfg = await config(admin);
-  const { data: rows } = await admin.from('myntra_fulfilments').select('status, label_url, printed_at, source');
+  const { data: rows } = await admin.from('myntra_fulfilments').select('status, printed_at');
   const counts: Record<string, number> = {};
   let unprinted = 0;
   for (const r of rows ?? []) {
     counts[r.status] = (counts[r.status] ?? 0) + 1;
-    if (r.source === 'erp' && r.label_url && !r.printed_at) unprinted++;
+    if (!r.printed_at && (r.status === 'invoiced' || r.status === 'dispatched')) unprinted++;
   }
   const { data: attention } = await admin.from('myntra_fulfilments')
     .select('package_code, sale_order_code, status, attempts, detail, updated_at').in('status', ['failed', 'attention'])
@@ -168,7 +168,8 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
   for (const o of orders) {
     const rows = byOrder.get(o.code) ?? [];
     // Everything we know about this order is waiting for a later time or a person: no need to ask Unicommerce.
-    if (rows.length && rows.every(r => r.status === 'attention' || (r.next_try_at && Date.parse(r.next_try_at) > now.getTime()))) { skip('waiting'); continue; }
+    // (A 'failed' invoice is always looked at again: the call may have timed out after Unicommerce did it.)
+    if (rows.length && rows.every(r => r.status === 'attention' || (r.next_try_at && Date.parse(r.next_try_at) > now.getTime() && (r.status === 'held' || r.status === 'invoiced')))) { skip('waiting'); continue; }
     out.looked_at++;
     const so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: o.code });
     if (!so?.successful || !so.saleOrderDTO) { out.failed.push({ package: o.code, reason: `order lookup failed: ${ucErrorText(so)}` }); continue; }
@@ -200,7 +201,17 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
     const source = w.known?.source ?? (w.pkg.status === 'CREATED' ? 'erp' : 'dashboard');
     const claimed = await claim(admin, w, source, now);
     if (!claimed) { skip('another run is working on it'); continue; }
-    if (w.step === 'dispatch') { ready.push({ pkg: w.pkg.code, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null }); continue; }
+    if (w.step === 'dispatch') {
+      // A person invoiced it on the dashboard (or an earlier run did and the dispatch failed): keep what the package says.
+      const byPerson = !w.known?.invoiced_at;
+      await update(admin, w.pkg.code, {
+        ...(byPerson ? { source: 'dashboard', invoiced_at: iso() } : {}),
+        invoice_code: w.pkg.invoiceCode, invoice_display: w.pkg.invoiceDisplayCode,
+        tracking_number: w.pkg.trackingNumber, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null,
+      });
+      ready.push({ pkg: w.pkg.code, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null });
+      continue;
+    }
 
     const attempts = (w.known?.attempts ?? 0) + 1;
     let res;
@@ -208,6 +219,12 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
       res = invoiceOutcome(await ucPost(admin, '/services/rest/v1/oms/shippingPackage/createInvoiceAndAllocateShippingProvider', { shippingPackageCode: w.pkg.code }));
     } catch (err) {
       res = { ok: false as const, heldUntil: null, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!res.ok && !res.heldUntil) {
+      // The database gives a call 7 seconds and an invoice can take longer (Myntra is told at the same time): the call "failed"
+      // but Unicommerce may have done it. Look at the package before calling it a failure.
+      const done = await invoicedNow(admin, w.order.code, w.pkg.code).catch(() => null);
+      if (done) res = { ok: true, invoiceCode: done.invoiceCode ?? '', invoiceDisplayCode: done.invoiceDisplayCode, trackingNumber: done.trackingNumber, provider: done.shippingProvider, labelUrl: null };
     }
     if (res.ok) {
       out.invoiced.push(w.pkg.code);
@@ -257,6 +274,17 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
 
   await saveLastRun(admin, out, now);
   return out;
+}
+
+// The package as Unicommerce has it now, if it is READY_TO_SHIP (invoiced and labelled).
+async function invoicedNow(admin: SupabaseClient, orderCode: string, packageCode: string): Promise<Pkg | null> {
+  const so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: orderCode });
+  const p = (so?.saleOrderDTO?.shippingPackages ?? []).find((x: any) => String(x.code) === packageCode);
+  if (!p || p.status !== 'READY_TO_SHIP') return null;
+  return {
+    code: packageCode, status: 'READY_TO_SHIP', shippingProvider: p.shippingProvider ?? null, shippingMethod: p.shippingMethod ?? null,
+    trackingNumber: p.trackingNumber ?? null, invoiceCode: p.invoiceCode ?? null, invoiceDisplayCode: p.invoiceDisplayCode ?? null,
+  };
 }
 
 // Rows still open in the ledger whose order left PROCESSING: a person dispatched it on the dashboard, or it was cancelled.
@@ -351,12 +379,14 @@ async function markPrinted(admin: SupabaseClient, codes: string[], printed: bool
   return { ok: true, updated: (data ?? []).length };
 }
 
-// One PDF of the unprinted labels (or of the given packages). A label that cannot be fetched is named in
-// `missing` and left unprinted, so it shows up again.
+// One PDF of the unprinted labels (or of the given packages): every invoiced or dispatched package nobody marked printed,
+// whoever invoiced it. The label comes from the link Unicommerce returned when the job invoiced the package; for a package a
+// person invoiced on the dashboard, or when that link no longer works, from Unicommerce's getInvoiceLabel (the PDF itself).
+// A label that cannot be fetched is named in `missing` and left unprinted, so it shows up again.
 async function labels(admin: SupabaseClient, codes: string[] | null) {
-  let q = admin.from('myntra_fulfilments').select('package_code, label_url, tracking_number, invoice_display').not('label_url', 'is', null)
-    .order('invoiced_at', { ascending: true }).limit(MAX_LABELS);
-  q = codes ? q.in('package_code', codes) : q.eq('source', 'erp').is('printed_at', null);
+  let q = admin.from('myntra_fulfilments').select('package_code, label_url').in('status', ['invoiced', 'dispatched'])
+    .order('invoiced_at', { ascending: true, nullsFirst: false }).limit(MAX_LABELS);
+  q = codes ? q.in('package_code', codes) : q.is('printed_at', null);
   const { data, error } = await q;
   if (error) throw new Error(error.message);
   if (!(data ?? []).length) return { pdf: null, codes: [], missing: [] };
@@ -366,9 +396,7 @@ async function labels(admin: SupabaseClient, codes: string[] | null) {
   const missing: Array<{ package: string; reason: string }> = [];
   for (const r of data ?? []) {
     try {
-      const res = await fetch(r.label_url as string, { signal: AbortSignal.timeout(20_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const src = await PDFDocument.load(new Uint8Array(await res.arrayBuffer()));
+      const src = await PDFDocument.load(await labelBytes(admin, r.package_code as string, r.label_url as string | null));
       for (const page of await merged.copyPages(src, src.getPageIndices())) merged.addPage(page);
       included.push(r.package_code as string);
     } catch (err) {
@@ -377,4 +405,16 @@ async function labels(admin: SupabaseClient, codes: string[] | null) {
   }
   if (!included.length) return { pdf: null, codes: [], missing };
   return { pdf: encode(await merged.save()), codes: included, missing };
+}
+
+async function labelBytes(admin: SupabaseClient, code: string, url: string | null): Promise<Uint8Array> {
+  if (url) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+      if (res.ok) return new Uint8Array(await res.arrayBuffer());
+    } catch { /* fall back to Unicommerce */ }
+  }
+  const data = await ucPost(admin, '/services/rest/v1/oms/shippingPackage/getInvoiceLabel', { shippingPackageCode: code });
+  if (!data?.successful || !data.label) throw new Error(`Unicommerce has no label: ${ucErrorText(data)}`);
+  return decode(String(data.label));
 }

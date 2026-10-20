@@ -62,6 +62,15 @@ test('a failed package backs off, and after too many failures needs a person', (
   assert.equal(retryAt(20, NOW), '2026-10-20T12:00:00.000Z');   // capped at 2 hours
 });
 
+test('an invoice that was refused or timed out does not delay the dispatch of a package that is READY_TO_SHIP anyway', () => {
+  const waiting = (status: string) => ({ status, next_try_at: '2026-10-20T10:30:00Z', attempts: 1, claimed_at: null });
+  assert.equal(planPackage(pkg({ status: 'READY_TO_SHIP' }), waiting('failed'), NOW).step, 'dispatch');
+  assert.equal(planPackage(pkg({ status: 'READY_TO_SHIP' }), waiting('held'), NOW).step, 'dispatch');
+  assert.equal(planPackage(pkg({ status: 'CREATED' }), waiting('failed'), NOW).step, 'skip');
+  // a failed dispatch keeps its own back-off
+  assert.equal(planPackage(pkg({ status: 'READY_TO_SHIP' }), waiting('invoiced'), NOW).step, 'skip');
+});
+
 test('another run holds a package only while its claim is fresh', () => {
   const claimed = (at: string) => ({ status: 'working', next_try_at: null, attempts: 0, claimed_at: at });
   assert.equal(planPackage(pkg(), claimed('2026-10-20T09:55:00Z'), NOW).step, 'skip');

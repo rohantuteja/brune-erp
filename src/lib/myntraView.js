@@ -11,9 +11,10 @@ export const STATUS_TEXT = {
   cancelled: 'Cancelled',
 };
 
-// A label is "to print" when the job made it (the dashboard's own labels are printed from the dashboard), the PDF
-// exists, and nobody has marked it printed.
-export const needsPrint = (r) => r.source === 'erp' && !!r.label_url && !r.printed_at && (r.status === 'invoiced' || r.status === 'dispatched');
+// A label is "to print" once the package is invoiced or dispatched and nobody has marked it printed. It does not matter who
+// invoiced it: a package a person invoiced on the dashboard is dispatched by the job within minutes, before it can be printed
+// from the dashboard's Ready to Ship list, so its label is fetched from Unicommerce when the PDF is made.
+export const needsPrint = (r) => !r.printed_at && (r.status === 'invoiced' || r.status === 'dispatched');
 
 export const VIEW_TEST = {
   print: needsPrint,

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { callFunction } from '../lib/edgeCall';
 import { localToday } from '../lib/constants';
-import { STATUS_TEXT, filterRows, printQueue, viewCounts } from '../lib/myntraView';
+import { STATUS_TEXT, filterRows, needsPrint, printQueue, viewCounts } from '../lib/myntraView';
 import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { Pagination, Pills, StatCard, EmptyState, useUrlParams } from '../components/AnalyticsKit';
 import { RefreshCw, Printer, Search, X, Info, Play, AlertCircle, CheckCircle2, Download } from 'lucide-react';
@@ -165,7 +165,7 @@ function PrintPanel({ queue, onDone }) {
           </button>
         )}
       </div>
-      <div className="text-[11px] text-stone-500">Each label PDF is the invoice and the courier label together. A label stays on this list until you confirm you printed it.</div>
+      <div className="text-[11px] text-stone-500">Each label PDF is the invoice and the courier label together, for every order the job handled, including ones you invoiced yourself on the dashboard. A label stays on this list until you confirm you printed it, or mark it printed.</div>
       {error && <div className="text-xs text-red-700 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" />{error}</div>}
       {made && (
         <div className="border border-stone-200 rounded-md p-2.5 bg-stone-50 space-y-2 text-xs">
@@ -205,6 +205,7 @@ export default function MyntraSection({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [retrying, setRetrying] = useState('');
+  const [marking, setMarking] = useState('');
   const today = localToday();
 
   const load = useCallback(async () => {
@@ -234,6 +235,16 @@ export default function MyntraSection({ showToast }) {
       showToast?.(`${code} will be tried again at the next run`);
       await load();
     } catch (e) { setError(e.message); } finally { setRetrying(''); }
+  };
+
+  // A label already printed some other way (from the dashboard, say): take it off the list without making a PDF.
+  const markPrinted = async (code) => {
+    setMarking(code);
+    try {
+      const { ok, json } = await callMyntra({ action: 'mark_printed', codes: [code] });
+      if (!ok) throw new Error(json.error || 'The request failed');
+      await load();
+    } catch (e) { setError(e.message); } finally { setMarking(''); }
   };
 
   return (
@@ -310,7 +321,11 @@ export default function MyntraSection({ showToast }) {
                   <td className="px-3 py-2 whitespace-nowrap">{fmtWhen(r.dispatched_at)}</td>
                   <td className="px-3 py-2 whitespace-nowrap">
                     {r.printed_at ? <span className="text-stone-500">Printed {ago(r.printed_at)}</span>
-                      : r.label_url && r.source === 'erp' ? <span className="text-amber-800">To print</span> : <span className="text-stone-400">—</span>}
+                      : needsPrint(r) ? (
+                        <span className="text-amber-800">To print
+                          <button type="button" disabled={marking === r.package_code} onClick={() => markPrinted(r.package_code)} className="ml-1.5 underline text-stone-600 disabled:opacity-50">Mark printed</button>
+                        </span>
+                      ) : <span className="text-stone-400">—</span>}
                   </td>
                 </tr>
               ))}
