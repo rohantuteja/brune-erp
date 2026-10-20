@@ -255,6 +255,9 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 - **Deleting an upload (migration 026; Bank & card and Velocity wallet pages, admin only):** every statement, GoKwik report, Velocity ledger report and Velocity invoice has a Delete button that shows a dry run first (`dry_run` must be exactly `false` to delete). Lines another upload also covers move to it, the rest go, the bank matching is re-run, and the delete is logged in `upload_deletions`. See "Taking an upload back" in `docs/bank-reconciliation.md`.
 - Sources: the ERP's Shopify token can write orders and store-credit transactions; Velocity's token is `private_secrets.velocity_api_token`; Return Prime's is the `RETURN_PRIME_TOKEN` function secret (also `private_secrets.returnprime_token` for read-only checks from SQL).
 
+### Myntra fulfilment (Unicommerce channel MYNTRAPPMP)
+`myntra-fulfil` (every 5 min, pg_cron migration 037) invoices, labels and dispatches Myntra orders as soon as Myntra allows, because Myntra scores sellers on dispatch speed. The invoice step is refused until Myntra's own eligibility time (holiday "upcoming" orders): the job reads the time from the refusal and retries. Dispatch is the public `shippingManifest/createclose` (one manifest per courier); the public API has no pack group or dispatch group. Dry mode until `app_settings.myntra_fulfil_mode = "live"`. Labels to print are listed on Analytics → Myntra. Details and what was verified: `docs/myntra-fulfilment.md`.
+
 ### Cutting Runs
 - A **Run** groups all cut entries for a single style code batch.
 - `run_pieces` stores the aggregate totals per size (XS/S/M/L/XL + custom sizes).
