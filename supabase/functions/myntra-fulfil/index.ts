@@ -41,9 +41,14 @@ import {
   type Known, type Pkg,
 } from '../_shared/myntra-fulfil.ts';
 
-const LOOKBACK_DAYS = 14;        // an order Myntra held over a long holiday is still found
+const LOOKBACK_DAYS = 5;         // an order Myntra holds over a long holiday is still found; a wider search risks the database's 7 s limit
 const MAX_LABELS = 100;          // labels in one merged PDF
 const SEARCH_WINDOW_MS = 30 * 86_400_000;   // Unicommerce's order search takes at most 31 days
+const MAX_PER_MANIFEST = 10;     // packages in one createclose call: the database gives a call 7 seconds
+// An edge function run is cut off at 150 s. Looking up orders stops at 40 s and invoicing at 80 s into the run; whatever is
+// left waits for the next run (5 minutes), and what was invoiced is always dispatched before the run ends.
+const LOOKUP_BUDGET_MS = 40_000;
+const INVOICE_BUDGET_MS = 80_000;
 
 type Row = {
   package_code: string; sale_order_code: string; status: string; source: string; attempts: number;
@@ -138,6 +143,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
   const cfg = await config(admin);
   const live = opts.record && cfg.mode === 'live';
   const now = new Date();
+  const startedAt = Date.now();
   const out = {
     mode: cfg.mode, live, record: opts.record, limit: cfg.limit, from: cfg.from,
     orders: 0, looked_at: 0,
@@ -152,6 +158,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
   // 1. Open Myntra orders.
   const fromMs = Math.max(Date.parse(`${cfg.from}T00:00:00+05:30`), now.getTime() - LOOKBACK_DAYS * 86_400_000);
   const orders = await openOrders(admin, fromMs, now.getTime());
+  orders.sort((a, b) => a.created - b.created);   // oldest first: if time runs out, the newest wait
   out.orders = orders.length;
 
   const { data: knownRows } = orders.length
@@ -171,6 +178,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
     // Everything we know about this order is waiting for a later time or a person: no need to ask Unicommerce.
     // (A 'failed' invoice is always looked at again: the call may have timed out after Unicommerce did it.)
     if (rows.length && rows.every(r => r.status === 'attention' || (r.next_try_at && Date.parse(r.next_try_at) > now.getTime() && (r.status === 'held' || r.status === 'invoiced')))) { skip('waiting'); continue; }
+    if (Date.now() - startedAt > LOOKUP_BUDGET_MS) { out.deferred++; skip('out of time, next run'); continue; }
     out.looked_at++;
     const so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: o.code });
     if (!so?.successful || !so.saleOrderDTO) { out.failed.push({ package: o.code, reason: `order lookup failed: ${ucErrorText(so)}` }); continue; }
@@ -187,7 +195,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
     }
   }
   work.sort((a, b) => a.order.created - b.order.created);   // oldest order first
-  out.deferred = Math.max(0, work.length - cfg.limit);
+  out.deferred += Math.max(0, work.length - cfg.limit);
   const todo = work.slice(0, cfg.limit);
 
   if (!live) {
@@ -197,9 +205,11 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
   }
 
   // 3. Invoice and label, then collect everything READY_TO_SHIP for dispatch.
-  type Ready = { pkg: string; provider: string | null };
+  type Ready = { pkg: string; order: string; provider: string | null };
   const ready: Ready[] = [];
-  for (const w of todo) {
+  for (let i = 0; i < todo.length; i++) {
+    const w = todo[i];
+    if (Date.now() - startedAt > INVOICE_BUDGET_MS) { out.deferred += todo.length - i; break; }
     const source = w.known?.source ?? (w.pkg.status === 'CREATED' ? 'erp' : 'dashboard');
     const claimed = await claim(admin, w, source, now);
     if (!claimed) { skip('another run is working on it'); continue; }
@@ -212,7 +222,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
         tracking_number: w.pkg.trackingNumber, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null,
         ...(w.pkg.labelLink ? { label_url: w.pkg.labelLink } : {}),
       });
-      ready.push({ pkg: w.pkg.code, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null });
+      ready.push({ pkg: w.pkg.code, order: w.order.code, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null });
       continue;
     }
 
@@ -236,7 +246,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
         invoice_code: res.invoiceCode, invoice_display: res.invoiceDisplayCode, tracking_number: res.trackingNumber,
         provider: res.provider ?? w.pkg.shippingProvider, label_url: res.labelUrl, invoiced_at: iso(),
       });
-      ready.push({ pkg: w.pkg.code, provider: res.provider ?? w.pkg.shippingProvider });
+      ready.push({ pkg: w.pkg.code, order: w.order.code, provider: res.provider ?? w.pkg.shippingProvider });
     } else if (res.heldUntil) {
       out.held.push({ package: w.pkg.code, until: res.heldUntil });
       await update(admin, w.pkg.code, { status: 'held', next_try_at: res.heldUntil, claimed_at: null, detail: res.error });
@@ -252,25 +262,35 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
     out.failed.push({ package: r.pkg, reason: 'no courier on the package' });
     await update(admin, r.pkg, { status: 'attention', claimed_at: null, detail: 'no courier on the package: dispatch it by hand' });
   }
-  for (const [provider, items] of groupByProvider(ready.filter(r => r.provider) as Array<{ pkg: string; provider: string }>)) {
-    const codes = items.map(i => i.pkg);
-    let res;
-    try {
-      res = manifestOutcome(await ucPost(admin, '/services/rest/v1/oms/shippingManifest/createclose', manifestBody(provider, codes)));
-    } catch (err) {
-      res = { ok: false as const, error: err instanceof Error ? err.message : String(err) };
-    }
-    if (res.ok) {
-      out.dispatched.push({ manifest: res.manifest, courier: provider, packages: codes });
-      for (const c of codes) await update(admin, c, { status: 'dispatched', attempts: 0, next_try_at: null, claimed_at: null, detail: null, manifest_code: res.manifest, dispatched_at: iso() });
-    } else {
-      for (const c of codes) {
-        out.failed.push({ package: c, reason: res.error });
-        const { data: cur } = await admin.from('myntra_fulfilments').select('attempts').eq('package_code', c).maybeSingle();
+  for (const [provider, items] of groupByProvider(ready.filter(r => r.provider) as Array<Ready & { provider: string }>)) {
+    for (let k = 0; k < items.length; k += MAX_PER_MANIFEST) {
+      const chunk = items.slice(k, k + MAX_PER_MANIFEST);
+      const codes = chunk.map(i => i.pkg);
+      let res;
+      try {
+        res = manifestOutcome(await ucPost(admin, '/services/rest/v1/oms/shippingManifest/createclose', manifestBody(provider, codes)));
+      } catch (err) {
+        res = { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+      }
+      if (res.ok) {
+        out.dispatched.push({ manifest: res.manifest, courier: provider, packages: codes });
+        for (const c of codes) await update(admin, c, { status: 'dispatched', attempts: 0, next_try_at: null, claimed_at: null, detail: null, manifest_code: res.manifest, dispatched_at: iso() });
+        continue;
+      }
+      // The call failed or timed out, but Unicommerce may have dispatched: look at each package before calling it a failure.
+      for (const it of chunk) {
+        const done = await dispatchedNow(admin, it.order, it.pkg).catch(() => null);
+        if (done) {
+          out.dispatched.push({ manifest: done.manifest ?? '', courier: provider, packages: [it.pkg] });
+          await update(admin, it.pkg, { status: 'dispatched', attempts: 0, next_try_at: null, claimed_at: null, detail: null, manifest_code: done.manifest, dispatched_at: iso() });
+          continue;
+        }
+        out.failed.push({ package: it.pkg, reason: res.error });
+        const { data: cur } = await admin.from('myntra_fulfilments').select('attempts').eq('package_code', it.pkg).maybeSingle();
         // The invoice step already worked, so the package stays 'invoiced' (its label still prints) and only the
         // dispatch is retried, with a back-off; after too many failures a person must look.
         const f = failure((cur?.attempts ?? 0) + 1, `dispatch: ${res.error}`, now);
-        await update(admin, c, { ...f, status: f.status === 'attention' ? 'attention' : 'invoiced' });
+        await update(admin, it.pkg, { ...f, status: f.status === 'attention' ? 'attention' : 'invoiced' });
       }
     }
   }
@@ -291,15 +311,28 @@ async function invoicedNow(admin: SupabaseClient, orderCode: string, packageCode
   };
 }
 
+// The manifest a package is on, if Unicommerce has it DISPATCHED (a dispatch call that "failed" may still have worked).
+async function dispatchedNow(admin: SupabaseClient, orderCode: string, packageCode: string): Promise<{ manifest: string | null } | null> {
+  const so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: orderCode });
+  const p = (so?.saleOrderDTO?.shippingPackages ?? []).find((x: any) => String(x.code) === packageCode);
+  return p?.status === 'DISPATCHED' ? { manifest: p.shippingManifestCode ?? null } : null;
+}
+
 // Rows still open in the ledger whose order left PROCESSING: a person dispatched it on the dashboard, or it was cancelled.
 async function reconcile(admin: SupabaseClient, open: Set<string>) {
-  const { data } = await admin.from('myntra_fulfilments').select('package_code, sale_order_code').in('status', ['held', 'invoiced', 'failed']).limit(100);
-  const gone = (data ?? []).filter(r => !open.has(r.sale_order_code as string)).slice(0, 20);
+  // 'working' rows only once their claim is stale: a run that is still going owns its rows.
+  const stale = iso(new Date(Date.now() - CLAIM_STALE_MS));
+  const { data } = await admin.from('myntra_fulfilments').select('package_code, sale_order_code, status, claimed_at')
+    .in('status', ['held', 'invoiced', 'failed', 'working']).limit(200);
+  const gone = (data ?? []).filter(r => !open.has(r.sale_order_code as string) && (r.status !== 'working' || (r.claimed_at && String(r.claimed_at) < stale))).slice(0, 20);
   for (const r of gone) {
     const so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: r.sale_order_code });
     const st = so?.saleOrderDTO?.status;
-    if (st === 'COMPLETE') await update(admin, r.package_code as string, { status: 'dispatched', next_try_at: null, claimed_at: null, detail: 'dispatched outside the ERP', dispatched_at: iso() });
-    else if (st === 'CANCELLED') await update(admin, r.package_code as string, { status: 'cancelled', next_try_at: null, claimed_at: null, detail: 'order cancelled' });
+    const fields = st === 'COMPLETE' ? { status: 'dispatched', next_try_at: null, claimed_at: null, detail: 'dispatched outside the ERP', dispatched_at: iso() }
+      : st === 'CANCELLED' ? { status: 'cancelled', next_try_at: null, claimed_at: null, detail: 'order cancelled' } : null;
+    if (!fields) continue;
+    // Only a row still in the state we read: never overwrite what a run finished meanwhile.
+    await admin.from('myntra_fulfilments').update({ ...fields, updated_at: iso() }).eq('package_code', r.package_code as string).eq('status', r.status as string);
   }
 }
 
@@ -436,3 +469,6 @@ async function labelBytes(admin: SupabaseClient, code: string, orderCode: string
   await admin.from('myntra_fulfilments').update({ label_url: fresh, updated_at: iso() }).eq('package_code', code);
   return await get(fresh);
 }
+
+// Exported so the simulation test (sweep.test.mjs) can drive a run against a fake Unicommerce.
+export { sweep };
