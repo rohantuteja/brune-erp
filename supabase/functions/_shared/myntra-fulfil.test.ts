@@ -6,7 +6,7 @@ import { groupByProvider, invoiceOutcome, manifestBody, manifestOutcome, parseEl
 
 const NOW = new Date('2026-10-20T10:00:00Z');
 const pkg = (over: Partial<Pkg> = {}): Pkg => ({
-  code: 'BRUN00459', status: 'CREATED', shippingProvider: null, shippingMethod: 'Standard-Prepaid', trackingNumber: null, invoiceCode: null, invoiceDisplayCode: null, ...over,
+  code: 'BRUN00459', status: 'CREATED', shippingProvider: null, shippingMethod: 'Standard-Prepaid', trackingNumber: null, invoiceCode: null, invoiceDisplayCode: null, labelLink: null, ...over,
 });
 
 test("Myntra's \"try after\" time is read as IST", () => {

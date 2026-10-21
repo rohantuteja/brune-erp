@@ -25,6 +25,7 @@ export type Pkg = {
   trackingNumber: string | null;
   invoiceCode: string | null;
   invoiceDisplayCode: string | null;
+  labelLink: string | null;     // the invoice + courier label PDF (A4 invoice, then the 4x6 label)
 };
 
 export type Known = {
