@@ -31,7 +31,7 @@
 //   set_mode        — { mode: "dry"|"live", limit? } (admin JWT only)
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
-import { decode, encode } from 'https://deno.land/std@0.177.0/encoding/base64.ts';
+import { encode } from 'https://deno.land/std@0.177.0/encoding/base64.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PDFDocument } from 'https://esm.sh/pdf-lib@1.17.1';
 import { CORS, cronKeyValid, json, requireAdmin, setting } from '../_shared/shopify-admin.ts';
@@ -178,6 +178,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
       const pkg: Pkg = {
         code: String(p.code), status: String(p.status), shippingProvider: p.shippingProvider ?? null, shippingMethod: p.shippingMethod ?? null,
         trackingNumber: p.trackingNumber ?? null, invoiceCode: p.invoiceCode ?? null, invoiceDisplayCode: p.invoiceDisplayCode ?? null,
+        labelLink: p.shippingLabelLink ?? null,
       };
       const known = rows.find(r => r.package_code === pkg.code);
       const plan = planPackage(pkg, known as Known, now);
@@ -209,6 +210,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
         ...(byPerson ? { source: 'dashboard', invoiced_at: iso() } : {}),
         invoice_code: w.pkg.invoiceCode, invoice_display: w.pkg.invoiceDisplayCode,
         tracking_number: w.pkg.trackingNumber, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null,
+        ...(w.pkg.labelLink ? { label_url: w.pkg.labelLink } : {}),
       });
       ready.push({ pkg: w.pkg.code, provider: w.pkg.shippingProvider ?? w.known?.provider ?? null });
       continue;
@@ -225,7 +227,7 @@ async function sweep(admin: SupabaseClient, opts: { record: boolean }) {
       // The database gives a call 7 seconds and an invoice can take longer (Myntra is told at the same time): the call "failed"
       // but Unicommerce may have done it. Look at the package before calling it a failure.
       const done = await invoicedNow(admin, w.order.code, w.pkg.code).catch(() => null);
-      if (done) res = { ok: true, invoiceCode: done.invoiceCode ?? '', invoiceDisplayCode: done.invoiceDisplayCode, trackingNumber: done.trackingNumber, provider: done.shippingProvider, labelUrl: null };
+      if (done) res = { ok: true, invoiceCode: done.invoiceCode ?? '', invoiceDisplayCode: done.invoiceDisplayCode, trackingNumber: done.trackingNumber, provider: done.shippingProvider, labelUrl: done.labelLink };
     }
     if (res.ok) {
       out.invoiced.push(w.pkg.code);
@@ -285,6 +287,7 @@ async function invoicedNow(admin: SupabaseClient, orderCode: string, packageCode
   return {
     code: packageCode, status: 'READY_TO_SHIP', shippingProvider: p.shippingProvider ?? null, shippingMethod: p.shippingMethod ?? null,
     trackingNumber: p.trackingNumber ?? null, invoiceCode: p.invoiceCode ?? null, invoiceDisplayCode: p.invoiceDisplayCode ?? null,
+    labelLink: p.shippingLabelLink ?? null,
   };
 }
 
@@ -329,7 +332,7 @@ async function claim(admin: SupabaseClient, w: { order: { code: string; created:
     const { error } = await admin.from('myntra_fulfilments').insert({
       package_code: w.pkg.code, sale_order_code: w.order.code, order_created: iso(new Date(w.order.created)),
       payment: paymentOf(w.pkg.shippingMethod), provider: w.pkg.shippingProvider, tracking_number: w.pkg.trackingNumber,
-      invoice_code: w.pkg.invoiceCode, invoice_display: w.pkg.invoiceDisplayCode,
+      invoice_code: w.pkg.invoiceCode, invoice_display: w.pkg.invoiceDisplayCode, label_url: w.pkg.labelLink,
       status: 'working', source, claimed_at: iso(now),
     });
     if (!error) return true;
@@ -381,11 +384,11 @@ async function markPrinted(admin: SupabaseClient, codes: string[], printed: bool
 }
 
 // One PDF of the unprinted labels (or of the given packages): every invoiced or dispatched package nobody marked printed,
-// whoever invoiced it. The label comes from the link Unicommerce returned when the job invoiced the package; for a package a
-// person invoiced on the dashboard, or when that link no longer works, from Unicommerce's getInvoiceLabel (the PDF itself).
+// whoever invoiced it. The label comes from the link stored when the package was invoiced (by the job, or read off the package
+// when a person invoiced it on the dashboard); if that link no longer works, from the link Unicommerce shows on the package now.
 // A label that cannot be fetched is named in `missing` and left unprinted, so it shows up again.
 async function labels(admin: SupabaseClient, codes: string[] | null, labelsOnly: boolean) {
-  let q = admin.from('myntra_fulfilments').select('package_code, label_url').in('status', ['invoiced', 'dispatched'])
+  let q = admin.from('myntra_fulfilments').select('package_code, sale_order_code, label_url').in('status', ['invoiced', 'dispatched'])
     .order('invoiced_at', { ascending: true, nullsFirst: false }).limit(MAX_LABELS);
   q = codes ? q.in('package_code', codes) : q.is('printed_at', null);
   const { data, error } = await q;
@@ -397,7 +400,7 @@ async function labels(admin: SupabaseClient, codes: string[] | null, labelsOnly:
   const missing: Array<{ package: string; reason: string }> = [];
   for (const r of data ?? []) {
     try {
-      const src = await PDFDocument.load(await labelBytes(admin, r.package_code as string, r.label_url as string | null));
+      const src = await PDFDocument.load(await labelBytes(admin, r.package_code as string, r.sale_order_code as string, r.label_url as string | null));
       for (const page of await merged.copyPages(src, labelsOnly ? labelPages(src) : src.getPageIndices())) merged.addPage(page);
       included.push(r.package_code as string);
     } catch (err) {
@@ -409,22 +412,27 @@ async function labels(admin: SupabaseClient, codes: string[] | null, labelsOnly:
 }
 
 // Unicommerce's file is the invoice (an A4 page) followed by the courier label (a 4x6 inch page). The label pages are the
-// small ones; if the sizes tell nothing, every second page is the label.
+// small ones. A file with no small page is not a label file (Unicommerce's own invoice PDF is one A4 page): refuse it, so the
+// package is reported as missing instead of printing the wrong page.
 function labelPages(src: PDFDocument): number[] {
-  const all = src.getPageIndices();
-  const small = all.filter(i => src.getPage(i).getWidth() <= 420);
-  if (small.length && small.length < all.length) return small;
-  return all.length >= 2 ? all.filter(i => i % 2 === 1) : all;
+  const small = src.getPageIndices().filter(i => src.getPage(i).getWidth() <= 420);
+  if (!small.length) throw new Error('the file has no courier label page');
+  return small;
 }
 
-async function labelBytes(admin: SupabaseClient, code: string, url: string | null): Promise<Uint8Array> {
-  if (url) {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-      if (res.ok) return new Uint8Array(await res.arrayBuffer());
-    } catch { /* fall back to Unicommerce */ }
-  }
-  const data = await ucPost(admin, '/services/rest/v1/oms/shippingPackage/getInvoiceLabel', { shippingPackageCode: code });
-  if (!data?.successful || !data.label) throw new Error(`Unicommerce has no label: ${ucErrorText(data)}`);
-  return decode(String(data.label));
+// The invoice + label PDF of a package: the link stored when it was invoiced; if that is missing or no longer works, the
+// link Unicommerce shows on the package now (shippingLabelLink). Not getInvoiceLabel: that returns only Unicommerce's own
+// invoice, with no courier label.
+async function labelBytes(admin: SupabaseClient, code: string, orderCode: string, url: string | null): Promise<Uint8Array> {
+  const get = async (u: string) => {
+    const res = await fetch(u, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  };
+  if (url) { try { return await get(url); } catch { /* look the link up again */ } }
+  const so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: orderCode });
+  const fresh = (so?.saleOrderDTO?.shippingPackages ?? []).find((x: any) => String(x.code) === code)?.shippingLabelLink;
+  if (!fresh) throw new Error('Unicommerce has no label link for this package');
+  await admin.from('myntra_fulfilments').update({ label_url: fresh, updated_at: iso() }).eq('package_code', code);
+  return await get(fresh);
 }
