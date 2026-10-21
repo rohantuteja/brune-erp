@@ -13,6 +13,7 @@ import ShipmentsSection from './pages/ShipmentsSection';
 import BankSection from './pages/BankSection';
 import VelocitySection from './pages/VelocitySection';
 import BillsSection from './pages/BillsSection';
+import MyntraSection from './pages/MyntraSection';
 
 // ── Pipeline health cache ─────────────────────────────────────────────────────
 // Caches the heavy pipeline_health RPC result in localStorage (persists across
@@ -104,6 +105,7 @@ const ANALYTICS_TAB_TO_SLUG = {
   ledger:       'ledger',
   bank:         'bank-and-card',
   velocity:     'velocity-wallet',
+  myntra:       'myntra',
   bills:        'bills',
   production:   'production',
 };
@@ -7175,7 +7177,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'wip', label: 'WIP Value' },
     { id: 'shipments', label: 'Shipments' },
     { id: 'ledger', label: 'Ledger' },
-    ...(isAdmin ? [{ id: 'bank', label: 'Bank & card' }, { id: 'bills', label: 'Bills' }, { id: 'velocity', label: 'Velocity wallet' }] : []),     // salaries, founders' payments and balances: admin only
+    ...(isAdmin ? [{ id: 'bank', label: 'Bank & card' }, { id: 'bills', label: 'Bills' }, { id: 'velocity', label: 'Velocity wallet' }, { id: 'myntra', label: 'Myntra' }] : []),     // salaries, founders' payments and balances: admin only
     { id: 'production', label: 'Production' },
   ];
 
@@ -7200,6 +7202,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {activeSection === 'bank' && isAdmin && <BankSection showToast={showToast} />}
       {activeSection === 'bills' && isAdmin && <BillsSection showToast={showToast} />}
       {activeSection === 'velocity' && isAdmin && <VelocitySection showToast={showToast} />}
+      {activeSection === 'myntra' && isAdmin && <MyntraSection showToast={showToast} />}
 
       {/* ── INVENTORY VALUE ── */}
       {activeSection === 'inventory' && (
