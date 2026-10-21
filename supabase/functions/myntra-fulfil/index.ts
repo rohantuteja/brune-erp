@@ -25,7 +25,8 @@
 //   status          — mode, limit, start date, counts per status, unprinted labels, the last run, rows needing a person
 //   sweep           — { dry?: false } run now; dry (default) only reports
 //   retry           — { package_code } a failed / attention package is tried again at the next run
-//   labels          — { codes? } one merged PDF (base64) of the unprinted labels, or of the given packages
+//   labels          — { codes?, labels_only? } one merged PDF (base64) of the unprinted labels, or of the given packages;
+//                     labels_only (default true) leaves out the invoice pages, so only the courier labels print
 //   mark_printed    — { codes } / mark_unprinted — { codes }
 //   set_mode        — { mode: "dry"|"live", limit? } (admin JWT only)
 
@@ -78,7 +79,7 @@ async function dispatch(admin: SupabaseClient, body: any) {
     case 'status':       return await status(admin);
     case 'sweep':        return await sweep(admin, { record: body.dry === false });
     case 'retry':        return await retry(admin, String(body.package_code ?? ''));
-    case 'labels':       return await labels(admin, Array.isArray(body.codes) ? body.codes.map(String) : null);
+    case 'labels':       return await labels(admin, Array.isArray(body.codes) ? body.codes.map(String) : null, body.labels_only !== false);
     case 'mark_printed': return await markPrinted(admin, codesOf(body), true);
     case 'mark_unprinted': return await markPrinted(admin, codesOf(body), false);
     case 'set_mode':     return await setMode(admin, body);
@@ -383,7 +384,7 @@ async function markPrinted(admin: SupabaseClient, codes: string[], printed: bool
 // whoever invoiced it. The label comes from the link Unicommerce returned when the job invoiced the package; for a package a
 // person invoiced on the dashboard, or when that link no longer works, from Unicommerce's getInvoiceLabel (the PDF itself).
 // A label that cannot be fetched is named in `missing` and left unprinted, so it shows up again.
-async function labels(admin: SupabaseClient, codes: string[] | null) {
+async function labels(admin: SupabaseClient, codes: string[] | null, labelsOnly: boolean) {
   let q = admin.from('myntra_fulfilments').select('package_code, label_url').in('status', ['invoiced', 'dispatched'])
     .order('invoiced_at', { ascending: true, nullsFirst: false }).limit(MAX_LABELS);
   q = codes ? q.in('package_code', codes) : q.is('printed_at', null);
@@ -397,7 +398,7 @@ async function labels(admin: SupabaseClient, codes: string[] | null) {
   for (const r of data ?? []) {
     try {
       const src = await PDFDocument.load(await labelBytes(admin, r.package_code as string, r.label_url as string | null));
-      for (const page of await merged.copyPages(src, src.getPageIndices())) merged.addPage(page);
+      for (const page of await merged.copyPages(src, labelsOnly ? labelPages(src) : src.getPageIndices())) merged.addPage(page);
       included.push(r.package_code as string);
     } catch (err) {
       missing.push({ package: r.package_code as string, reason: err instanceof Error ? err.message : String(err) });
@@ -405,6 +406,15 @@ async function labels(admin: SupabaseClient, codes: string[] | null) {
   }
   if (!included.length) return { pdf: null, codes: [], missing };
   return { pdf: encode(await merged.save()), codes: included, missing };
+}
+
+// Unicommerce's file is the invoice (an A4 page) followed by the courier label (a 4x6 inch page). The label pages are the
+// small ones; if the sizes tell nothing, every second page is the label.
+function labelPages(src: PDFDocument): number[] {
+  const all = src.getPageIndices();
+  const small = all.filter(i => src.getPage(i).getWidth() <= 420);
+  if (small.length && small.length < all.length) return small;
+  return all.length >= 2 ? all.filter(i => i % 2 === 1) : all;
 }
 
 async function labelBytes(admin: SupabaseClient, code: string, url: string | null): Promise<Uint8Array> {

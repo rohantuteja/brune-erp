@@ -129,13 +129,14 @@ function PrintPanel({ queue, onDone }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [made, setMade] = useState(null);          // { url, codes, missing }
+  const [labelsOnly, setLabelsOnly] = useState(true);   // leave the invoice pages out: only the courier labels print
   const urlRef = useRef(null);
   useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); }, []);
 
   const build = async () => {
     setBusy(true); setError('');
     try {
-      const { ok, json } = await callMyntra({ action: 'labels' });
+      const { ok, json } = await callMyntra({ action: 'labels', labels_only: labelsOnly });
       if (!ok) throw new Error(json.error || 'The request failed');
       if (!json.pdf) { setMade({ url: null, codes: [], missing: json.missing ?? [] }); return; }
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
@@ -165,7 +166,11 @@ function PrintPanel({ queue, onDone }) {
           </button>
         )}
       </div>
-      <div className="text-[11px] text-stone-500">Each label PDF is the invoice and the courier label together, for every order the job handled, including ones you invoiced yourself on the dashboard. A label stays on this list until you confirm you printed it, or mark it printed.</div>
+      <label className="flex items-center gap-1.5 text-xs text-stone-700">
+        <input type="checkbox" checked={labelsOnly} onChange={e => { setLabelsOnly(e.target.checked); setMade(null); }} className="rounded border-stone-300" />
+        Courier labels only (leave the invoice pages out)
+      </label>
+      <div className="text-[11px] text-stone-500">Covers every order the job handled, including ones you invoiced yourself on the dashboard. A label stays on this list until you confirm you printed it, or mark it printed.</div>
       {error && <div className="text-xs text-red-700 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" />{error}</div>}
       {made && (
         <div className="border border-stone-200 rounded-md p-2.5 bg-stone-50 space-y-2 text-xs">
@@ -173,9 +178,9 @@ function PrintPanel({ queue, onDone }) {
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span><b>{made.codes.length}</b> label{made.codes.length === 1 ? '' : 's'} in one PDF.</span>
+                <span><b>{made.codes.length}</b> {labelsOnly ? 'label' : 'invoice + label'}{made.codes.length === 1 ? '' : 's'} in one PDF{labelsOnly ? ' (invoices left out)' : ''}.</span>
                 <a href={made.url} target="_blank" rel="noreferrer" className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1">Open to print</a>
-                <a href={made.url} download={`myntra-labels-${localToday()}.pdf`} className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1"><Download className="w-3 h-3" />Download</a>
+                <a href={made.url} download={`myntra-${labelsOnly ? 'labels' : 'invoices-labels'}-${localToday()}.pdf`} className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1"><Download className="w-3 h-3" />Download</a>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-stone-600">Once they are printed:</span>

@@ -4,7 +4,7 @@ Myntra scores a seller on how fast an order is marked dispatched in Unicommerce,
 
 1. **Invoice and label.** `createInvoiceAndAllocateShippingProvider { shippingPackageCode }` on every Myntra package that is `CREATED`. The package becomes `READY_TO_SHIP`, Myntra is told the item is ready to dispatch, and the answer carries the invoice number, courier, tracking number and the label PDF link (`shippingLabelLink`, the invoice and the label together).
 2. **Dispatch.** `shippingManifest/createclose` for every `READY_TO_SHIP` package (invoiced just now, or by a person on the dashboard): one manifest per courier, prepaid and COD together. The package becomes `DISPATCHED` and the order `COMPLETE`.
-3. **Labels.** The invoiced labels are listed on Analytics → Myntra until a person marks them printed. "Get one PDF" merges every unprinted label into one file.
+3. **Labels.** The invoiced labels are listed on Analytics → Myntra until a person marks them printed. "Get one PDF" merges every unprinted label into one file, by default only the courier labels: Unicommerce's file is the invoice (an A4 page) then the label (a 4x6 inch page), and the invoice pages are left out unless the box is unticked.
 
 Function `myntra-fulfil`, rules in `supabase/functions/_shared/myntra-fulfil.ts` (tested), page `src/pages/MyntraSection.jsx`, table `myntra_fulfilments` (migration 037). Every Unicommerce call goes through `public.uc_post`.
 
