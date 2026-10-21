@@ -28,6 +28,22 @@ Function `myntra-fulfil`, rules in `supabase/functions/_shared/myntra-fulfil.ts`
 
 Dry mode is the default (`app_settings.myntra_fulfil_mode = "dry"`): the job reads Unicommerce and reports what it would do (the page's "Check now (dry)" and the last-run line). **Switch to live** on the page sets `myntra_fulfil_mode = "live"` and `myntra_fulfil_limit` (packages per run, default 1): go live with 1, check that order in Unicommerce and in Myntra's portal, then raise the limit.
 
+## Edge cases (simulated: `node --test supabase/functions/myntra-fulfil/sweep.test.mjs`)
+
+The real job code runs against a fake database and a fake Unicommerce (`sim.mjs`) that answer as the live account did. 24 scenarios, all passing:
+
+- **An order arrives while a run is in progress** (during the invoice step, or during dispatch): not lost, picked up by the next run (5 minutes). The run only works on the orders it found at its start.
+- **Two runs at the same moment** (cron plus a manual sweep): every package is invoiced once and dispatched once; no package on two manifests. A package belongs to one run: the first to insert its row (or take a claim older than 10 minutes) wins.
+- **The invoice call times out** (the database gives a call 7 seconds; Unicommerce still does it): the package is looked at before it is called a failure, and dispatched in the same run. **The dispatch call times out** but Unicommerce dispatched: recorded as dispatched with its manifest.
+- **A person acts at the same time** (invoices on the dashboard, or dispatches by hand): the job only dispatches what is READY_TO_SHIP and reads the label link off the package; a row whose order is already COMPLETE is closed ("dispatched outside the ERP").
+- **Myntra holds an order** (holiday): waits for the time Myntra names at no cost, then goes at once. A customer cancelling meanwhile ends the row as `cancelled`.
+- **A run is cut off** (the edge function limit is 150 s): looking up orders stops at 40 s, invoicing at 80 s, and everything invoiced is dispatched before the run ends; the rest waits for the next run. A crashed run's claim is taken over after 10 minutes, or closed if the package was dispatched meanwhile.
+- **Limits**: the per-run limit takes the oldest order first and nothing is dropped across runs. A big batch is dispatched in manifests of at most 10 packages (one createclose call must fit in 7 seconds).
+- **Failures**: one order that cannot be invoiced does not block the others; it backs off 15, 30, 45 ... minutes and after 6 failures needs a person. Unicommerce down: the run fails cleanly and writes nothing; the next run works.
+- **Search window**: 5 days back (a wider search risks the 7-second limit), never before `myntra_fulfil_from`.
+
+Not simulated (needs real Myntra orders): what Myntra's portal shows for a dispatched order, and Myntra holding an order longer than 5 days.
+
 ## Not covered
 
 - Packing: a label exists before the parcel is packed, and dispatch is marked before the courier collects. Someone must pack from the printed labels.
