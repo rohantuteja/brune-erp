@@ -449,7 +449,7 @@ async function labels(admin: SupabaseClient, codes: string[] | null, labelsOnly:
 }
 
 // The pick list of the packages whose labels are still to print (or of the given packages): what to take off the shelf, SKU by
-// SKU, and then parcel by parcel. Read from the orders in Unicommerce (the items of each package); nothing is written there.
+// SKU. Read from the orders in Unicommerce (the items of each package); nothing is written there.
 async function picklist(admin: SupabaseClient, codes: string[] | null) {
   let q = admin.from('myntra_fulfilments').select('package_code, sale_order_code').in('status', ['invoiced', 'dispatched'])
     .order('invoiced_at', { ascending: true, nullsFirst: false }).limit(MAX_LABELS);

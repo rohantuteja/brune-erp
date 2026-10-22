@@ -136,7 +136,7 @@ function PrintPanel({ queue, onDone }) {
   const pickRef = useRef(null);
   useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); if (pickRef.current) URL.revokeObjectURL(pickRef.current); }, []);
 
-  // The pick list of the same labels: what to take off the shelf, SKU by SKU and then parcel by parcel.
+  // The pick list of the same labels: what to take off the shelf, SKU by SKU.
   const buildPick = async () => {
     setPickBusy(true); setError('');
     try {
@@ -200,7 +200,7 @@ function PrintPanel({ queue, onDone }) {
           {pick.url ? (
             <div className="flex flex-wrap items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>Pick list: <b>{pick.units}</b> unit{pick.units === 1 ? '' : 's'}, <b>{pick.skus}</b> SKU{pick.skus === 1 ? '' : 's'}, for <b>{pick.packages}</b> parcel{pick.packages === 1 ? '' : 's'}, in the order the labels print.</span>
+              <span>Pick list: <b>{pick.units}</b> unit{pick.units === 1 ? '' : 's'}, <b>{pick.skus}</b> SKU{pick.skus === 1 ? '' : 's'}, for <b>{pick.packages}</b> parcel{pick.packages === 1 ? '' : 's'}.</span>
               <a href={pick.url} target="_blank" rel="noreferrer" className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1">Open to print</a>
               <a href={pick.url} download={`myntra-pick-list-${localToday()}.pdf`} className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1"><Download className="w-3 h-3" />Download</a>
               <button type="button" onClick={() => setPick(null)} aria-label="Close the pick list" className="p-1 rounded hover:bg-stone-200"><X className="w-3 h-3" /></button>

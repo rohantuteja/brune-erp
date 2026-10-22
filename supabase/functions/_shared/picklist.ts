@@ -120,22 +120,6 @@ export async function buildPicklistPdf(
     y -= rowH;
   }
 
-  // The same units parcel by parcel, in the order the labels print: pick, then pack each parcel against its label.
-  if (data.parcels.length) {
-    if (y < MARGIN + 90) newPage(false);
-    y -= 14;
-    page.drawText('By parcel (same order as the labels)', { x: MARGIN, y, size: 11, font: bold });
-    y -= 16;
-    data.parcels.forEach((p, i) => {
-      if (y < MARGIN + 24) { newPage(false); }
-      const line = `${i + 1}. ${p.package}: ${p.skus.map(s => `${s.sku}${s.qty > 1 ? ` x${s.qty}` : ''}`).join(', ')}`;
-      for (const l of wrapText(ascii(line), w(font, 9), PAGE_W - 2 * MARGIN)) {
-        if (y < MARGIN + 24) newPage(false);
-        page.drawText(l, { x: MARGIN, y, size: 9, font }); y -= 12;
-      }
-    });
-  }
-
   pages.forEach((pg, i) => {
     pg.drawText(`Generated at: ${stamp}`, { x: MARGIN, y: 20, size: 8, font });
     pg.drawText(`Page ${i + 1} of ${pages.length}`, { x: PAGE_W - MARGIN - 50, y: 20, size: 8, font });
