@@ -46,7 +46,7 @@ Not simulated (needs real Myntra orders): what Myntra's portal shows for a dispa
 
 ## Pick list
 
-Analytics → Myntra → **Get the pick list** makes a PDF for the same packages as the labels still to print (unprinted, invoiced or dispatched): `S.No. | SKU | Item Name | Brand | Qty | Image | Picked` (a box to tick), one row per SKU with the units to take off the shelf, then "By parcel (same order as the labels)" so each parcel can be packed against its label. It is built by the function (`picklist` action, `_shared/picklist.ts`) from the items of each package's order in Unicommerce, with a small product picture per SKU, and changes nothing in Unicommerce. Unicommerce's own pick list (`picker/picklist/manual/create`) is not used: it needs a package that has not been dispatched, and the job dispatches within minutes of invoicing. A cancelled item is left off.
+Analytics → Myntra → **Get the pick list** makes a PDF for the same packages as the labels still to print (unprinted, invoiced or dispatched): `S.No. | SKU | Item Name | Brand | Qty | Image | Picked` (a box to tick), one row per SKU with the units to take off the shelf. It is built by the function (`picklist` action, `_shared/picklist.ts`) from the items of each package's order in Unicommerce, with a small product picture per SKU, and changes nothing in Unicommerce. Unicommerce's own pick list (`picker/picklist/manual/create`) is not used: it needs a package that has not been dispatched, and the job dispatches within minutes of invoicing. A cancelled item is left off.
 
 ## Not covered
 
