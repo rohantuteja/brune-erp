@@ -5,7 +5,7 @@ import { localToday } from '../lib/constants';
 import { STATUS_TEXT, filterRows, needsPrint, printQueue, viewCounts } from '../lib/myntraView';
 import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { Pagination, Pills, StatCard, EmptyState, useUrlParams } from '../components/AnalyticsKit';
-import { RefreshCw, Printer, Search, X, Info, Play, AlertCircle, CheckCircle2, Download } from 'lucide-react';
+import { RefreshCw, Printer, Search, X, Info, Play, AlertCircle, CheckCircle2, Download, ListChecks } from 'lucide-react';
 
 // Analytics → Myntra (admin only). Myntra orders are invoiced, labelled and dispatched in Unicommerce by the
 // myntra-fulfil function every 5 minutes, as soon as Myntra allows (it holds holiday orders as "upcoming" and refuses
@@ -130,8 +130,24 @@ function PrintPanel({ queue, onDone }) {
   const [error, setError] = useState('');
   const [made, setMade] = useState(null);          // { url, codes, missing }
   const [labelsOnly, setLabelsOnly] = useState(true);   // leave the invoice pages out: only the courier labels print
+  const [pick, setPick] = useState(null);          // { url, packages, units, skus, missing }
+  const [pickBusy, setPickBusy] = useState(false);
   const urlRef = useRef(null);
-  useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); }, []);
+  const pickRef = useRef(null);
+  useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); if (pickRef.current) URL.revokeObjectURL(pickRef.current); }, []);
+
+  // The pick list of the same labels: what to take off the shelf, SKU by SKU and then parcel by parcel.
+  const buildPick = async () => {
+    setPickBusy(true); setError('');
+    try {
+      const { ok, json } = await callMyntra({ action: 'picklist' });
+      if (!ok) throw new Error(json.error || 'The request failed');
+      if (!json.pdf) { setPick({ url: null, packages: 0, units: 0, skus: 0, missing: json.missing ?? [] }); return; }
+      if (pickRef.current) URL.revokeObjectURL(pickRef.current);
+      pickRef.current = base64ToBlobUrl(json.pdf);
+      setPick({ url: pickRef.current, packages: json.packages, units: json.units, skus: json.skus, missing: json.missing ?? [] });
+    } catch (e) { setError(e.message); } finally { setPickBusy(false); }
+  };
 
   const build = async () => {
     setBusy(true); setError('');
@@ -160,10 +176,17 @@ function PrintPanel({ queue, onDone }) {
       <div className="flex flex-wrap items-center gap-2">
         <Printer className="w-4 h-4 text-stone-500" />
         <div className="text-sm font-medium text-stone-900">{queue.length ? `${queue.length} label${queue.length === 1 ? '' : 's'} not printed yet` : 'Every label is printed'}</div>
-        {!made && queue.length > 0 && (
-          <button type="button" disabled={busy} onClick={build} className="ml-auto h-8 px-3 text-xs rounded-md bg-stone-900 text-white hover:bg-stone-700 disabled:opacity-50 inline-flex items-center gap-1">
-            {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Printer className="w-3 h-3" />}Get one PDF of the unprinted labels
-          </button>
+        {queue.length > 0 && (
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <button type="button" disabled={pickBusy} onClick={buildPick} className="h-8 px-3 text-xs rounded-md border border-stone-300 bg-white text-stone-800 hover:border-stone-500 disabled:opacity-50 inline-flex items-center gap-1">
+              {pickBusy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <ListChecks className="w-3 h-3" />}Get the pick list
+            </button>
+            {!made && (
+              <button type="button" disabled={busy} onClick={build} className="h-8 px-3 text-xs rounded-md bg-stone-900 text-white hover:bg-stone-700 disabled:opacity-50 inline-flex items-center gap-1">
+                {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Printer className="w-3 h-3" />}Get one PDF of the unprinted labels
+              </button>
+            )}
+          </div>
         )}
       </div>
       <label className="flex items-center gap-1.5 text-xs text-stone-700">
@@ -172,6 +195,26 @@ function PrintPanel({ queue, onDone }) {
       </label>
       <div className="text-[11px] text-stone-500">Covers every order the job handled, including ones you invoiced yourself on the dashboard. A label stays on this list until you confirm you printed it, or mark it printed.</div>
       {error && <div className="text-xs text-red-700 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" />{error}</div>}
+      {pick && (
+        <div className="border border-stone-200 rounded-md p-2.5 bg-stone-50 space-y-2 text-xs">
+          {pick.url ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>Pick list: <b>{pick.units}</b> unit{pick.units === 1 ? '' : 's'}, <b>{pick.skus}</b> SKU{pick.skus === 1 ? '' : 's'}, for <b>{pick.packages}</b> parcel{pick.packages === 1 ? '' : 's'}, in the order the labels print.</span>
+              <a href={pick.url} target="_blank" rel="noreferrer" className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1">Open to print</a>
+              <a href={pick.url} download={`myntra-pick-list-${localToday()}.pdf`} className="h-7 px-2.5 rounded-md border border-stone-300 bg-white hover:border-stone-500 inline-flex items-center gap-1"><Download className="w-3 h-3" />Download</a>
+              <button type="button" onClick={() => setPick(null)} aria-label="Close the pick list" className="p-1 rounded hover:bg-stone-200"><X className="w-3 h-3" /></button>
+            </div>
+          ) : (
+            <div className="text-red-700 flex items-center gap-2">No pick list could be made.<button type="button" onClick={() => setPick(null)} aria-label="Close" className="p-1 rounded hover:bg-stone-200"><X className="w-3 h-3" /></button></div>
+          )}
+          {pick.missing.length > 0 && (
+            <div className="text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
+              {pick.missing.length} parcel{pick.missing.length === 1 ? ' is' : 's are'} not on the pick list: {pick.missing.map(m => `${m.package} (${m.reason})`).join(', ')}. Try again in a minute.
+            </div>
+          )}
+        </div>
+      )}
       {made && (
         <div className="border border-stone-200 rounded-md p-2.5 bg-stone-50 space-y-2 text-xs">
           {made.url ? (

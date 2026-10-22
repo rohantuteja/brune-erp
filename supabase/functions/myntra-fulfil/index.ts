@@ -21,21 +21,24 @@
 //
 // Schedule: every 5 minutes (pg_cron, migration 037, header x-cron-key matching private_secrets.erp_stock_cron_key).
 //
-// Admin actions (POST { action } with an admin user's JWT; status/sweep/retry also with the x-cron-key header):
+// Admin actions (POST { action } with an admin user's JWT; status/sweep/retry/labels/picklist also with the x-cron-key header):
 //   status          — mode, limit, start date, counts per status, unprinted labels, the last run, rows needing a person
 //   sweep           — { dry?: false } run now; dry (default) only reports
 //   retry           — { package_code } a failed / attention package is tried again at the next run
 //   labels          — { codes?, labels_only? } one merged PDF (base64) of the unprinted labels, or of the given packages;
 //                     labels_only (default true) leaves out the invoice pages, so only the courier labels print
+//   picklist        — { codes? } a PDF pick list (SKU, item, qty, image, a box to tick) of the same unprinted packages as `labels`,
+//                     made from the items of their orders; Unicommerce's own pick list needs an undispatched package
 //   mark_printed    — { codes } / mark_unprinted — { codes }
 //   set_mode        — { mode: "dry"|"live", limit? } (admin JWT only)
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { encode } from 'https://deno.land/std@0.177.0/encoding/base64.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { PDFDocument } from 'https://esm.sh/pdf-lib@1.17.1';
+import { PDFDocument, StandardFonts, rgb } from 'https://esm.sh/pdf-lib@1.17.1';
 import { CORS, cronKeyValid, json, requireAdmin, setting } from '../_shared/shopify-admin.ts';
 import { ucErrorText, ucPost } from '../_shared/unicommerce.ts';
+import { aggregatePicklist, buildPicklistPdf, type PickItem } from '../_shared/picklist.ts';
 import {
   CHANNEL, MAX_ATTEMPTS, CLAIM_STALE_MS, groupByProvider, invoiceOutcome, manifestBody, manifestOutcome, paymentOf, planPackage, retryAt,
   type Known, type Pkg,
@@ -68,7 +71,7 @@ serve(async (req) => {
       // The scheduled job ({}), or a read-only / retry action sent with the same secret key.
       if (!(await cronKeyValid(admin, cronKey))) return json({ error: 'bad cron key' }, 401);
       if (!body.action) return json(await sweep(admin, { record: true }));
-      if (!['status', 'sweep', 'retry'].includes(body.action)) return json({ error: 'that action needs an admin user' }, 403);
+      if (!['status', 'sweep', 'retry', 'labels', 'picklist'].includes(body.action)) return json({ error: 'that action needs an admin user' }, 403);
       return json(await dispatch(admin, body));
     }
     const denied = await requireAdmin(admin, req);
@@ -85,10 +88,11 @@ async function dispatch(admin: SupabaseClient, body: any) {
     case 'sweep':        return await sweep(admin, { record: body.dry === false });
     case 'retry':        return await retry(admin, String(body.package_code ?? ''));
     case 'labels':       return await labels(admin, Array.isArray(body.codes) ? body.codes.map(String) : null, body.labels_only !== false);
+    case 'picklist':     return await picklist(admin, Array.isArray(body.codes) ? body.codes.map(String) : null);
     case 'mark_printed': return await markPrinted(admin, codesOf(body), true);
     case 'mark_unprinted': return await markPrinted(admin, codesOf(body), false);
     case 'set_mode':     return await setMode(admin, body);
-    default: throw new Error('action must be status, sweep, retry, labels, mark_printed, mark_unprinted or set_mode');
+    default: throw new Error('action must be status, sweep, retry, labels, picklist, mark_printed, mark_unprinted or set_mode');
   }
 }
 
@@ -442,6 +446,50 @@ async function labels(admin: SupabaseClient, codes: string[] | null, labelsOnly:
   }
   if (!included.length) return { pdf: null, codes: [], missing };
   return { pdf: encode(await merged.save()), codes: included, missing };
+}
+
+// The pick list of the packages whose labels are still to print (or of the given packages): what to take off the shelf, SKU by
+// SKU, and then parcel by parcel. Read from the orders in Unicommerce (the items of each package); nothing is written there.
+async function picklist(admin: SupabaseClient, codes: string[] | null) {
+  let q = admin.from('myntra_fulfilments').select('package_code, sale_order_code').in('status', ['invoiced', 'dispatched'])
+    .order('invoiced_at', { ascending: true, nullsFirst: false }).limit(MAX_LABELS);
+  q = codes ? q.in('package_code', codes) : q.is('printed_at', null);
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  if (!(data ?? []).length) return { pdf: null, packages: 0, units: 0, skus: 0, missing: [] };
+
+  const byOrder = new Map<string, string[]>();                    // order → its packages, orders in label order
+  for (const r of data ?? []) byOrder.set(r.sale_order_code as string, [...(byOrder.get(r.sale_order_code as string) ?? []), r.package_code as string]);
+  const startedAt = Date.now();
+  const items: PickItem[] = [];
+  const missing: Array<{ package: string; reason: string }> = [];
+  for (const [orderCode, pkgs] of byOrder) {
+    if (Date.now() - startedAt > 90_000) { for (const p of pkgs) missing.push({ package: p, reason: 'out of time, try again' }); continue; }
+    let so: any;
+    try { so = await ucPost(admin, '/services/rest/v1/oms/saleorder/get', { code: orderCode }); } catch (err) { so = { successful: false, errors: [{ description: err instanceof Error ? err.message : String(err) }] }; }
+    if (!so?.successful || !so.saleOrderDTO) { for (const p of pkgs) missing.push({ package: p, reason: ucErrorText(so) }); continue; }
+    for (const it of so.saleOrderDTO.saleOrderItems ?? []) {
+      if (!pkgs.includes(String(it.shippingPackageCode))) continue;
+      items.push({ package: String(it.shippingPackageCode), sku: String(it.itemSku ?? it.sellerSkuCode ?? ''), name: String(it.itemName ?? ''), brand: it.brand ?? null, imageUrl: it.imageUrl ?? null, status: String(it.statusCode ?? '') });
+    }
+  }
+  const agg = aggregatePicklist(items);
+  if (!agg.rows.length) return { pdf: null, packages: 0, units: 0, skus: 0, missing };
+
+  // one small picture per SKU; a picture that cannot be fetched just leaves its box empty
+  const images = new Map<string, Uint8Array>();
+  await Promise.all(agg.rows.filter(r => r.imageUrl).map(async (r) => {
+    try {
+      const url = String(r.imageUrl); const small = /cdn\.shopify\.com/.test(url) ? `${url}${url.includes('?') ? '&' : '?'}width=120` : url;
+      const res = await fetch(small, { signal: AbortSignal.timeout(8_000) });
+      if (!res.ok) return;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const png = bytes[0] === 0x89 && bytes[1] === 0x50, jpg = bytes[0] === 0xff && bytes[1] === 0xd8;
+      if ((png || jpg) && bytes.length < 600_000) images.set(r.sku, bytes);
+    } catch { /* no picture */ }
+  }));
+  const pdf = await buildPicklistPdf({ PDFDocument, StandardFonts, rgb }, agg, images, new Date());
+  return { pdf: encode(pdf), packages: agg.parcels.length, units: agg.units, skus: agg.rows.length, missing };
 }
 
 // Unicommerce's file is the invoice (an A4 page) followed by the courier label (a 4x6 inch page). The label pages are the
