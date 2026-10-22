@@ -14,7 +14,7 @@ const STUBS = {
   'https://deno.land/std@0.177.0/http/server.ts': 'export function serve() {}',
   'https://deno.land/std@0.177.0/encoding/base64.ts': "export const encode = (b) => Buffer.from(b).toString('base64'); export const decode = (s) => new Uint8Array(Buffer.from(s, 'base64'));",
   'https://esm.sh/@supabase/supabase-js@2': 'export function createClient() { throw new Error("not in tests"); }',
-  'https://esm.sh/pdf-lib@1.17.1': 'export const PDFDocument = {};',
+  'https://esm.sh/pdf-lib@1.17.1': 'export const PDFDocument = {}; export const StandardFonts = {}; export const rgb = () => ({});',
 };
 
 export async function loadJob() {
