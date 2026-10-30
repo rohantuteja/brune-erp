@@ -88,6 +88,7 @@ supabase/
     shopify-order-webhook/      # RTO Shopify orders → Unicommerce stock, cancel on Shopify, store credit
     returnprime-webhook/        # Return Prime returns back at warehouse → Unicommerce stock
     shopify-product-webhook/    # Product goes live → create its SKUs in Unicommerce (GST 5, or 18 above ₹2,500), add waiting batches
+    myntra-velocity/            # Every 30 min: one row per piece of every Myntra order in Unicommerce (myntra_order_lines), so Pipeline Health velocity counts Myntra too (sync, status)
     stock-audit/                # Admin: replay each SKU from a known starting stock to find pieces sold at zero
     cod-paid-on-delivery/       # Mark COD / PPCOD orders paid on Shopify when Velocity says delivered; follow each to its COD remittance (UTR)
     store-credit-guard/         # Take back the second store credit Return Prime + GoKwik put on COD returns that used store credit
@@ -178,7 +179,7 @@ app_settings (key TEXT PRIMARY KEY, value)
 
 ### Key RPCs (Supabase functions)
 - `get_email_by_username(p_username)` — resolves username → email for login (SECURITY DEFINER, callable by anon)
-- `pipeline_health()` — returns heavy pipeline status data for the dashboard (cached 15 min in localStorage)
+- `pipeline_health()` — returns heavy pipeline status data for the dashboard (cached 15 min in localStorage). `daily_velocity` is Shopify + Myntra (columns `shopify_velocity`, `myntra_velocity` give the split); see "Sales velocity" below. First in the repo in migration 038 (it was made in the dashboard before)
 
 ---
 
@@ -258,6 +259,14 @@ Unicommerce pushes stock to Shopify and Myntra, so the ERP never writes Shopify 
 ### Myntra fulfilment (Unicommerce channel MYNTRAPPMP)
 `myntra-fulfil` (every 5 min, pg_cron migration 037) invoices, labels and dispatches Myntra orders as soon as Myntra allows, because Myntra scores sellers on dispatch speed. The invoice step is refused until Myntra's own eligibility time (holiday "upcoming" orders): the job reads the time from the refusal and retries. Dispatch is the public `shippingManifest/createclose` (one manifest per courier); the public API has no pack group or dispatch group. Dry mode until `app_settings.myntra_fulfil_mode = "live"`. Labels to print are listed on Analytics → Myntra. Details and what was verified: `docs/myntra-fulfilment.md`.
 
+### Sales velocity (Pipeline Health: Production → Pipeline Health)
+Effective days = (stock + pieces in production) ÷ daily velocity. The stock is one pool that Unicommerce pushes to Shopify AND Myntra, so the velocity must be both channels' sales (until 31 Oct 2026 it was Shopify's only, which overstated the days left by about 40%: Myntra was ~36% of the pieces sold).
+- **Shopify**: ShopifyQL `net_items_sold` per SKU for 7/14/30 days, stored by `shopify-sync` in `shopify_sales_velocity` (unchanged).
+- **Myntra**: `myntra-velocity` (every 30 min, pg_cron migration 038) keeps `myntra_order_lines` (one row per piece: SKU, order date, cancelled, return expected/received) from Unicommerce channel `MYNTRAPPMP`, through `uc_post` only. It reads new and changed orders, and re-reads young orders that could still be returned every 6 h (Unicommerce does not necessarily touch an order's `updated` when a return arrives). Rules: `_shared/channel-velocity.ts` (tested).
+- **Same basis as Shopify's net items sold**, over the same window (`velocity_lookback_days`: 7, 14, else 30; IST days, today included): pieces ordered in the window, minus cancelled, minus pieces whose return was **received** in the window (a return only expected is not taken off: the piece is not back on the shelf), never below zero per SKU. `pipeline_health()` adds the two.
+- Until Myntra returns are received in Unicommerce nothing is subtracted for them. On 31 Oct 2026, 73 of 168 Myntra pieces had a return in flight (courier allocated / expected) and none was received, so the Myntra velocity is effectively gross sales for now. That is the safe direction (days left come out shorter).
+- The screen shows the split (`0.53 + 0.73` under the velocity) and how fresh the Myntra data is (`app_settings.myntra_velocity_last_run`, orange after 3 h or a failed run). A new channel needs its own source added in `pipeline_health()`.
+
 ### Cutting Runs
 - A **Run** groups all cut entries for a single style code batch.
 - `run_pieces` stores the aggregate totals per size (XS/S/M/L/XL + custom sizes).
@@ -335,7 +344,7 @@ Extracted as a proper standalone component to avoid React hooks-inside-map bugs.
 `App.jsx` uses a `useRef(everLoaded)` flag so that background permission re-fetches (triggered by Supabase token refreshes on `visibilitychange`) never unmount `FabricCuttingModule` or close open modals.
 
 ### 8. Pipeline Health Cache
-`pipeline_health` RPC result is cached in localStorage (`brune_pipeline_health_v4`) with a 15-minute TTL using a stale-while-revalidate strategy. The module-level `_pipelineInflight` promise deduplicates concurrent callers.
+`pipeline_health` RPC result is cached in localStorage (`brune_pipeline_health_v5`) with a 15-minute TTL using a stale-while-revalidate strategy. The module-level `_pipelineInflight` promise deduplicates concurrent callers.
 
 ---
 
