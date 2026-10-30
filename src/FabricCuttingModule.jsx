@@ -6,6 +6,7 @@ import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, 
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
 import { supabase } from './lib/supabase';
+import { myntraSyncNote, velocitySplit } from './lib/pipelineVelocity';
 import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 import LedgerSection from './pages/LedgerSection';
@@ -27,7 +28,7 @@ import MyntraSection from './pages/MyntraSection';
 //     promise; the cache is updated for the next open.
 //   - A module-level in-flight promise deduplicates concurrent callers so the
 //     network request is made at most once even when multiple effects fire.
-const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v4';
+const _PIPELINE_CACHE_KEY = 'brune_pipeline_health_v5';
 const _PIPELINE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 let _pipelineInflight = null;
 
@@ -3618,8 +3619,8 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Velocity lookback window</div>
               <div className="text-xs text-stone-400 mb-2">
-                Days of Shopify sales used to compute daily velocity. Shorter = more reactive to recent trends.
-                Takes effect after the next Shopify sync.
+                Days of Shopify and Myntra sales used to compute daily velocity (the same window for both). Shorter = more reactive to recent trends.
+                Takes effect as soon as you save.
               </div>
               <div className="flex gap-2">
                 {[7, 14, 30].map(d => (
@@ -3655,7 +3656,7 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
                 if (![7, 14, 30].includes(vlb)) return;
                 setSettingsSaving(true);
                 // Invalidate pipeline health cache so new thresholds take effect immediately
-                try { localStorage.removeItem('brune_pipeline_health_v4'); } catch {}
+                try { localStorage.removeItem('brune_pipeline_health_v5'); } catch {}
                 await saveAlertSettings({ rolls_threshold: rt, thans_threshold_m: ttm, production_lead_days: pld, cutting_lead_days: cld, fabric_lead_days: fld, safety_buffer_days: sbd, overdue_batch_days: obd, velocity_lookback_days: vlb });
                 setSettingsForm(null);
                 setSettingsSaving(false);
@@ -5279,6 +5280,17 @@ function PipelineHealthView({
 }) {
   const ALERT_ORDER = { critical: 0, warning: 1, watch: 2, ok: 3 };
   const enriched = pipelineHealthData;
+
+  // How fresh the Myntra part of the velocity is (written by the myntra-velocity job after each run).
+  const [myntraLastRun, setMyntraLastRun] = useState(null);
+  useEffect(() => {
+    let live = true;
+    supabase.from('app_settings').select('value').eq('key', 'myntra_velocity_last_run').maybeSingle()
+      .then(({ data }) => { if (live) setMyntraLastRun(data?.value ?? null); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  const myntraNote = myntraSyncNote(myntraLastRun);
   const filtered = enriched
     .filter(r => {
       if (pipelineActiveRunsOnly && !r.has_active_run) return false;
@@ -5302,7 +5314,8 @@ function PipelineHealthView({
   return (
     <div className="space-y-3">
       <div className="text-xs text-stone-500 px-0.5">
-        Size-level pipeline status. Effective days = (Shopify stock + pieces in production) ÷ daily velocity. Thresholds based on your configured lead times.
+        Size-level pipeline status. Effective days = (stock + pieces in production) ÷ daily velocity. Stock is the one pool Unicommerce pushes to Shopify and Myntra, so velocity is Shopify and Myntra sales together (returns taken off once received back). Thresholds based on your configured lead times.
+        <div className={`mt-1 ${myntraNote.tone === 'warn' ? 'text-orange-600 font-medium' : 'text-stone-400'}`}>{myntraNote.text}</div>
       </div>
 
       {/* Summary + refresh */}
@@ -5442,7 +5455,7 @@ function PipelineHealthView({
             }
             return 'Stock levels are healthy — no action needed.';
           })();
-          return { ...row, meta, hasVelocity, effStr, badgeLabel, actionText };
+          return { ...row, meta, hasVelocity, effStr, badgeLabel, actionText, split: velocitySplit(row) };
         });
 
         const footerText = (
@@ -5472,6 +5485,7 @@ function PipelineHealthView({
                     <div className="bg-stone-50 rounded-lg px-2 py-2">
                       <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Vel/day</div>
                       <div className="text-sm font-semibold text-stone-800">{row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}</div>
+                      {row.split && <div className="text-[10px] text-stone-400 leading-tight" title={row.split.title}>{row.split.text}</div>}
                     </div>
                     <div className="bg-stone-50 rounded-lg px-2 py-2">
                       <div className="text-[10px] text-stone-400 uppercase tracking-wide mb-0.5">Effective</div>
@@ -5506,8 +5520,11 @@ function PipelineHealthView({
                 <thead>
                   <tr className="border-b border-stone-100 bg-stone-50 text-xs text-stone-500 uppercase tracking-wide">
                     <th className="text-left px-4 py-3 font-medium">Style · Size</th>
-                    <th className="text-right px-4 py-3 font-medium">Shopify Stock</th>
-                    <th className="text-right px-4 py-3 font-medium">Velocity/day</th>
+                    <th className="text-right px-4 py-3 font-medium" title="One pool: Unicommerce pushes the same count to Shopify and Myntra">Stock</th>
+                    <th className="text-right px-4 py-3 font-medium">
+                      Velocity/day
+                      <span className="block text-[10px] font-normal normal-case tracking-normal text-stone-400">Shopify + Myntra</span>
+                    </th>
                     <th className="text-right px-4 py-3 font-medium">Effective Days</th>
                     <th className="text-right px-4 py-3 font-medium">Available</th>
                     <th className="text-right px-4 py-3 font-medium">In Production</th>
@@ -5524,6 +5541,7 @@ function PipelineHealthView({
                       <td className="px-4 py-3 text-right text-stone-700">{row.shopify_stock}</td>
                       <td className="px-4 py-3 text-right text-stone-500 text-xs">
                         {row.hasVelocity ? parseFloat(row.daily_velocity).toFixed(1) : <span className="text-stone-300">—</span>}
+                        {row.split && <div className="text-[10px] text-stone-400 leading-tight" title={row.split.title}>{row.split.text}</div>}
                       </td>
                       <td className="px-4 py-3 text-right">
                         {row.effective_days != null
