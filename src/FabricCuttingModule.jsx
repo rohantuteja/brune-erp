@@ -3619,8 +3619,8 @@ function HomePage({ stats, inventory, fabricTypes, runs, productionBatches, cost
             <div>
               <div className="text-xs font-medium text-stone-700 mb-1">Velocity lookback window</div>
               <div className="text-xs text-stone-400 mb-2">
-                Days of Shopify and Myntra sales used to compute daily velocity. Shorter = more reactive to recent trends.
-                Takes effect after the next Shopify sync.
+                Days of Shopify and Myntra sales used to compute daily velocity (the same window for both). Shorter = more reactive to recent trends.
+                Takes effect as soon as you save.
               </div>
               <div className="flex gap-2">
                 {[7, 14, 30].map(d => (
