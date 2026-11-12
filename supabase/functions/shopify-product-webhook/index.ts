@@ -58,6 +58,22 @@ const LENGTH_MM = 250, WIDTH_MM = 200, HEIGHT_MM = 50, WEIGHT_G = 500;
 const SKU_RE = /^[A-Za-z0-9._\/-]{3,45}$/;
 const LIVE = ['active', 'unlisted'];  // Shopify statuses whose listings can sell
 
+// A SKU must be '<style>-<size>' where <size> is the variant's own Size option
+// value (Anne Black Dress went live on 12 Nov 2026 as one 'Default Title'
+// variant with the SKU 'ANNE-BLACK-DRESS-69-', and a sizeless SKU was created in
+// Unicommerce, which can't delete SKUs). Returns why a variant's SKU is
+// rejected, or null if it is fine. Variants with no SKU (the Sets) are not
+// checked: they are skipped silently.
+const normSize = (x: string | null | undefined) => String(x ?? '').trim().toUpperCase().replace(/\s+/g, '');
+function skuProblem(p: Product, v: Product['variants'][number]): string | null {
+  if (!v.sku) return null;
+  if (!p.sizeOption) return 'the product has no Size option';
+  const size = normSize(v.options[p.sizeOption - 1]);
+  if (!size || size === 'DEFAULTTITLE') return 'the variant has no size value';
+  if (!normSize(v.sku).endsWith(`-${size}`)) return `the SKU does not end in -${v.options[p.sizeOption - 1]}`;
+  return null;
+}
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -163,7 +179,7 @@ function buildItems(p: Product, costs: Map<string, number>) {
   const seen = new Set<string>();
   const items: Array<Record<string, unknown>> = [];
   for (const v of p.variants) {
-    if (!v.sku || !SKU_RE.test(v.sku) || seen.has(v.sku)) continue;  // Sets have no SKU
+    if (!v.sku || !SKU_RE.test(v.sku) || seen.has(v.sku) || skuProblem(p, v)) continue;  // Sets have no SKU
     seen.add(v.sku);
     const img = v.image ?? p.image;
     const item: Record<string, unknown> = {
@@ -195,6 +211,11 @@ const styleOf = (sku: string) => sku.replace(/-[^-]+$/, '');
 
 async function handleProduct(ctx: Ctx, p: Product) {
   if (!p.active) return { skipped: 'not live' };
+  // Never create a sizeless SKU: flag it for a person and carry on with the rest.
+  for (const v of p.variants) {
+    const why = skuProblem(p, v);
+    if (why) await record(ctx, p, v.sku, 'failed', true, `not created in Unicommerce: ${why}. Fix the SKU on Shopify (<style>-<size>).`);
+  }
   const skus = buildItems(p, new Map()).map(i => i.skuCode as string);
   if (!skus.length) return { skipped: 'no SKUs' };
 
@@ -327,8 +348,13 @@ async function dryRun(ctx: Ctx) {
   const knownSet = new Set((known ?? []).map(k => k.sku));
 
   const wouldCreate = [];
+  const rejected: Array<{ sku: string; product: string; why: string }> = [];
   let checked = 0;
   for (const p of products) {
+    for (const v of p.product.variants) {
+      const why = skuProblem(p.product, v);
+      if (why) rejected.push({ sku: v.sku, product: p.product.title, why });
+    }
     for (const item of buildItems(p.product, p.costs)) {
       const sku = item.skuCode as string;
       if (knownSet.has(sku)) continue;
@@ -348,7 +374,7 @@ async function dryRun(ctx: Ctx) {
 
   // Listings whose Shopify stock differs from Unicommerce's (a sign
   // Unicommerce isn't pushing to them).
-  const listings = products.flatMap(p => p.product.variants.filter(v => v.sku && SKU_RE.test(v.sku))
+  const listings = products.flatMap(p => p.product.variants.filter(v => v.sku && SKU_RE.test(v.sku) && !skuProblem(p.product, v))
     .map(v => ({ id: listingId(p.product.id, v.id), sku: v.sku, product: p.product.title, status: p.status, quantity: v.quantity ?? 0 })));
   const stock: Record<string, { available: number }> = {};
   const skus = [...new Set(listings.map(l => l.sku))];
@@ -358,7 +384,7 @@ async function dryRun(ctx: Ctx) {
     .map(l => ({ sku: l.sku, product: l.product, status: l.status, listing: l.id, shopify: l.quantity, unicommerce: stock[l.sku]?.available ?? null }));
 
   return {
-    live_products: products.length, skus_checked: checked, would_create: wouldCreate, batches_that_would_be_added: batches,
+    live_products: products.length, skus_checked: checked, rejected_skus: rejected, would_create: wouldCreate, batches_that_would_be_added: batches,
     listings: listings.length, stock_mismatches: mismatches,
   };
 }
