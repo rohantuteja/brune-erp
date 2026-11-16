@@ -1357,10 +1357,12 @@ export function useAppData({ showToast }) {
     // Block if removing this entry would make any size's cut total fall below what's already issued
     const newPiecesPreview = recalcRunPieces(run.entries.filter(e => e.id !== entryId), run.pieces);
     const newCutMap = new Map(newPiecesPreview.map(p => [p.size, p.quantity]));
-    // Also account for custom sizes that may vanish entirely after deletion
+    // Also account for custom sizes that may vanish entirely after deletion.
+    // Scope to THIS run only: a style code can have many runs, and counting batches
+    // issued from earlier runs of the same style would wrongly block the delete.
     const issuedBySize = new Map();
     productionBatches
-      .filter(b => b.run_id === runId || b.style_code === run.style_code)
+      .filter(b => b.run_id === runId)
       .forEach(b => {
         Object.entries(b.issued_sizes || {}).forEach(([size, qty]) => {
           issuedBySize.set(size, (issuedBySize.get(size) || 0) + qty);
