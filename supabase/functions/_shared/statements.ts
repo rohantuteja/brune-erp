@@ -86,17 +86,16 @@ const xmlText = (s: string) => s.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.f
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 const colIndex = (ref: string) => [...ref.replace(/\d+/g, '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
 
-/** The first worksheet of an .xlsx file as rows of strings (empty cells are ''). */
-export async function xlsxRows(bytes: Uint8Array): Promise<string[][]> {
-  const parts = await unzip(bytes);
-  const dec = new TextDecoder();
+const sharedStrings = (parts: Map<string, Uint8Array>): string[] => {
   const shared: string[] = [];
   const ss = parts.get('xl/sharedStrings.xml');
-  if (ss) for (const si of dec.decode(ss).matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) shared.push(xmlText([...si[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join('')));
-  const sheetName = [...parts.keys()].filter(k => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))[0];
-  if (!sheetName) throw new Error('no worksheet in the file');
+  if (ss) for (const si of new TextDecoder().decode(ss).matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) shared.push(xmlText([...si[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join('')));
+  return shared;
+};
+
+const sheetRows = (xml: string, shared: string[]): string[][] => {
   const rows: string[][] = [];
-  for (const row of dec.decode(parts.get(sheetName)!).matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+  for (const row of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
     const cells: string[] = [];
     for (const c of row[1].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
       const attrs = c[1], body = c[2] ?? '';
@@ -112,6 +111,37 @@ export async function xlsxRows(bytes: Uint8Array): Promise<string[][]> {
     rows.push(Array.from(cells, v => v ?? ''));
   }
   return rows;
+};
+
+/** The first worksheet of an .xlsx file as rows of strings (empty cells are ''). */
+export async function xlsxRows(bytes: Uint8Array): Promise<string[][]> {
+  const parts = await unzip(bytes);
+  const sheetName = [...parts.keys()].filter(k => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))[0];
+  if (!sheetName) throw new Error('no worksheet in the file');
+  return sheetRows(new TextDecoder().decode(parts.get(sheetName)!), sharedStrings(parts));
+}
+
+/** Every worksheet of an .xlsx file by its name, as rows of strings (empty cells are ''). */
+export async function xlsxSheets(bytes: Uint8Array): Promise<Map<string, string[][]>> {
+  const parts = await unzip(bytes);
+  const dec = new TextDecoder();
+  const book = parts.get('xl/workbook.xml'), rels = parts.get('xl/_rels/workbook.xml.rels');
+  if (!book || !rels) throw new Error('no workbook in the file');
+  const target = new Map<string, string>();
+  for (const r of dec.decode(rels).matchAll(/<Relationship\b([^>]*?)\/?>/g)) {
+    const id = /\bId="([^"]*)"/.exec(r[1])?.[1], to = /\bTarget="([^"]*)"/.exec(r[1])?.[1];
+    if (id && to) target.set(id, to);
+  }
+  const shared = sharedStrings(parts);
+  const out = new Map<string, string[][]>();
+  for (const sh of dec.decode(book).matchAll(/<sheet\b([^>]*?)\/?>/g)) {
+    const name = /\bname="([^"]*)"/.exec(sh[1])?.[1], rid = /\br:id="([^"]*)"/.exec(sh[1])?.[1];
+    const to = rid ? target.get(rid) : undefined;
+    if (!name || !to) continue;
+    const xml = parts.get(to.startsWith('/') ? to.slice(1) : `xl/${to}`);
+    if (xml) out.set(xmlText(name), sheetRows(dec.decode(xml), shared));
+  }
+  return out;
 }
 
 // ── Bank statement ───────────────────────────────────────────────────────────────────────────

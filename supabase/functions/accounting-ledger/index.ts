@@ -14,8 +14,8 @@
 //   GoKwik        its settlement report (gokwik_payments, uploaded by hand): what it paid out per order, its fee and the GST on it
 // and, for Myntra orders (channel MYNTRAPPMP, which live only in Unicommerce): the order, its sale invoice and its
 // return invoices. Myntra is a marketplace: the invoice is to the end customer (B2C), but Myntra collects the payment and
-// pays us later, so those orders sit on a "Myntra receivable" clearing account and stay open until its settlement is
-// matched (later). A Myntra order enters the ledger once Unicommerce has invoiced it.
+// pays us later, so those orders sit on a "Myntra receivable" clearing account and stay open until its payout is
+// booked (myntra_settlement_lines, proved by a bank credit: docs/myntra-settlements.md). A Myntra order enters the ledger once Unicommerce has invoiced it.
 // then _shared/order-facts.ts turns that into facts and _shared/ledger.ts into entries.
 // The rules and their tests: docs/accounting-ledger.md.
 //
@@ -53,7 +53,8 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { buildFacts, buildMyntraFacts, istDate, type RawInputs } from '../_shared/order-facts.ts';
-import { buildOrderLedger } from '../_shared/ledger.ts';
+import { buildOrderLedger, type MyntraSettlement } from '../_shared/ledger.ts';
+import { settlementFacts, settlementFingerprint, type BankCredit, type SettlementLine } from '../_shared/myntra-settlement.ts';
 import { decideTick, ledgerRow } from '../_shared/ledger-store.ts';
 import { ucErrorText, ucPost } from '../_shared/unicommerce.ts';
 import { CORS, type Ctx as BaseCtx, cronKeyValid, gql, json, loadCtx, requireAdmin, secrets, setting, sleep } from '../_shared/shopify-admin.ts';
@@ -306,6 +307,19 @@ async function startRun(ctx: Ctx, kind: 'full' | 'incremental' | 'manual') {
       if (r.channel === 'myntra' && r.channel_ref) myntra.add(String(r.channel_ref));
       else if (r.order_id != null) ids.add(Number(r.order_id));
     }
+    // Myntra orders whose payouts a bank credit now proves (or whose payout lines changed) are read again even if the order is complete: a
+    // returned order with its credit note is complete before Myntra's money is booked, and its bank, fee, TCS and TDS entries are new.
+    // And an order that still holds payouts the reports no longer prove (a report was taken back) is read again to drop them.
+    try {
+      const paid = await myntraSettlements(ctx, cutoff);
+      const names = [...paid.keys()];
+      for (let i = 0; i < names.length; i += 100) {
+        const { data: held } = await ctx.admin.from('ledger_orders').select('order_name, channel_ref, facts').eq('channel', 'myntra').in('order_name', names.slice(i, i + 100));
+        for (const r of held ?? []) if (r.channel_ref && settlementFingerprint(r.facts?.myntraSettlements) !== settlementFingerprint(paid.get(String(r.order_name)))) myntra.add(String(r.channel_ref));
+      }
+      const { data: booked } = await ctx.admin.from('ledger_orders').select('order_name, channel_ref').eq('channel', 'myntra').not('facts->myntraSettlements', 'is', null);
+      for (const r of booked ?? []) if (r.channel_ref && !paid.has(String(r.order_name))) myntra.add(String(r.channel_ref));
+    } catch (err) { myntraError = myntraError ?? (err instanceof Error ? err.message : String(err)); }
     // Myntra orders: a full run reads every one since Myntra went live in Unicommerce; an incremental run those changed since the last run.
     const myntraFrom = await setting(ctx.admin, 'myntra_ledger_from', '2026-09-20');
     // A Unicommerce problem finding Myntra orders must not stop the Shopify orders: it is recorded on the run instead.
@@ -417,7 +431,30 @@ async function sharedInputs(ctx: Ctx) {
   const edge = async (asc: boolean) => (await ctx.admin.from('gokwik_payments').select('txn_date').order('txn_date', { ascending: asc }).limit(1)).data?.[0]?.txn_date as string | undefined;
   const [from, to] = [await edge(true), await edge(false)];
   const gatewayCoverage = from && to ? { from, to } : undefined;
-  return { cutoff, sellerState, ucFrom, invoiceAlertDays, today, rp, reversalIds, adjustments, gatewayCoverage };
+  const myntra = await myntraSettlements(ctx, cutoff);
+  return { cutoff, sellerState, ucFrom, invoiceAlertDays, today, rp, reversalIds, adjustments, gatewayCoverage, myntra };
+}
+
+// Myntra's payouts for the orders: the lines of the settlement reports (myntra_settlement_lines), by invoice number, for every payout a
+// bank credit proves (same UTR in the narration, same total to the paisa) dated on or after the start date. A payout that is not in
+// the bank statement yet, or whose total differs, books nothing: its orders stay awaiting settlement. Read once per run.
+async function myntraSettlements(ctx: Ctx, cutoff: string) {
+  const all = async (table: string, columns: string, scope: (q: any) => any) => {
+    const out: any[] = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await scope(ctx.admin.from(table).select(columns)).order('id').range(from, from + 999);
+      if (error) throw new Error(`${table}: ${error.message}`);
+      out.push(...(data ?? []));
+      if (!data || data.length < 1000) break;
+    }
+    return out;
+  };
+  const lines = (await all('myntra_settlement_lines', 'id, utr, settled_on, invoice, line_id, order_ref, stream, dir, product, commission, fee, tcs, tds, net', q => q))
+    .map(r => ({ ...r, product: Number(r.product), commission: Number(r.commission), fee: Number(r.fee), tcs: Number(r.tcs), tds: Number(r.tds), net: Number(r.net) })) as SettlementLine[];
+  if (!lines.length) return new Map<string, MyntraSettlement[]>();
+  const banks = (await all('finance_lines', 'id, txn_date, credit, remarks', q => q.gt('credit', 0).ilike('remarks', '%MYNTRA DESIGNS%')))
+    .map(b => ({ id: Number(b.id), txn_date: String(b.txn_date), credit: Number(b.credit), remarks: String(b.remarks) })) as BankCredit[];
+  return settlementFacts(lines, banks, cutoff).facts;
 }
 
 async function process(ctx: Ctx, orders: any[], shared?: Shared) {
@@ -520,6 +557,8 @@ async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll 
     }
     if (!uc?.order) continue;
     const built = buildMyntraFacts({ sellerState: shared.sellerState, today: shared.today, bookFrom: shared.cutoff, uc });
+    const paid = shared.myntra.get(built.facts.order);          // Myntra's payouts for this order, proved by the bank (an order not invoiced yet has none)
+    if (paid) built.facts.myntraSettlements = paid;
     if (!built.facts.waiting) cleared.push(code);
     if (built.ignore && !keepAll) continue;
     results.push({ order: built.facts.order || code, orderId: null, facts: built.facts, notes: built.notes, skip: built.skip ?? built.ignore, ledger: buildOrderLedger(built.facts, { cutoff: shared.cutoff, today: shared.today, requireState: true, invoiceAlertDays: shared.invoiceAlertDays }) });

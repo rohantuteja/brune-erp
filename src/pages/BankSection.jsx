@@ -9,8 +9,8 @@ import { DateRange, Pagination, Collapsible, SortTh, StatCard, FilterChips, Pill
 import { useDeleteFlow, DeleteButton, DeletionLog } from '../components/UploadDelete';
 import { RefreshCw, Upload, FileSpreadsheet, Search, X, Download, Info, Landmark, Tags, ListChecks, CheckCircle2, AlertCircle, Undo2, Check, History, StickyNote } from 'lucide-react';
 
-// Analytics → Bank & card (admin only). Upload the bank statement (Excel), the credit card statement (PDF) and GoKwik's
-// settlement report (CSV); every line is matched to what it is, and the rest is filed by a person under a bucket.
+// Analytics → Bank & card (admin only). Upload the bank statement (Excel), the credit card statement (PDF), GoKwik's
+// settlement report (CSV) and Myntra's settlement report (Excel or CSV); every line is matched to what it is, and the rest is filed by a person under a bucket.
 // Rules and design: docs/bank-reconciliation.md. Nothing here posts to Tally.
 
 const START_DATE = '2026-10-01';       // app_settings.accounting_start_date: the books before it are closed
@@ -129,8 +129,9 @@ function UploadPanel({ accounts, onDone }) {
   const input = useRef(null);
 
   const account = accounts.find(a => a.id === target);
-  const accept = target === 'gokwik' ? '.csv' : account?.kind === 'card' ? '.pdf' : account?.kind === 'bank' ? '.xlsx' : '.xlsx,.pdf,.csv';
+  const accept = target === 'gokwik' ? '.csv' : target === 'myntra' ? '.xlsx,.csv' : account?.kind === 'card' ? '.pdf' : account?.kind === 'bank' ? '.xlsx' : '.xlsx,.pdf,.csv';
   const hint = target === 'gokwik' ? 'GoKwik’s rawSettlementReport (CSV). It proves each prepaid payout in the bank.'
+    : target === 'myntra' ? 'Myntra’s monthly settled report (Excel, after month end) or its payment details report (CSV, up to 31 days of orders). Both are read the same way; a payout is booked once its bank credit is in the statement.'
     : account?.kind === 'card' ? 'The card statement PDF, as the bank sends it.'
     : account?.kind === 'bank' ? 'The bank’s detailed statement in Excel (.xlsx). Overlapping uploads are fine: lines already stored are kept.'
     : 'Choose what you are uploading first.';
@@ -140,8 +141,11 @@ function UploadPanel({ accounts, onDone }) {
     if (file.size > MAX_UPLOAD_BYTES) { setResult({ ok: false, title: 'That file is too large', error: `Files up to ${MAX_UPLOAD_BYTES / 1024 / 1024} MB are accepted.` }); return; }
     setBusy(true); setResult(null);
     try {
+      const isExcel = /\.xlsx$/i.test(file.name);
       const body = target === 'gokwik'
         ? { action: 'gokwik', filename: file.name, csv: await file.text() }
+        : target === 'myntra'
+        ? { action: 'myntra', filename: file.name, ...(isExcel ? { data: toBase64(new Uint8Array(await file.arrayBuffer())) } : { csv: await file.text() }) }
         : { action: 'statement', account_id: target, filename: file.name, data: toBase64(new Uint8Array(await file.arrayBuffer())) };
       const { ok, json } = await callImport(body);
       if (!ok) { setResult({ ok: false, title: 'Nothing was imported', error: json.error || 'The upload failed', checks: json.checks }); return; }
@@ -152,6 +156,12 @@ function UploadPanel({ accounts, onDone }) {
           `${json.payments} payments (${json.new_payments} new), in ${json.payouts} bank transfers worth ${inr(json.to_bank)}.`,
           json.settled_from ? `Settled ${fmtDate(json.settled_from)} to ${fmtDate(json.settled_to)}.` : null,
           matchingLine(json.matching)].filter(Boolean) });
+      } else if (target === 'myntra') {
+        setResult({ ok: true, title: 'Myntra report imported', checks: json.checks, payouts: json.payout_list, lines: [
+          `${json.lines} payout lines (${json.new_lines} new) in ${json.payouts} bank transfers worth ${inr(json.to_bank)}${json.settled_from ? `, settled ${fmtDate(json.settled_from)} to ${fmtDate(json.settled_to)}` : ''}.`,
+          json.tied === json.payouts ? `All ${json.payouts} transfers are in the bank statement and agree to the paisa: they are booked in the ledger.`
+            : `${json.tied} of ${json.payouts} transfers are proved by a bank credit and booked.${json.not_in_bank ? ` ${json.not_in_bank} not in the bank statement yet (upload the statement that covers them).` : ''}${json.differs ? ` ${json.differs} ${json.differs === 1 ? 'differs' : 'differ'} from the bank credit: the report may not hold every line of ${json.differs === 1 ? 'that transfer' : 'those transfers'} (upload the monthly settled report too).` : ''}`,
+          matchingLine(json.matching)].filter(Boolean) });
       } else {
         setResult({ ok: true, title: `${json.account} imported`, checks: json.checks, lines: [
           `${fmtDate(json.period_from)} to ${fmtDate(json.period_to)}: ${json.line_count} lines, ${json.new_lines} new${json.duplicate_lines ? `, ${json.duplicate_lines} already stored` : ''}.`,
@@ -161,6 +171,8 @@ function UploadPanel({ accounts, onDone }) {
       onDone();
       // A GoKwik report decides which orders are paid out: recalculate the ledger now, without being asked (a bank statement does not change it).
       if (target === 'gokwik' && !json.already_imported) refreshLedgerNow('the GoKwik upload');
+      // Likewise a Myntra report: the payouts it proves settle the orders in the ledger.
+      if (target === 'myntra') refreshLedgerNow('the Myntra upload');
     } catch (err) {
       setResult({ ok: false, title: 'Nothing was imported', error: err.message || String(err) });
     } finally { setBusy(false); }
@@ -175,6 +187,7 @@ function UploadPanel({ accounts, onDone }) {
             <option value="">Choose…</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.name} statement</option>)}
             <option value="gokwik">GoKwik settlement report</option>
+            <option value="myntra">Myntra settlement report</option>
           </select>
         </label>
         <label className="block text-xs text-stone-600 min-w-0">
@@ -194,8 +207,37 @@ function UploadPanel({ accounts, onDone }) {
           {result.error && <div className="mt-0.5">{result.error}</div>}
           {(result.lines || []).map((t, i) => <div key={i} className="mt-0.5">{t}</div>)}
           <CheckList checks={result.checks} />
+          {result.payouts?.length > 0 && <MyntraPayouts payouts={result.payouts} />}
         </div>
       )}
+    </div>
+  );
+}
+
+const PAYOUT_STATE = { tied: ['In the bank, booked', 'text-emerald-800'], differs: ['Does not match its bank credit', 'text-red-700'], not_in_bank: ['Not in the bank statement yet', 'text-amber-800'] };
+function MyntraPayouts({ payouts }) {
+  return (
+    <div className="mt-2 overflow-x-auto bg-white/70 rounded border border-stone-200">
+      <table className="w-full min-w-[520px] text-[11px] text-stone-800">
+        <thead><tr className="text-left text-stone-500 border-b border-stone-200">
+          <th className="py-1 px-2 font-medium">Settled</th><th className="py-1 px-2 font-medium">UTR</th><th className="py-1 px-2 font-medium text-right">Orders</th>
+          <th className="py-1 px-2 font-medium text-right">Report total</th><th className="py-1 px-2 font-medium">Bank</th>
+        </tr></thead>
+        <tbody>
+          {payouts.map(q => {
+            const [label, tone] = PAYOUT_STATE[q.state] || [q.state, ''];
+            return (
+              <tr key={q.utr} className="border-b border-stone-100 last:border-0">
+                <td className="py-1 px-2 whitespace-nowrap">{fmtDate(q.settled_on)}</td>
+                <td className="py-1 px-2 font-mono text-[10px] break-all">{q.utr.split('/').pop()}</td>
+                <td className="py-1 px-2 text-right tabular-nums">{q.orders}</td>
+                <td className="py-1 px-2 text-right tabular-nums whitespace-nowrap">{inr(q.net)}</td>
+                <td className={`py-1 px-2 ${tone}`}>{label}{q.state === 'differs' && q.diff != null ? `: the bank credit is ${inr(Math.abs(q.diff))} ${q.diff < 0 ? 'less' : 'more'}` : ''}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -204,7 +246,7 @@ const rememberedText = (payee, note) => payee && note ? ' and remembered the pay
 const matchingLine = (m) => m ? `Matching now: ${m.matched} matched, ${m.suggested} suggested, ${m.needs_review} need review, ${m.ignored} need no entry${m.moved ? `; ${m.moved} open line${m.moved === 1 ? ' was' : 's were'} moved to another bucket (see History on a line)` : ''}.` : null;
 
 // ── Statements already uploaded ─────────────────────────────────────────────────────────────────
-function StatementsList({ statements, accountName, gokwik, gokwikReports, flow, onDeleteStatement, onDeleteGokwik, logKey }) {
+function StatementsList({ statements, accountName, gokwik, gokwikReports, myntraReports, flow, onDeleteStatement, onDeleteGokwik, onDeleteMyntra, logKey }) {
   return (
     <div className="space-y-3">
       {flow.panel}
@@ -258,7 +300,29 @@ function StatementsList({ statements, accountName, gokwik, gokwikReports, flow, 
           GoKwik report: {gokwik.count ? `${gokwik.count} payments loaded${gokwik.latest ? `, settled up to ${fmtDate(gokwik.latest)}` : ''}.` : 'not uploaded yet, so prepaid payouts cannot be proved.'}
         </div>
       )}
-      <DeletionLog kinds={['statement', 'gokwik_report']} refreshKey={logKey} />
+      {myntraReports.length > 0 ? (
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full min-w-[560px] text-xs">
+            <thead><tr className="text-left text-stone-500 border-b border-stone-200">
+              <th className="py-1.5 px-2 font-medium">Myntra report</th><th className="py-1.5 px-2 font-medium text-right">Lines</th>
+              <th className="py-1.5 px-2 font-medium">Settled</th><th className="py-1.5 px-2 font-medium text-right">To the bank</th>
+            </tr></thead>
+            <tbody>
+              {myntraReports.map(m => (
+                <tr key={m.source_file} className="border-b border-stone-100 align-top">
+                  <td className="py-1.5 px-2"><div className="text-[11px] text-stone-700 truncate max-w-[18rem]" title={m.source_file}>{m.source_file}</div><div className="text-[11px] text-stone-500">{m.source_kind === 'settled_report' ? 'monthly settled report' : 'payment details report'}, uploaded {ago(m.imported_at)}</div><div className="mt-1 -ml-2"><DeleteButton onClick={() => onDeleteMyntra(m)} disabled={flow.busy} /></div></td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{m.lines}<div className="text-[11px] text-stone-500">{m.payouts} transfers</div></td>
+                  <td className="py-1.5 px-2 whitespace-nowrap text-stone-600">{fmtDate(m.settled_from)} – {fmtDate(m.settled_to)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{inr(m.net)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="text-[11px] text-stone-500">Myntra report: not uploaded yet, so Myntra’s payouts cannot be booked against its orders.</div>
+      )}
+      <DeletionLog kinds={['statement', 'gokwik_report', 'myntra_report']} refreshKey={logKey} />
     </div>
   );
 }
@@ -413,6 +477,7 @@ export default function BankSection({ showToast }) {
   const [lines, setLines] = useState([]);
   const [gokwik, setGokwik] = useState({ count: 0, latest: null });
   const [gokwikReports, setGokwikReports] = useState([]);
+  const [myntraReports, setMyntraReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(() => new Set());
@@ -426,7 +491,7 @@ export default function BankSection({ showToast }) {
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      const [acc, bk, st, gc, gl, gr, nr] = await Promise.all([
+      const [acc, bk, st, gc, gl, gr, nr, mr] = await Promise.all([
         supabase.from('finance_accounts').select('id, name, kind, holder').order('name'),
         supabase.from('finance_buckets').select('name, kind, needs_bill, note, sort').order('sort'),
         supabase.from('finance_statements').select('id, account_id, filename, period_from, period_to, opening, closing, line_count, new_lines, duplicate_lines, checks, uploaded_by_name, uploaded_at').order('uploaded_at', { ascending: false }),
@@ -434,6 +499,7 @@ export default function BankSection({ showToast }) {
         supabase.from('gokwik_payments').select('settlement_date').not('settlement_date', 'is', null).order('settlement_date', { ascending: false }).limit(1),
         supabase.rpc('gokwik_reports'),
         supabase.from('finance_note_rules').select('note, bucket, origin').order('note'),
+        supabase.rpc('myntra_reports'),
       ]);
       for (const r of [acc, bk, st]) if (r.error) throw new Error(r.error.message);
       const all = [];
@@ -448,6 +514,7 @@ export default function BankSection({ showToast }) {
       setAccounts(acc.data || []); setBuckets(bk.data || []); setStatements(st.data || []); setLines(all);
       setGokwik({ count: gc.count || 0, latest: gl.data?.[0]?.settlement_date ?? null });
       setGokwikReports(gr.error ? [] : gr.data || []);
+      setMyntraReports(mr.error ? [] : mr.data || []);
       setNotes(nr.error ? [] : nr.data || []);
     } catch (err) {
       setError('Could not load the bank lines'); showToast?.('Could not load the bank lines', 'error');
@@ -457,9 +524,10 @@ export default function BankSection({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   // Taking an upload back: a dry run is shown for confirmation first (see components/UploadDelete.jsx).
-  const flow = useDeleteFlow({ call: callImport, showToast, onDeleted: async (json) => { setSelected(new Set()); await load(); if (json?.kind === 'gokwik_report') refreshLedgerNow('removing the GoKwik report'); } });
+  const flow = useDeleteFlow({ call: callImport, showToast, onDeleted: async (json) => { setSelected(new Set()); await load(); if (json?.kind === 'gokwik_report') refreshLedgerNow('removing the GoKwik report'); if (json?.kind === 'myntra_report') refreshLedgerNow('removing the Myntra report'); } });
   const deleteStatement = (st) => flow.start({ action: 'delete_statement', statement_id: st.id });
   const deleteGokwik = (g) => flow.start({ action: 'delete_gokwik', source_file: g.source_file });
+  const deleteMyntra = (m) => flow.start({ action: 'delete_myntra', source_file: m.source_file });
 
   const accountName = useCallback((id) => accounts.find(a => a.id === id)?.name ?? '—', [accounts]);
 
@@ -603,8 +671,8 @@ export default function BankSection({ showToast }) {
 
       <Collapsible id="bank-help" title="How this page works" icon={<Info className="w-4 h-4 text-stone-400" />}>
         <ul className="list-disc pl-5 space-y-1 text-xs text-stone-600">
-          <li>Upload the ICICI statement (Excel), the Kotak card statement (PDF) and GoKwik’s settlement report (CSV). A file that does not add up is refused, and uploading the same lines twice never doubles them.</li>
-          <li>After a GoKwik report is uploaded (or taken back) the order ledger is recalculated automatically, so its payouts show on Analytics → Ledger within a couple of minutes; the progress is shown at the top of this page.</li>
+          <li>Upload the ICICI statement (Excel), the Kotak card statement (PDF), GoKwik’s settlement report (CSV) and Myntra’s settlement report (the monthly settled report in Excel, or the payment details report in CSV). A file that does not add up is refused, and uploading the same lines twice never doubles them.</li>
+          <li>After a GoKwik or Myntra report is uploaded (or taken back) the order ledger is recalculated automatically, so its payouts show on Analytics → Ledger within a couple of minutes; the progress is shown at the top of this page.</li>
           <li><b>Matched</b> lines are proved: a GoKwik or Velocity payout, a Meta invoice payment, or a payee you filed before. <b>Suggested</b> lines are the system’s guess; confirm or refile them. <b>Needs review</b> lines have no guess.</li>
           <li>When you file a line it is yours: re-matching never changes it. Nothing is remembered unless you tick it: <i>Remember payee</i> files this payee’s other open lines the same way, <i>Remember note</i> does the same for the note word you typed (“trims”, “tea”). The grey bar shows which other lines that would move before you file.</li>
           <li>The note you type on a payment says what it was for; the payee says who was paid. If your payee rule and the note disagree the line waits in <i>Needs review</i> with both reasons, and nothing is moved silently. Every automatic move is recorded: open <i>History</i> on a line.</li>
@@ -621,8 +689,8 @@ export default function BankSection({ showToast }) {
       </Collapsible>
 
       <Collapsible id="bank-statements" title="Statements uploaded" icon={<Landmark className="w-4 h-4 text-stone-400" />} count={statements.length}>
-        <StatementsList statements={statements} accountName={accountName} gokwik={gokwik} gokwikReports={gokwikReports} flow={flow}
-          onDeleteStatement={deleteStatement} onDeleteGokwik={deleteGokwik} logKey={statements.length + gokwikReports.length} />
+        <StatementsList statements={statements} accountName={accountName} gokwik={gokwik} gokwikReports={gokwikReports} myntraReports={myntraReports} flow={flow}
+          onDeleteStatement={deleteStatement} onDeleteGokwik={deleteGokwik} onDeleteMyntra={deleteMyntra} logKey={statements.length + gokwikReports.length + myntraReports.length} />
       </Collapsible>
 
       <Collapsible id="bank-scope" title="Dates and account" icon={<ListChecks className="w-4 h-4 text-stone-400" />} defaultOpen={wideScreen()}

@@ -40,6 +40,13 @@ export const GOODWILL = 'Goodwill credits';
 export const ROUND_OFF = 'ROUND OFF';
 export const GATEWAY_FEE = 'Payment Gateway Expenses';
 export const GST_INPUT_IGST = 'IGST Input  UP';
+// What Myntra takes out of a payout. The fixed fee posts to GATEWAY_FEE (its amount comes from each order's line, it is not always the same).
+export const MYNTRA_COMMISSION = 'Myntra Commission';
+export const MYNTRA_RETURN_FEE = 'Myntra Return Fees';
+// TCS and TDS are receivables the owner claims later; Tally has one ledger per financial year (April to March): "Tax Collected at source 26-27".
+export const fyLabel = (date: string) => { const y = Number(date.slice(0, 4)), start = Number(date.slice(5, 7)) >= 4 ? y : y - 1; return `${String(start).slice(2)}-${String(start + 1).slice(2)}`; };
+export const tcsLedger = (date: string) => `Tax Collected at source ${fyLabel(date)}`;
+export const tdsLedger = (date: string) => `Tax Deducted at source ${fyLabel(date)}`;
 const gatewayLedger = (name?: string) => /razorpay/i.test(name ?? '') ? RAZORPAY : GATEWAY;
 
 // The state the goods go to (the place of supply): on every customer-side voucher, decides IGST or CGST+SGST, and the B2C return is by state.
@@ -53,6 +60,41 @@ export type Waiting = {
   shipped?: boolean;              // a tracking number exists although there is no invoice
   cancelledInUnicommerce?: boolean;   // Unicommerce cancelled its copy of the order and Shopify did not
 };
+
+// One order's part of one Myntra payout (one NEFT, one UTR): its forward lines (paid to us) and reverse lines (taken back), the amounts
+// GST-inclusive as Myntra reports them, and `share`: the cents of the bank credit this line carries (forward +, reverse -; the shares of
+// a payout add up to the bank credit exactly).
+export type MyntraSettlement = {
+  utr: string;
+  date: string;                   // the bank credit's date
+  lines: Array<{ dir: 'forward' | 'reverse'; product: number; commission: number; fee: number; tcs: number; tds: number; share: number }>;
+};
+
+/** The lines of an order's entry for one payout, as [account, debit, credit]; null when a line does not add up (more than 5 paise out).
+ *  Forward: Dr bank share, fixed fee, commission, the GST on both, TCS, TDS  =  Cr what Myntra owed for the item.
+ *  Reverse: Dr what Myntra owed (again), return fee and its GST  =  Cr bank share (negative), commission and its GST, TCS, TDS.
+ *  Lines of one order in one payout are netted, so a returned order shows only what it cost: the money, TCS and TDS cancel and
+ *  are left off. The paisa the three-decimal figures leave over is put in the TCS line, so no round-off entry is needed. */
+export function settlementLines(s: MyntraSettlement): Array<[string, number, number]> | null {
+  const net = new Map<string, number>();                      // debit positive
+  const add = (account: string, amount: number) => net.set(account, Math.round(((net.get(account) ?? 0) + amount) * 100) / 100);
+  const split = (gross: number) => { const ex = Math.round(gross / 1.18 * 100) / 100; return { ex, gst: Math.round(gross * 100) / 100 - ex }; };
+  const rd = (n: number) => Math.round(n * 100) / 100;
+  for (const l of s.lines) {
+    const prod = rd(l.product), c = split(l.commission), f = split(l.fee), tcs = rd(l.tcs), tds = rd(l.tds);
+    const legs: Array<[string, number]> = l.dir === 'forward'
+      ? [[BANK, l.share], [GATEWAY_FEE, f.ex], [GST_INPUT_IGST, rd(f.gst + c.gst)], [MYNTRA_COMMISSION, c.ex], [tcsLedger(s.date), tcs], [tdsLedger(s.date), tds], [MYNTRA, -prod]]
+      : [[BANK, l.share], [MYNTRA_RETURN_FEE, f.ex], [GST_INPUT_IGST, rd(f.gst - c.gst)], [MYNTRA_COMMISSION, -c.ex], [tcsLedger(s.date), -tcs], [tdsLedger(s.date), -tds], [MYNTRA, prod]];
+    const off = rd(legs.reduce((sum, [, amount]) => sum + amount, 0));
+    if (Math.abs(off) > 0.05) return null;
+    for (const [account, amount] of legs) add(account, account === tcsLedger(s.date) ? amount - off : amount);
+  }
+  const order = [BANK, GATEWAY_FEE, MYNTRA_RETURN_FEE, MYNTRA_COMMISSION, GST_INPUT_IGST, tcsLedger(s.date), tdsLedger(s.date), MYNTRA];
+  return order.flatMap((account): Array<[string, number, number]> => {
+    const amount = net.get(account) ?? 0;
+    return Math.abs(amount) < 0.005 ? [] : [[account, amount > 0 ? amount : 0, amount < 0 ? -amount : 0]];
+  });
+}
 
 export type Facts = {
   order: string;                 // Shopify order number; for a Myntra order, its Unicommerce invoice number
@@ -80,6 +122,8 @@ export type Facts = {
   payments?: Array<{ date: string; amount: number; ref: string; gateway?: string }>;   // prepaid money taken by a gateway (Shopify's gateway name picks the Tally ledger)
   // What the gateway reports it paid out for this order (GoKwik's settlement report). Absent = not checked; [] = nothing paid out yet.
   gatewayPayouts?: Array<{ date: string; utr: string; gross: number; fee: number; tax: number; net: number; ref?: string }>;
+  // Myntra's payouts for this order, each proved by a bank credit (_shared/myntra-settlement.ts). Absent or [] = nothing paid out yet.
+  myntraSettlements?: MyntraSettlement[];
   storeCreditUsed?: Array<{ date: string; amount: number }>;         // store credit spent at checkout
   approved?: Array<{ kind: 'goodwill_credit'; amount: number; reason: string; by: string }>;   // decisions a person made (ledger_adjustments)
   returns?: Array<{
@@ -98,19 +142,19 @@ export type Facts = {
 
 export type Entry = {
   date: string; voucher: string; account: string; debit: number; credit: number;
-  doc?: string; by: 'unicommerce' | 'erp' | 'shopify' | 'return_prime' | 'courier' | 'gateway';
+  doc?: string; by: 'unicommerce' | 'erp' | 'shopify' | 'return_prime' | 'courier' | 'gateway' | 'myntra';
   memo: string;
   part?: 'goods' | 'cod_charge' | 'return_fee';   // on GST SALES / GST SALES RETURN lines: which part of the sale this is
   qty?: number;                                   // on a goods line: the pieces
 };
 export type Balancing = { type: 'credit_note_goods' | 'credit_note_cod_fee' | 'retained_cod_fee_invoice' | 'return_fee_invoice'; amount: number; reason: string };
 export type Exception = {
-  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'awaiting_settlement' | 'awaiting_payout' | 'payout_missing' | 'payout_differs' | 'bad_facts'
+  type: 'store_credit_differs' | 'unexplained_residual' | 'awaiting_return' | 'in_transit' | 'rto_on_the_way' | 'refund_due' | 'remittance_overdue' | 'remittance_differs' | 'awaiting_settlement' | 'awaiting_clawback' | 'awaiting_payout' | 'payout_missing' | 'payout_differs' | 'bad_facts'
     | 'no_state' | 'cancelled_after_payment' | 'refund_not_booked' | 'invoice_overdue';
   amount: number; reason: string;
 };
-// awaiting_return, in_transit, awaiting_settlement and awaiting_payout are normal stages of an order that is not finished yet.
-const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit', 'rto_on_the_way', 'awaiting_settlement', 'awaiting_payout']);
+// awaiting_return, in_transit, awaiting_settlement, awaiting_clawback and awaiting_payout are normal stages of an order that is not finished yet.
+const OPEN_STAGES = new Set<Exception['type']>(['awaiting_return', 'in_transit', 'rto_on_the_way', 'awaiting_settlement', 'awaiting_clawback', 'awaiting_payout']);
 export type OrderLedger = {
   entries: Entry[]; exportable: Entry[]; balancing: Balancing[]; exceptions: Exception[];
   net: number;          // whole life; must be 0
@@ -213,6 +257,14 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
     voucher(g.date, 'payout', 'gateway', g.utr, `GoKwik payout ${g.utr}`, [
       [BANK, net, 0], [GATEWAY_FEE, g.fee, 0], [GST_INPUT_IGST, g.tax, 0], [GATEWAY, 0, g.gross]]);
   }
+  // Myntra paying out: what it paid us for this order and what it took back, net of its fees, commission, TCS and TDS, on the day the
+  // bank credit arrived. The bank leg is this order's share of the transfer (negative when it only cost money). Amounts are what Myntra's
+  // report says, not what we expect: nothing is judged, the money is booked as it moved.
+  for (const m of f.myntraSettlements ?? []) {
+    const legs = settlementLines(m);
+    if (!legs) { exceptions.push({ type: 'bad_facts', amount: 0, reason: `Myntra's payout ${m.utr} does not add up for this order, so it is not booked` }); continue; }
+    voucher(m.date, 'settlement', 'myntra', m.utr, `Myntra payout ${m.utr}`, legs.map(([account, debit, credit]): Line => [account, debit, credit]));
+  }
   for (const s of f.storeCreditUsed ?? []) {
     voucher(s.date, 'store_credit_used', 'shopify', undefined, 'store credit spent at checkout', [[STORE_CREDIT, s.amount, 0], [ctrl, 0, s.amount]]);
   }
@@ -309,6 +361,8 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
   }
 
   // Does the order net to zero?
+  const myntraLines = (f.myntraSettlements ?? []).flatMap(m => m.lines);
+  const myntraPaid = myntraLines.some(l => l.dir === 'forward'), myntraTookBack = myntraLines.some(l => l.dir === 'reverse');
   const net = r2(entries.filter(e => e.account === ctrl).reduce((s, e) => s + e.debit - e.credit, 0));
   if (Math.abs(net) > 0.01 && !exceptions.length) {
     const waiting = (f.returns ?? []).filter(r => r.pending);
@@ -316,6 +370,9 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       const days = Math.max(0, ...waiting.map(r => r.refundedOn && opts.today ? Math.round((Date.parse(opts.today) - Date.parse(r.refundedOn)) / 86_400_000) : 0));
       exceptions.push({ type: 'awaiting_return', amount: net,
         reason: `waiting for the returned parcel${days >= 1 ? ` (customer refunded ${days} day${days === 1 ? '' : 's'} ago)` : ''}; credit notes are issued once it is back` });
+    } else if (net < 0 && f.channel === 'myntra' && myntraPaid && !myntraTookBack) {
+      // The parcel is back and the credit note issued, but Myntra paid for the sale and has not taken that money back yet (it does so in a later payout).
+      exceptions.push({ type: 'awaiting_clawback', amount: net, reason: `the returned parcel is back and the credit note issued, but Myntra paid for this sale and has not taken ${Math.abs(net).toFixed(2)} back yet` });
     } else if (net < 0 && (f.returns ?? []).some(r => r.kind === 'rto')) {
       // The parcel came back and the sale is reversed, but nothing was given back to the customer.
       exceptions.push({ type: 'refund_due', amount: net, reason: `the parcel was returned to origin and the sale reversed, but the customer's payment of ${Math.abs(net).toFixed(2)} has not been refunded or credited` });
@@ -324,6 +381,9 @@ export function buildOrderLedger(f: Facts, opts: { cutoff: string; today?: strin
       const days = f.rtoOnTheWay.since && opts.today ? Math.max(0, Math.round((Date.parse(opts.today) - Date.parse(f.rtoOnTheWay.since)) / 86_400_000)) : 0;
       exceptions.push({ type: 'rto_on_the_way', amount: net,
         reason: `returning to origin (${f.rtoOnTheWay.state === 'initiated' ? 'RTO initiated' : 'RTO in transit'}${f.rtoOnTheWay.since ? ` ${days} day${days === 1 ? '' : 's'} ago` : ''}); the sale is reversed when the parcel is back` });
+    } else if (net > 0 && f.channel === 'myntra' && myntraTookBack) {
+      // Myntra paid for the sale and took the money back for a return; the credit note comes when the parcel is back.
+      exceptions.push({ type: 'awaiting_return', amount: net, reason: `Myntra took this money back for a return; the credit note is issued once the returned parcel is back` });
     } else if (net > 0 && f.channel === 'myntra') {
       // Myntra pays about 15 days after delivery, net of its fees, TCS and TDS: until that settlement is matched the sale is owed.
       exceptions.push({ type: 'awaiting_settlement', amount: net, reason: `Myntra collected ${net.toFixed(2)} for this sale and has not paid us yet (about 15 days after delivery, net of its fees, TCS and TDS)` });

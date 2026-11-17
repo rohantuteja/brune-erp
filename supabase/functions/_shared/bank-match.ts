@@ -15,6 +15,7 @@
 // Lines a person has decided are never touched (the caller leaves them out).
 
 import { VELOCITY_HANDLE, VELOCITY_RECHARGE_BUCKET, type TopUp } from './velocity-ledger.ts';
+import { utrKey } from './myntra-settlement.ts';
 
 export type Line = {
   key: string;                       // unique within the account
@@ -26,7 +27,7 @@ export type Line = {
   category?: string | null;          // card: the issuer's category
   section?: string | null;           // card: purchase | fee | credit
 };
-export type Payout = { source: 'gokwik' | 'velocity'; utr: string; date: string; amount: number; payments: number };
+export type Payout = { source: 'gokwik' | 'velocity' | 'myntra'; utr: string; date: string; amount: number; payments: number };
 export type VendorInvoice = { vendor: string; invoice_no: string; invoice_date: string; period: string | null; subtotal: number; tax: number; total: number };
 export type Rule = { id: number; match_type: 'payee' | 'contains'; pattern: string; bucket: string };
 // A note word ("trims") and where it goes. `learned`: the owner filed it himself (or taught it), so it is trusted (matched);
@@ -222,8 +223,11 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
   }
 
   const usedPayout = new Set<string>();
-  const payoutFor = (source: Payout['source'], amount: number, date: string) => {
-    const hit = ctx.payouts.filter(p => p.source === source && !usedPayout.has(p.utr) && near(p.amount, amount) && Math.abs(dayNum(p.date) - dayNum(date)) <= 3)
+  const payoutFor = (source: Payout['source'], amount: number, date: string, remarks = '') => {
+    const free = ctx.payouts.filter(p => p.source === source && !usedPayout.has(p.utr));
+    // A Myntra transfer names its UTR in the narration: that decides, and the amount must still agree. Otherwise amount and date.
+    const named = source === 'myntra' ? free.find(p => remarks.toUpperCase().replace(/[^A-Z0-9]/g, '').includes(utrKey(p.utr)) && near(p.amount, amount)) : undefined;
+    const hit = named ?? free.filter(p => near(p.amount, amount) && Math.abs(dayNum(p.date) - dayNum(date)) <= 3)
       .sort((a, b) => Math.abs(dayNum(a.date) - dayNum(date)) - Math.abs(dayNum(b.date) - dayNum(date)))[0];
     if (hit) usedPayout.add(hit.utr);
     return hit;
@@ -260,6 +264,12 @@ export function classify(lines: Line[], ctx: Ctx): Map<string, Classification> {
       const p = payoutFor('velocity', l.credit, l.txn_date);
       done(p ? result({ status: 'matched', kind: 'velocity_remittance', bucket: COD_BUCKET, match_ref: `UTR ${p.utr}`, reason: `Velocity paid ${p.payments} COD parcel${p.payments === 1 ? '' : 's'} (₹${p.amount.toFixed(2)}) in this transfer` }, null)
         : result({ status: 'suggested', kind: 'velocity_remittance', bucket: COD_BUCKET, reason: 'A credit from Velocity (White Wizard Technologies) that no COD payout in the ledger accounts for' }, null));
+      continue;
+    }
+    if (l.account_kind === 'bank' && l.credit > 0 && has(l.remarks, /MYNTRA DESIGNS/i)) {
+      const p = payoutFor('myntra', l.credit, l.txn_date, l.remarks);
+      done(p ? result({ status: 'matched', kind: 'myntra_payout', bucket: MYNTRA_BUCKET, match_ref: `UTR ${p.utr}`, reason: `Myntra paid ${p.payments} order line${p.payments === 1 ? '' : 's'} (₹${p.amount.toFixed(2)}) in this transfer, net of its fees, TCS and TDS and what customers returned` }, null)
+        : result({ status: 'suggested', kind: 'myntra_payout', bucket: MYNTRA_BUCKET, reason: 'A Myntra payout that no settlement report accounts for yet: upload the Myntra settlement report that covers it' }, null));
       continue;
     }
     if (l.account_kind === 'bank' && l.debit > 0 && has(l.remarks, /FACEBOOK|META PLATFORMS/i)) {

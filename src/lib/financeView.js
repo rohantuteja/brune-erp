@@ -65,7 +65,7 @@ export const signed = (l) => money(Number(l.credit) - Number(l.debit));
 /** Who or what put an undecided line under its bucket, in a few words (the reason says the rest). */
 const ORIGIN = {
   rule: 'Your payee rule', note: 'From the note you wrote', conflict: 'Your rule and the note disagree', unknown: 'Nothing explains it yet',
-  gokwik_payout: 'Proved by a GoKwik payout', velocity_remittance: 'Proved by a Velocity payout', velocity_recharge: 'Velocity wallet top-up', meta_invoice: 'Meta invoice',
+  gokwik_payout: 'Proved by a GoKwik payout', myntra_payout: 'Proved by a Myntra payout', velocity_remittance: 'Proved by a Velocity payout', velocity_recharge: 'Velocity wallet top-up', meta_invoice: 'Meta invoice',
   returned_payment: 'Cancelled out: returned', reversed_charge: 'Cancelled out: reversed', card_payment: 'Founder card payment',
   merchant: 'Recognised merchant', bank_charge: 'Bank charge', card_fee: 'Card fee', category: 'Card category', cash_deposit: 'Cash deposit', rtgs_in: 'Large transfer in',
 };
