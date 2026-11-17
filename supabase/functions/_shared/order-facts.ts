@@ -362,6 +362,19 @@ export type MyntraInputs = {
   };
 };
 
+/**
+ * The request that reads a return's invoice (the credit note) from Unicommerce. An RTO ("Courier Returned") has its invoice on the
+ * shipping package; a customer return has none there (INVOICE_NOT_GENERATED): its invoice belongs to its reverse pickup (RPxxxx).
+ */
+export function returnInvoiceRequest(r: { code?: unknown; type?: unknown }, packageCode: string): Record<string, unknown> {
+  return /customer/i.test(String(r?.type ?? '')) ? { reversePickupCode: String(r.code), return: true } : { shippingPackageCode: packageCode, return: true };
+}
+
+/** A cancelled Unicommerce order that has a received customer return with a return invoice: sold, then returned (see buildMyntraFacts). */
+export function returnedAfterSale(o: any): boolean {
+  return o?.status === 'CANCELLED' && (o.returns ?? []).some((r: any) => r?.statusCode !== 'CANCELLED' && !!r?.returnInvoiceDisplayCode);
+}
+
 export function buildMyntraFacts(inp: MyntraInputs): Built {
   const o = inp.uc.order;
   const notes: string[] = [];
@@ -383,7 +396,10 @@ export function buildMyntraFacts(inp: MyntraInputs): Built {
       notes: ['waiting for the Unicommerce invoice: nothing is booked until it exists'],
     };
   }
-  if (o.status === 'CANCELLED') return { facts: base, notes: ['cancelled: never a sale'], skip: 'cancelled' };
+  // Unicommerce cancels the whole order (and its item) once a customer return has been received: the return becomes COMPLETE and gets
+  // its return invoice. That order WAS invoiced, dispatched and delivered, so it stays a sale with a credit note (the invoice amounts
+  // are still read from the package). A cancelled order with no return invoice was never sold.
+  if (o.status === 'CANCELLED' && !returnedAfterSale(o)) return { facts: base, notes: ['cancelled: never a sale'], skip: 'cancelled' };
   if (!sale) return { facts: base, notes: [`invoice ${name} could not be read from Unicommerce`], ignore: 'invoice unreadable' };
 
   // ── The sale ───────────────────────────────────────────────────────────────
