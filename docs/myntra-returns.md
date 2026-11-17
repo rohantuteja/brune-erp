@@ -94,6 +94,28 @@ The velocity job treats the received piece as cancelled (the item is `CANCELLED`
 - A return received now is a November credit note for an October sale. The parcels came back in November (12-13 Nov), so that is also when they
   physically arrived.
 
+## The list of returns still on their way
+
+The four boxes on the panel are buttons: Received by the job (the table of what was received), Needs a person, Failed, will retry (the
+returns the job could not finish, with Retry and "I handled it in Unicommerce"), and Pieces with a return open (every return still on its
+way). The view is kept in the URL (`rview`, `rfilter`), so a link opens the same list. Until a view is chosen, what needs a person opens
+first, then what failed, then what was received.
+
+The open list comes from `myntra_open_returns` (migration 041), which every sweep keeps up to date: one row per return open in Unicommerce
+and not received (tracking, courier and AWB, pieces), written for every Myntra order the run read. A row goes when the return is received
+(by the job or by a person) or the order has no open piece any more. The list is oldest first, with the filters Customer pickups, RTOs and
+14+ days, and each order is named by its ledger invoice number with what the ledger still shows as owed on it.
+
+Unicommerce's order does not say when a return was opened, so `oms/return/get` is asked once per return (a customer return by its
+`reversePickupCode`, an RTO by its `shipmentCode`, which is its own code): `channelReturnCreatedDate` is the day Myntra opened it (Indian
+time, e.g. `2026-10-23 17:54:18`, checked against the delivery challan's epoch) and the customer's reason is on each item
+(`marketplaceReturnReason`). At most 40 of these are asked per run, so the first runs fill the whole list in; after that only a new return costs
+a call. "Out for" counts days since Myntra opened the return: amber from 14 days, red from 30.
+
+The list never stops the job: if its table cannot be read or written the returns that are back are still received, and the run's answer has
+a `list_error`. The count on the box comes from Unicommerce's pieces (`myntra_order_lines`); the list counts returns, so the two can differ
+by a run until the list catches up (the panel says so).
+
 ## Wrong or damaged pieces
 
 Handled by hand, as the owner decided. Analytics → Myntra → Myntra returns lists what was received with SKU and parcel number. To fix one: in
@@ -107,6 +129,9 @@ damaged return are separate and are the owner's to watch.
 3. Receive ONE RTO with `receive` and check it in Unicommerce and on the Myntra page (stock +1 for that SKU, return invoice, order nets to zero in
    the ledger after the next run). Then ONE customer return the same way. (Both done 17 Nov 2026, see above.)
 4. Switch to live with a small `myntra_returns_limit`, watch a run, raise the limit.
+5. The list (v2): apply migration 041, deploy `myntra-returns` v2, then merge the frontend. The next scheduled run (17 or 47 past the hour)
+   starts filling the list, 40 returns' dates per run, so it is complete after about three runs. The panel's "Check now (dry)" does not write the
+   list (a dry check changes nothing). Until the list has rows the panel says it fills in at the next run.
 Each Unicommerce call goes through `uc_post`; the live check of a run is the function's own JSON answer (`received`, `failed`, `unverified`).
 
 ## Not covered

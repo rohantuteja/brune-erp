@@ -124,6 +124,79 @@ export function returnInvoiceOf(so: any, code: string): string | null {
   return rec?.returnInvoiceDisplayCode ? String(rec.returnInvoiceDisplayCode) : null;
 }
 
+// ── The list of returns still on their way ────────────────────────────────────────────────────
+// Analytics → Myntra → Myntra returns → "Pieces with a return open". Every sweep keeps one row per open return in
+// myntra_open_returns (tracking, parcel, pieces); when Myntra opened it and why the customer sent it back come from
+// Unicommerce's oms/return/get, asked once per return (the answer does not change) so a run stays short.
+
+/** What to ask oms/return/get for one return: a customer return by its reverse pickup code, an RTO by its shipment code (its own code). */
+export function detailRequest(ret: Pick<OpenReturn, 'code' | 'kind'>): Record<string, string> {
+  return ret.kind === 'customer' ? { reversePickupCode: ret.code } : { shipmentCode: ret.code };
+}
+
+/** Unicommerce writes these dates as 'YYYY-MM-DD HH:MM:SS' in Indian time (checked against the delivery challan's epoch, 17 Nov 2026). */
+export function istToIso(s: unknown): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(s ?? '').trim());
+  if (!m) return null;
+  const ms = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+05:30`);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+export type ReturnDetail = { openedAt: string | null; reason: string | null };
+
+/** The date Myntra opened the return (else Unicommerce's own) and the customer's reason, from an oms/return/get answer. */
+export function parseDetail(resp: any): ReturnDetail | null {
+  if (!resp?.successful) return null;
+  const v = resp.returnSaleOrderValue ?? {};
+  const reasons = [...new Set<string>((resp.returnSaleOrderItems ?? [])
+    .map((i: any) => String(i?.marketplaceReturnReason ?? '').trim()).filter(Boolean))];
+  const rto = String(v.rtoReason ?? '').trim();
+  return {
+    openedAt: istToIso(v.channelReturnCreatedDate) ?? istToIso(v.returnCreatedDate),
+    reason: reasons.length ? reasons.join('; ').slice(0, 300) : rto || null,
+  };
+}
+
+export type OpenRow = {
+  return_code: string; order_code: string; kind: ReturnKind; skus: string[];
+  tracking_status: string | null; awb: string | null; courier: string | null; uc_status: string | null;
+  opened_at: string | null; reason: string | null; detail_fetched_at: string | null; seen_at: string;
+};
+export type SeenOpen = { opened_at: string | null; reason: string | null; detail_fetched_at: string | null };
+
+/** Has the detail of this return been asked for yet? Once is enough. */
+export const needsDetail = (before: SeenOpen | undefined): boolean => !before?.detail_fetched_at;
+
+/** The row kept for an open return. What is already known stays when this run did not ask again, so every row carries every column. */
+export function openRow(orderCode: string, ret: OpenReturn, before: SeenOpen | undefined, detail: ReturnDetail | null, nowIso: string): OpenRow {
+  return {
+    return_code: ret.code, order_code: orderCode, kind: ret.kind,
+    skus: ret.items.map(i => i.sku).filter(Boolean),
+    tracking_status: ret.tracking || null, awb: ret.awb, courier: ret.courier, uc_status: ret.ucStatus || null,
+    opened_at: detail?.openedAt ?? before?.opened_at ?? null,
+    reason: detail ? detail.reason : before?.reason ?? null,
+    detail_fetched_at: detail ? nowIso : before?.detail_fetched_at ?? null,
+    seen_at: nowIso,
+  };
+}
+
+/** Every return of an order that is still open in Unicommerce, wherever its parcel is. */
+export function openReturnsOf(r: Reading): OpenReturn[] {
+  return [...r.waiting, ...r.receive, ...r.attention.flatMap(a => (a.ret ? [a.ret] : []))];
+}
+
+/**
+ * Rows to drop from the list: the order has no open piece any more (received by hand, cancelled), or the order was read this run
+ * and the return is no longer open on it. An order that was not read this run keeps its rows until it is.
+ */
+export function staleCodes(
+  existing: Array<{ return_code: string; order_code: string }>, openOrders: Set<string>, readOrders: Set<string>, seen: Set<string>,
+): string[] {
+  return existing
+    .filter(e => !openOrders.has(e.order_code) || (readOrders.has(e.order_code) && !seen.has(e.return_code)))
+    .map(e => e.return_code);
+}
+
 // ── Whether to try a return again ─────────────────────────────────────────────────────────────
 
 export type Known = { status: string; attempts: number; next_try_at: string | null; claimed_at: string | null };
