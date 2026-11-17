@@ -5,6 +5,7 @@ import { localToday } from '../lib/constants';
 import { STATUS_TEXT, filterRows, needsPrint, printQueue, viewCounts } from '../lib/myntraView';
 import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { Pagination, Pills, StatCard, EmptyState, useUrlParams } from '../components/AnalyticsKit';
+import MyntraReturnsPanel from './MyntraReturnsPanel';
 import { RefreshCw, Printer, Search, X, Info, Play, AlertCircle, CheckCircle2, Download, ListChecks } from 'lucide-react';
 
 // Analytics → Myntra (admin only). Myntra orders are invoiced, labelled and dispatched in Unicommerce by the
@@ -382,6 +383,8 @@ export default function MyntraSection({ showToast }) {
         )}
         <Pagination page={page} pageSize={size} total={shown.length} onPage={n => setP({ mypage: String(n) })} onPageSize={n => setP({ mysize: String(n), mypage: '1' })} noun="packages" />
       </div>
+
+      <MyntraReturnsPanel />
     </div>
   );
 }

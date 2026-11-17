@@ -3,7 +3,7 @@
 // for orders 37807, 37707, 37613 and 37605 (Oct 2026), run through the ledger.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildFacts, buildMyntraFacts, istDate, type RawInputs, type MyntraInputs } from './order-facts.ts';
+import { buildFacts, buildMyntraFacts, istDate, returnedAfterSale, returnInvoiceRequest, type RawInputs, type MyntraInputs } from './order-facts.ts';
 import { buildOrderLedger, CUSTOMER, MYNTRA } from './ledger.ts';
 
 const CUTOFF = '2026-10-01';
@@ -634,6 +634,43 @@ test('Myntra: ordered late on 31 Oct and invoiced in November is October\'s sale
 test('Myntra: a cancelled invoiced order is not a sale', () => {
   const cancelled = buildMyntraFacts(myntra(myntraOrder({ status: 'CANCELLED' }), myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326)));
   assert.equal(cancelled.skip, 'cancelled');
+});
+
+test('Myntra: an order Unicommerce cancelled AFTER a customer return was received stays a sale with its credit note (17 Nov 2026: RP0003 / ISR0057)', () => {
+  // Real shape: once the return is received Unicommerce sets the order and its item CANCELLED and the return COMPLETE with its return invoice.
+  const returned = myntraOrder({
+    status: 'CANCELLED',
+    saleOrderItems: [{ code: '11439403112', sellingPrice: 1326, itemSku: 'TOBY-BLACK-DRESS-49-M', statusCode: 'CANCELLED' }],
+    shippingPackages: [{ code: 'BRUN00008', status: 'DELIVERED', invoiceDisplayCode: 'I0927RE000000030' }],
+    returns: [{ code: 'RP0003', type: 'Customer Returned', statusCode: 'COMPLETE', trackingStatus: 'CIR_DELIVERED_TO_SELLER', returnInvoiceDisplayCode: 'ISR0057',
+      inventoryReceivedDate: ist('2026-11-17T16:48:00'), returnItems: [{ saleOrderItemCode: '11439403112' }] }],
+  });
+  assert.equal(returnedAfterSale(returned), true);
+  const ret = { ...myntraInvoice('ISR0057', '2026-11-17T16:48:00', 1326), displayCode: 'ISR0057' };
+  const b = buildMyntraFacts({ ...myntra(returned, myntraInvoice('I0927RE000000030', '2026-10-06T14:15:10', 1326), { returnInvoices: { RP0003: ret } }), today: '2026-11-17' });
+  assert.equal(b.skip, undefined); assert.equal(b.ignore, undefined);
+  assert.equal(b.facts.order, 'I0927RE000000030'); assert.equal(b.facts.saleDate, '2026-10-06'); assert.equal(b.facts.goods, 1326);
+  assert.equal(b.facts.returns![0].pending, false); assert.equal(b.facts.returns![0].date, '2026-11-17'); assert.equal(b.facts.returns![0].kind, 'customer');
+  const l = buildOrderLedger(b.facts, { cutoff: CUTOFF, today: '2026-11-17' });
+  const cn = l.entries.filter(e => e.voucher === 'credit_note');
+  assert.equal(cn.find(e => e.account === MYNTRA)?.credit, 1326); assert.equal(cn[0].doc, 'ISR0057'); assert.equal(cn[0].date, '2026-11-17');
+  assert.ok(l.entries.some(e => e.voucher === 'sale' && e.doc === 'I0927RE000000030'), 'the sale stays');
+  assert.equal(l.net, 0); assert.equal(l.status, 'complete'); assert.equal(l.balancing.length, 0);
+});
+
+test('a return\'s invoice is asked for by its reverse pickup for a customer return and by the shipping package for an RTO (read live 17 Nov 2026)', () => {
+  assert.deepEqual(returnInvoiceRequest({ code: 'RP0003', type: 'Customer Returned' }, 'BRUN00008'), { reversePickupCode: 'RP0003', return: true });
+  assert.deepEqual(returnInvoiceRequest({ code: 'BRUN00068', type: 'Courier Returned' }, 'BRUN00068'), { shippingPackageCode: 'BRUN00068', return: true });
+  assert.deepEqual(returnInvoiceRequest({ code: 'X', type: undefined }, 'PKG'), { shippingPackageCode: 'PKG', return: true });
+});
+
+test('Myntra: a cancelled order is still "never a sale" unless a return with a return invoice proves it was sold and sent back', () => {
+  const noInvoice = myntraOrder({ status: 'CANCELLED', returns: [{ code: 'RP1', type: 'Customer Returned', statusCode: 'COURIER_ALLOCATED', returnInvoiceDisplayCode: null, returnItems: [{ saleOrderItemCode: '11439403112' }] }] });
+  assert.equal(returnedAfterSale(noInvoice), false);
+  assert.equal(buildMyntraFacts(myntra(noInvoice, myntraInvoice('I0927RE000000031', '2026-10-06T14:15:10', 1326))).skip, 'cancelled');
+  const cancelledReturn = myntraOrder({ status: 'CANCELLED', returns: [{ code: 'RP2', type: 'Customer Returned', statusCode: 'CANCELLED', returnInvoiceDisplayCode: 'ISR0001', returnItems: [] }] });
+  assert.equal(returnedAfterSale(cancelledReturn), false);
+  assert.equal(returnedAfterSale(myntraOrder({ status: 'COMPLETE' })), false);
 });
 
 test('Myntra: an order not invoiced yet WAITS under its Unicommerce order code, with no entries; cancelled before the invoice it is dropped', () => {

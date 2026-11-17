@@ -52,7 +52,7 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { buildFacts, buildMyntraFacts, istDate, type RawInputs } from '../_shared/order-facts.ts';
+import { buildFacts, buildMyntraFacts, istDate, returnedAfterSale, returnInvoiceRequest, type RawInputs } from '../_shared/order-facts.ts';
 import { buildOrderLedger, type MyntraSettlement } from '../_shared/ledger.ts';
 import { settlementFacts, settlementFingerprint, type BankCredit, type SettlementLine } from '../_shared/myntra-settlement.ts';
 import { decideTick, ledgerRow } from '../_shared/ledger-store.ts';
@@ -549,7 +549,7 @@ async function processMyntra(ctx: Ctx, codes: string[], shared: Shared, keepAll 
   const cleared: string[] = [];
   for (const code of codes) {
     let uc: RawInputs['uc'];
-    try { uc = await unicommerce(ctx, code); }
+    try { uc = await unicommerce(ctx, code, true); }
     catch (err) {
       if (!(err instanceof Unreachable)) throw err;
       held.push({ key: `M:${code}`, order: code, why: err.message });
@@ -586,7 +586,7 @@ async function shopifyOrders(ctx: Ctx, q: string, first: number, after: string |
 
 // The order with its sale and return invoices. Throws Unreachable when Unicommerce does not answer; an answer of
 // "no such order" (INVALID_SALE_ORDER_CODE, every order from before 29 Sep) is a null, as before.
-async function unicommerce(ctx: Ctx, orderId: number | string): Promise<RawInputs['uc']> {
+async function unicommerce(ctx: Ctx, orderId: number | string, myntra = false): Promise<RawInputs['uc']> {
   const call = async (path: string, body: unknown) => {
     const r = ctx.sim === 'unicommerce' ? { successful: false, errors: [{ description: 'HTTP 503: simulated outage' }] } : await ucPost(ctx.admin, path, body);
     const down = ucUnreachable(r);
@@ -596,14 +596,16 @@ async function unicommerce(ctx: Ctx, orderId: number | string): Promise<RawInput
   const so = await call('/services/rest/v1/oms/saleorder/get', { code: String(orderId) });
   if (!so?.successful || !so.saleOrderDTO) return null;
   const order = so.saleOrderDTO;
-  if (order.status === 'CANCELLED') return { order, returnInvoices: {} };
+  // A cancelled order has no invoices to read, except a Myntra order Unicommerce cancelled after a customer return was received:
+  // that one was sold and returned (buildMyntraFacts), so its sale and return invoices are read like any other order's.
+  if (order.status === 'CANCELLED' && !(myntra && returnedAfterSale(order))) return { order, returnInvoices: {} };
   const pkg: string | undefined = (order.shippingPackages ?? [])[0]?.code;
   const out: NonNullable<RawInputs['uc']> = { order, returnInvoices: {} };
   if (!pkg) return out;
   out.saleInvoice = (await call('/services/rest/v1/invoice/details/get', { shippingPackageCode: pkg, return: false }))?.invoice;
   for (const r of order.returns ?? []) {
     if (!r.returnInvoiceDisplayCode) continue;
-    const inv = (await call('/services/rest/v1/invoice/details/get', { shippingPackageCode: pkg, return: true }))?.invoice;
+    const inv = (await call('/services/rest/v1/invoice/details/get', returnInvoiceRequest(r, pkg)))?.invoice;
     if (inv) out.returnInvoices[r.code] = inv;
   }
   return out;
