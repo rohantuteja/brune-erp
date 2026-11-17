@@ -79,6 +79,10 @@ Every ledger run re-reads the Myntra orders whose provable payouts changed (and 
 complete ones, so an upload shows in the ledger within a couple of minutes (the screen starts the refresh). Taking a report back
 (Delete, with a dry run first, logged in `upload_deletions`) reverses it the same way.
 
+## Live since 17 Nov 2026
+
+Rolled out with the owner's approval: migration 040, `finance-import` (deployment 10), `accounting-ledger` (deployment 22: the Myntra-returns ledger fixes from `claude/myntra-returns` plus this feature, bundled together because live was built from that branch's working tree). October's settled report (`SellerYearMonthWeekKey=97092_2026_10.xlsx`, 63 lines) was loaded by writing exactly the parsed lines to `myntra_settlement_lines` (same upsert key as the upload), then the bank matching and an incremental ledger run were started. Result in the live ledger: the 8 bank credits are `matched` (`myntra_payout`), 38 settlement vouchers all balance, Myntra orders complete 24 -> 40, the 35 orders of the 8 payouts are 21 complete and 14 `awaiting_return`; bank net Dr 12,862.76, fixed fee 1,800.00, return fees 3,108.00, commission 2,022.01, input GST 1,247.38. The screen (Analytics -> Bank & card -> Myntra option) goes live with the frontend when PR #44 is merged.
+
 ## Checked on October 2026 (read-only, before anything was applied)
 
 Both reports parsed, every line adds up, the two readers agree on all 52 shared lines. Booked against the live October ledger facts of the
