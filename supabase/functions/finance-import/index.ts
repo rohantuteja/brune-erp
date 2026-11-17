@@ -1,5 +1,5 @@
-// finance-import v7
-// Takes an uploaded bank statement (ICICI .xlsx), credit card statement (Kotak .pdf) or GoKwik settlement report (.csv),
+// finance-import v8
+// Takes an uploaded bank statement (ICICI .xlsx), credit card statement (Kotak .pdf), GoKwik settlement report (.csv) or Myntra settlement report (.xlsx / .csv),
 // checks that it adds up, stores the LINES (never the file), and works out what each line is. Admins only (an admin's
 // login, or the project's internal x-cron-key for server-to-server calls).
 // The reading and the matching rules are in _shared (statements.ts, gokwik-report.ts, bank-match.ts) and tested there.
@@ -7,11 +7,14 @@
 // Actions (POST with an admin user's JWT):
 //   statement  { account_id, filename, data }   data = the file, base64. Refused whole if its own totals do not add up.
 //   gokwik     { filename, csv }                GoKwik's rawSettlementReport (or settlement_v2) as text
+//   myntra     { filename, data | csv }         Myntra's monthly SETTLED report (.xlsx, data = base64) or PAYMENT DETAILS report (.csv, as text);
+//                                               refused whole if a line does not add up; each payout is tied to its bank credit (see docs/myntra-settlements.md)
 //   rematch    {}                               re-run the matching on every line no person has decided
 //   preview    { ids, bucket, payee, note }     read-only: if these lines were filed under `bucket` and the payee and/or the note word
 //                                               remembered, which OTHER open lines would move to a different bucket? Saves nothing.
 //   delete_statement { statement_id, dry_run }  take back a statement and the lines it brought in (see migration 026)
 //   delete_gokwik    { source_file, dry_run }   take back a GoKwik report's payments
+//   delete_myntra    { source_file, dry_run }   take back a Myntra report's lines
 //   A delete is a DRY RUN (counts only, nothing changes) unless dry_run is exactly false; a real delete re-runs the matching.
 //
 // Nothing here posts to Tally, Shopify, Unicommerce or any other system: it only reads, and writes the finance_* tables.
@@ -20,9 +23,10 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { extractText, getDocumentProxy } from 'npm:unpdf@0.12.1';
 import { CORS, cronKeyValid, json, requireAdmin } from '../_shared/shopify-admin.ts';
-import { fileKind, parseBankRows, parseCardText, xlsxRows, type ParsedStatement } from '../_shared/statements.ts';
+import { fileKind, parseBankRows, parseCardText, xlsxRows, xlsxSheets, type ParsedStatement } from '../_shared/statements.ts';
 import { BUCKETS, classify, lineKeys, type Ctx, type Line, type NoteRule, type Payout, type Rule } from '../_shared/bank-match.ts';
 import { parseGokwikReport, payoutsOf } from '../_shared/gokwik-report.ts';
+import { isXlsx, parsePaymentDetails, parseSettledReport, payoutsOf as myntraPayoutsOf, tieToBank, type ParsedSettlement, type SettlementLine } from '../_shared/myntra-settlement.ts';
 import { matchTopUps, VELOCITY_RECHARGE_BUCKET } from '../_shared/velocity-ledger.ts';
 
 const CHUNK = 200;
@@ -45,11 +49,13 @@ serve(async (req) => {
     switch (body.action) {
       case 'statement': return await uploadStatement(admin, user, body);
       case 'gokwik':    return await uploadGokwik(admin, body);
+      case 'myntra':    return await uploadMyntra(admin, body);
       case 'rematch':   return json(await rematch(admin));
       case 'preview':   return await previewRemember(admin, body);
       case 'delete_statement': return await removeUpload(admin, user, 'finance_delete_statement', { p_id: String(body.statement_id ?? '') }, body.dry_run);
       case 'delete_gokwik':    return await removeUpload(admin, user, 'gokwik_delete_report', { p_source_file: String(body.source_file ?? '') }, body.dry_run);
-      default:          return json({ error: 'action must be statement, gokwik, rematch, preview, delete_statement or delete_gokwik' }, 400);
+      case 'delete_myntra':    return await removeUpload(admin, user, 'myntra_delete_report', { p_source_file: String(body.source_file ?? '') }, body.dry_run);
+      default:          return json({ error: 'action must be statement, gokwik, myntra, rematch, preview, delete_statement, delete_gokwik or delete_myntra' }, 400);
     }
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -164,6 +170,61 @@ async function uploadGokwik(admin: any, body: any) {
   });
 }
 
+// ── Myntra's settlement reports ──────────────────────────────────────────────────────────────
+// The monthly SETTLED report (.xlsx) or the PAYMENT DETAILS report (.csv) is read into payout lines, checked (every line must add up:
+// paid = product - commission - fees - TCS - TDS), stored, and each payout is tied to the bank credit that carries it. A line is stored
+// once (a later report holding it replaces it), so overlapping reports and the two kinds of report never double anything. The order
+// ledger books a payout only when its bank credit exists and agrees to the paisa; the answer here says which payouts are ready.
+async function uploadMyntra(admin: any, body: any) {
+  let parsed: ParsedSettlement;
+  try {
+    if (body.data) {
+      const bytes = fromBase64(String(body.data));
+      if (!isXlsx(bytes)) throw new Error('send the monthly settled report as an Excel file (.xlsx), or the payment details report as a CSV');
+      parsed = parseSettledReport(await xlsxSheets(bytes));
+    } else {
+      parsed = parsePaymentDetails(String(body.csv ?? ''));
+    }
+  } catch (err) { return json({ error: err instanceof Error ? err.message : String(err) }, 422); }
+  if (parsed.checks.some(c => !c.ok)) return json({ error: 'the report does not add up, so nothing was imported', checks: parsed.checks }, 422);
+  if (!parsed.lines.length) return json({ error: 'no settled lines found in the file: nothing to import', checks: parsed.checks }, 422);
+
+  const key = (l: { utr: string; line_id: string; stream: string; dir: string }) => `${l.utr}|${l.line_id}|${l.stream}|${l.dir}`;
+  const utrs = [...new Set(parsed.lines.map(l => l.utr))];
+  const UTR_CHUNK = 40;                                  // a UTR is about 30 characters: keep the request address short
+  const have = new Set<string>();
+  for (let i = 0; i < utrs.length; i += UTR_CHUNK) {
+    const rows = await fetchAll<any>((f, t) => admin.from('myntra_settlement_lines').select('utr, line_id, stream, dir').in('utr', utrs.slice(i, i + UTR_CHUNK)).order('id').range(f, t));
+    for (const r of rows) have.add(key(r));
+  }
+  const fresh = parsed.lines.filter(l => !have.has(key(l))).length;
+  const now = new Date().toISOString();
+  for (let i = 0; i < parsed.lines.length; i += CHUNK) {
+    const { error } = await admin.from('myntra_settlement_lines').upsert(parsed.lines.slice(i, i + CHUNK).map((l: SettlementLine) => ({
+      utr: l.utr, settled_on: l.settled_on, invoice: l.invoice, line_id: l.line_id, order_ref: l.order_ref || null, stream: l.stream, dir: l.dir,
+      product: l.product, commission: l.commission, fee: l.fee, tcs: l.tcs, tds: l.tds, net: l.net, source_file: body.filename ?? null, source_kind: parsed.kind, imported_at: now,
+    })), { onConflict: 'utr,line_id,stream,dir' });
+    if (error) throw new Error(`saving lines: ${error.message}`);
+  }
+
+  // The payouts as they now stand (a payout can be split over two reports) against the bank credits from Myntra.
+  const stored: any[] = [];
+  for (let i = 0; i < utrs.length; i += UTR_CHUNK) {
+    const rows = await fetchAll<any>((f, t) => admin.from('myntra_settlement_lines').select('utr, settled_on, invoice, line_id, dir, stream, net').in('utr', utrs.slice(i, i + UTR_CHUNK)).order('id').range(f, t));
+    stored.push(...rows.map(r => ({ ...r, net: Number(r.net) })));
+  }
+  const banks = (await fetchAll<any>((f, t) => admin.from('finance_lines').select('id, txn_date, credit, remarks').gt('credit', 0).ilike('remarks', '%MYNTRA DESIGNS%').order('id').range(f, t)))
+    .map(b => ({ id: Number(b.id), txn_date: String(b.txn_date), credit: Number(b.credit), remarks: String(b.remarks) }));
+  const payouts = myntraPayoutsOf(stored).map(p => { const t = tieToBank(p, banks); return { utr: p.utr, settled_on: p.settled_on, orders: p.orders, lines: p.lines, net: p.net, state: t.state, bank_credit: t.bank?.credit ?? null, bank_date: t.bank?.txn_date ?? null, diff: t.diff ?? null }; });
+  const matched = await rematch(admin);
+  const count = (s: string) => payouts.filter(p => p.state === s).length;
+  return json({
+    kind: parsed.kind, lines: parsed.lines.length, new_lines: fresh, payouts: payouts.length, tied: count('tied'), differs: count('differs'), not_in_bank: count('not_in_bank'),
+    to_bank: Math.round(payouts.reduce((s, p) => s + p.net, 0) * 100) / 100, settled_from: payouts.map(p => p.settled_on).filter(Boolean).sort()[0] ?? null,
+    settled_to: payouts.map(p => p.settled_on).filter(Boolean).sort().pop() ?? null, checks: parsed.checks, payout_list: payouts, matching: matched,
+  });
+}
+
 // ── Taking an upload back ────────────────────────────────────────────────────────────────────
 // The database function counts what would go (dry run) or deletes it and writes the log; the matching is then re-run so a payment
 // that only the deleted upload proved goes back to "suggested". Anything but an explicit dry_run:false is a dry run.
@@ -183,6 +244,11 @@ async function removeUpload(admin: any, user: { id?: string; name: string }, fn:
 async function loadContext(admin: any): Promise<Ctx> {
   const gk = await fetchAll<{ utr: string; settlement_date: string; credit: number }>((f, t) => admin.from('gokwik_payments').select('utr, settlement_date, credit').not('utr', 'is', null).range(f, t));
   const payouts: Payout[] = payoutsOf(gk.map(r => ({ utr: r.utr, settlement_date: r.settlement_date, credit: Number(r.credit) }))).map(p => ({ source: 'gokwik' as const, ...p }));
+  // Myntra's payouts (its settlement reports): one per UTR, the sum of its lines is what the bank received.
+  const my = await fetchAll<any>((f, t) => admin.from('myntra_settlement_lines').select('utr, settled_on, invoice, dir, net').order('id').range(f, t));
+  for (const p of myntraPayoutsOf(my.map(l => ({ utr: l.utr, settled_on: l.settled_on, invoice: l.invoice, dir: l.dir, net: Number(l.net) })))) {
+    payouts.push({ source: 'myntra', utr: p.utr, date: p.settled_on ?? '', amount: p.net, payments: p.lines });
+  }
   const { data: vel, error: ve } = await admin.rpc('finance_velocity_payouts');
   if (ve) throw new Error(`velocity payouts: ${ve.message}`);
   for (const v of vel ?? []) payouts.push({ source: 'velocity', utr: v.utr, date: v.paid_on, amount: Number(v.amount), payments: v.payments });
@@ -209,7 +275,7 @@ async function prepare(admin: any) {
   const open = all.filter(l => !l.decided_at);
   const ctx = await loadContext(admin);
   // A payout a person has already filed against a line cannot explain another credit.
-  const taken = new Set(all.filter(l => l.decided_at && (l.kind === 'gokwik_payout' || l.kind === 'velocity_remittance') && l.match_ref).map(l => String(l.match_ref).replace(/^UTR /, '')));
+  const taken = new Set(all.filter(l => l.decided_at && (l.kind === 'gokwik_payout' || l.kind === 'velocity_remittance' || l.kind === 'myntra_payout') && l.match_ref).map(l => String(l.match_ref).replace(/^UTR /, '')));
   ctx.payouts = ctx.payouts.filter(p => !taken.has(p.utr));
   // Likewise a top-up a person has already tied to a payment.
   const takenTopups = new Set(all.filter(l => l.decided_at && l.kind === 'velocity_recharge' && l.match_ref).map(l => String(l.match_ref).replace(/^Wallet recharge /, '')));

@@ -508,7 +508,7 @@ them next to the Shopify orders (`ledger_orders.channel` = `shopify` | `myntra`;
   return invoice. Same rule as Shopify: Unicommerce's documents are the documents, the ERP only adds what is missing.
 - **Name:** the order is named by its Unicommerce **invoice number**. Unicommerce's own order code (a UUID, which is
   Myntra's `seller_order_id`) is kept in `channel_ref` and used to read the order again. Myntra's Release ID is not in
-  Unicommerce, so the settlement step will bridge it through Myntra's order-flow report (`sale_order_code` = settlement
+  Unicommerce, so the settlement step bridges it through Myntra's order-flow report (`sale_order_code` = settlement
   `Release_Id`, `packed_id` = `Packet_Id`).
 - **Enters the ledger when Unicommerce has invoiced it.** An order with no invoice yet is not stored; a cancelled one is
   `not_a_sale`. The two Myntra test orders of 22 Sep (#1 and #2) are not in Unicommerce and so never appear.
@@ -525,14 +525,13 @@ them next to the Shopify orders (`ledger_orders.channel` = `shopify` | `myntra`;
 - **Stages:** a sold order with no settlement matched is `awaiting_settlement` (open, normal); a customer return the
   warehouse has not received is `awaiting_return`; a courier return (RTO) not yet received is pending the same way.
   When the return invoice exists the credit note is Unicommerce's; any shortfall is balanced by the ERP like Shopify.
-- **Not done yet (the second step):** matching Myntra's settlement (payout) to the orders. A payout is what Myntra
-  collected (the invoice value) less commission, the ₹59 fixed fee, TCS 0.5% and TDS 0.1% (and, on a return, the return-fee tier ₹106/127/182 + 18%
-  GST; commission, TCS and TDS come back, the fixed fee does not). Until then every sale stays open, and the receivable
-  control account is the list of what Myntra still owes. First payout is expected 19-25 Oct 2026; the settlement step
-  is built once it arrives, from Myntra's order-flow and settlement reports for the same dates.
-- **Worth claiming back from Myntra:** 23 of the first orders were charged commission although the brand agreement is
-  0% (₹3,605.53 incl. GST, from the settlement report; the label in the report cannot say it should be 0%). Not
-  automated; it shows up when settlements are matched.
+- **Payouts (the second step, built):** the settlement import books what Myntra paid and took back, order by order, once
+  a bank credit proves the transfer. Design, files and rules: `docs/myntra-settlements.md`. An order becomes `complete` when its
+  payout is booked (or, if it came back, when the credit note exists too); `awaiting_clawback` is the open stage between a
+  credit note and Myntra taking the money back.
+- **Commission.** Myntra's commission is booked as it was charged (the owner decided on 17 Nov 2026 not to chase it, and to claim
+  the input GST on every commission invoice); it is its own `Myntra Commission` line, with the GST on a separate `IGST Input  UP`
+  line. A return gives it back.
 
 ## Still to build
 

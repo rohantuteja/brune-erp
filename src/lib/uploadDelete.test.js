@@ -39,6 +39,14 @@ test('an invoice and a GoKwik report are described in their own terms', () => {
   assert.ok(gk.cautions.includes('9 bank credits these payouts proved go back to “suggested”.'));
 });
 
+test('a Myntra report is described by its payout lines, transfers and the bank credits that fall back', () => {
+  const d = describeDeletion({ kind: 'myntra_report', label: 'settled-oct.xlsx', removed: 63, payouts: 8, to_bank: 12862.76, period_from: '2026-10-22', period_to: '2026-10-30', bank_lines_reverting: 8, bank_lines_staying: 0 });
+  assert.equal(d.lines[0], 'Removes 63 payout lines settled 22 Oct 2026 to 30 Oct 2026: ₹12,862.76 paid to the bank in 8 transfers.');
+  assert.ok(d.cautions.includes('8 bank credits these payouts proved go back to “suggested”.'));
+  assert.ok(d.cautions.some(c => c.includes('awaiting Myntra payment')));
+  assert.equal(deletedMessage({ kind: 'myntra_report', label: 'x.xlsx', removed: 3, moved_to_other_upload: 0 }), 'Deleted x.xlsx: 3 payout lines removed.');
+});
+
 test('the result line counts what went and warns when the re-matching failed', () => {
   assert.equal(deletedMessage({ kind: 'statement', label: 'a.xlsx', removed: 13, moved_to_other_upload: 0 }), 'Deleted a.xlsx: 13 lines removed.');
   assert.equal(deletedMessage({ kind: 'statement', label: 'a.xlsx', removed: 1, moved_to_other_upload: 4 }), 'Deleted a.xlsx: 1 line removed, 4 kept in another upload.');

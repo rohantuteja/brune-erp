@@ -46,6 +46,12 @@ export function describeDeletion(plan) {
       if (plan.bank_lines_staying > 0) cautions.push(`${count(plan.bank_lines_staying, 'bank credit')} you confirmed by hand ${plan.bank_lines_staying === 1 ? 'stays as you filed it' : 'stay as you filed them'}.`);
       cautions.push('If another GoKwik report you uploaded also had some of these payments, upload that report again to bring them back.');
       break;
+    case 'myntra_report':
+      lines.push(`Removes ${count(plan.removed, 'payout line')} settled ${range(plan.period_from, plan.period_to)}: ${inr(plan.to_bank)} paid to the bank in ${count(plan.payouts, 'transfer')}.`);
+      if (plan.bank_lines_reverting > 0) cautions.push(`${count(plan.bank_lines_reverting, 'bank credit')} these payouts proved go back to “suggested”.`);
+      if (plan.bank_lines_staying > 0) cautions.push(`${count(plan.bank_lines_staying, 'bank credit')} you confirmed by hand ${plan.bank_lines_staying === 1 ? 'stays as you filed it' : 'stay as you filed them'}.`);
+      cautions.push('The orders these payouts settled go back to awaiting Myntra payment when the ledger is recalculated. If another Myntra report you uploaded also had some of these lines, upload that report again to bring them back.');
+      break;
     default:
       lines.push(`Removes ${label}.`);
   }
@@ -55,7 +61,7 @@ export function describeDeletion(plan) {
 /** One line for the toast after a real delete. */
 export function deletedMessage(result) {
   if (!result) return 'Deleted';
-  const noun = result.kind === 'gokwik_report' ? 'payment' : result.kind === 'velocity_invoice' ? 'invoice' : 'line';
+  const noun = result.kind === 'gokwik_report' ? 'payment' : result.kind === 'myntra_report' ? 'payout line' : result.kind === 'velocity_invoice' ? 'invoice' : 'line';
   const parts = [`Deleted ${result.label}`];
   if (result.kind !== 'velocity_invoice') parts.push(`${count(result.removed, noun)} removed${result.moved_to_other_upload > 0 ? `, ${result.moved_to_other_upload} kept in another upload` : ''}`);
   const err = result.matching_error;
@@ -63,4 +69,4 @@ export function deletedMessage(result) {
 }
 
 /** The label a log row shows for a kind. */
-export const KIND_LABEL = { statement: 'Bank / card statement', velocity_ledger: 'Velocity ledger report', velocity_invoice: 'Velocity invoice', gokwik_report: 'GoKwik report' };
+export const KIND_LABEL = { statement: 'Bank / card statement', velocity_ledger: 'Velocity ledger report', velocity_invoice: 'Velocity invoice', gokwik_report: 'GoKwik report', myntra_report: 'Myntra report' };

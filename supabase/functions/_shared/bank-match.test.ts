@@ -70,6 +70,23 @@ test('a Velocity COD remittance (a White Wizard credit) is matched to the payout
   assert.equal(one(bank('2026-10-05', 'CMS/ CMS987/WHITE WIZARD TECHNOLOGIES PRIV', { credit: 1000 }), ctx).status, 'suggested');
 });
 
+test('a Myntra payout is matched by the UTR in the narration and the amount, and is only used once', () => {
+  const ctx: Ctx = { ...empty, payouts: [
+    { source: 'myntra', utr: 'NFT-/XUTR/DEUTH026303A2EWNX', date: '2026-10-30', amount: 1075.34, payments: 3 },
+    { source: 'myntra', utr: 'NFT-/XUTR/DEUTH026301A2DSVX', date: '2026-10-28', amount: 985.66, payments: 3 }] };
+  const narration = (id: string) => `NEFT-${id}-MYNTRA DESIGNS PRIVATE LIMITED-97092 DIZKSLS6VR130K-2056539000-DEUT0797BGL`;
+  const a = bank('2026-10-30', narration('DEUTH026303A2EWN'), { credit: 1075.34 });
+  const m = one(a, ctx);
+  assert.equal(m.status, 'matched'); assert.equal(m.bucket, 'Myntra receivable (order control)'); assert.equal(m.kind, 'myntra_payout');
+  assert.equal(m.match_ref, 'UTR NFT-/XUTR/DEUTH026303A2EWNX'); assert.match(m.reason, /3 order lines/);
+  // the UTR decides: a credit for the other payout's amount with this UTR in the narration is not matched to it
+  assert.equal(one(bank('2026-10-30', narration('DEUTH026303A2EWN'), { credit: 985.66 }), ctx).status, 'matched');       // ... the other payout, by amount and date
+  const twice = classify([a, bank('2026-10-30', narration('DEUTH026303A2EWN'), { credit: 1075.34 })], ctx);
+  assert.deepEqual([...twice.values()].map(x => x.status).sort(), ['matched', 'suggested']);
+  const none = one(bank('2026-11-02', narration('DEUTH026999ZZZZZ'), { credit: 500 }), ctx);
+  assert.equal(none.status, 'suggested'); assert.match(none.reason, /upload the Myntra settlement report/);
+});
+
 test('a Meta payment is matched to its invoice by number and amount; paid net of 2% TDS is recognised; a wrong amount is flagged', () => {
   const inv = { vendor: 'Meta', invoice_no: '2380919690', invoice_date: '2026-09-01', period: 'Aug-26', subtotal: 679432.69, tax: 122297.89, total: 801730.58 };
   const ctx: Ctx = { ...empty, invoices: [inv] };

@@ -47,6 +47,7 @@ const EXCEPTION_LABEL = {
   rto_on_the_way: 'RTO on the way',
   awaiting_return: 'Waiting for returned parcel',
   awaiting_settlement: 'Awaiting Myntra payment',
+  awaiting_clawback: 'Myntra has not taken the money back yet',
   awaiting_payout: 'Awaiting GoKwik payout',
   payout_missing: 'Not in GoKwik report',
   payout_differs: 'GoKwik paid a different amount',
