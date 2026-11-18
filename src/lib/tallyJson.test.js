@@ -18,16 +18,16 @@ test('a sale: party on top, place of supply in Tally\'s spelling, debits negativ
   assert.deepEqual(errors, []);
   const s = find(file, 'Sales');
   assert.deepEqual([s.date, s.vouchernumber, s.partyledgername, s.placeofsupply, s.gstregistrationtype, s.vchentrymode], ['20261003', 'INS1', 'Customer (order control)', 'Jammu & Kashmir', 'Unregistered/Consumer', 'Accounting Invoice']);
-  const cust = s.allledgerentries.find(x => x.ledgername === 'Customer (order control)');
+  const cust = s.ledgerentries.find(x => x.ledgername === 'Customer (order control)');
   assert.deepEqual([cust.isdeemedpositive, cust.amount, cust.ispartyledger], [true, '-1050.00', true]);
   assert.deepEqual(cust.billallocations, [{ name: 'INS1', billtype: 'New Ref', amount: '-1050.00' }]);
-  assert.deepEqual(s.allledgerentries.filter(x => !x.isdeemedpositive).map(x => [x.ledgername, x.amount]), [['GST SALES', '1000.00'], ['IGST OUTPUT UP', '50.00']]);
+  assert.deepEqual(s.ledgerentries.filter(x => !x.isdeemedpositive).map(x => [x.ledgername, x.amount]), [['GST SALES', '1000.00'], ['IGST OUTPUT UP', '50.00']]);
 });
 
 test('a credit note clears the customer\'s bill against the sale invoice; a payout is a receipt with the UTR on the bank line and a bill per order', () => {
   const { file } = buildTallyFile({ vouchers: groupOrderVouchers(entries), orders });
   const cn = find(file, 'Credit Note');
-  assert.deepEqual(cn.allledgerentries.find(x => x.ledgername === 'Customer (order control)').billallocations, [{ name: 'INS1', billtype: 'Agst Ref', amount: '210.00' }]);
+  assert.deepEqual(cn.ledgerentries.find(x => x.ledgername === 'Customer (order control)').billallocations, [{ name: 'INS1', billtype: 'Agst Ref', amount: '210.00' }]);
   const rc = find(file, 'Receipt');
   const bank = rc.allledgerentries.find(x => x.ledgername === 'ICICI Bank');
   assert.deepEqual([bank.amount, bank.bankallocations[0].instrumentnumber, bank.isdeemedpositive], ['-1030.00', 'U1', true]);
@@ -45,7 +45,7 @@ test('a clearing journal: the gateway receivable starts a bill named by the orde
 
 test('every voucher in the file sums to zero and the ledger totals equal the ledger\'s: the built-in checks pass', () => {
   const { file, checks } = buildTallyFile({ vouchers: groupOrderVouchers(entries), orders });
-  for (const m of file.tallymessage) assert.equal(Math.round(m.allledgerentries.reduce((s, x) => s + Number(x.amount), 0) * 100) / 100, 0, m.vouchernumber);
+  for (const m of file.tallymessage) assert.equal(Math.round((m.ledgerentries ?? m.allledgerentries).reduce((s, x) => s + Number(x.amount), 0) * 100) / 100, 0, m.vouchernumber);
   assert.deepEqual(checks.map(c => c.ok), [true, true, true]);
 });
 
@@ -87,4 +87,72 @@ test('two clearing journals of one order on one day get different voucher number
     e('Q', '2026-10-03', 'payment', 'Easebuzz Private Limited', 20, 0, { doc: 'T2' }), e('Q', '2026-10-03', 'payment', 'Customer (order control)', 0, 20, { doc: 'T2' })];
   const { file } = buildTallyFile({ vouchers: groupOrderVouchers(two), orders: new Map() });
   assert.deepEqual(file.tallymessage.map(m => m.vouchernumber), ['GW/Q/1003', 'GW/Q/1003-2']);
+});
+
+// ── Purchase, payment and receipt vouchers (tallyBooks.js) ──
+import { buildBooks } from './tallyBooks.js';
+import { entriesOf } from './tallyJson.js';
+
+const bVendors = [{ id: 1, name: 'CHANDRA FASHION', tally_ledger_name: 'Chandra Fashion', gstin: '24AASFC4987G1ZY', booking: 'purchase' },
+  { id: 4, name: 'Airtel', tally_ledger_name: 'M/s Bharti Airtel Ltd  UP', gstin: '09AAACB2894G1ZM', booking: 'expense', expense_ledger: 'Telephone and Internet Expenses GST' }];
+const bBills = [
+  { id: 1, status: 'accepted', vendor: 'CHANDRA FASHION', vendor_id: 1, invoice_no: 'CF/26962', invoice_date: '2026-10-01', subtotal: 20758, tax: 1038, total: 21796, tax_type: 'IGST', tax_rate: 5, supplier_gstin: '24AASFC4987G1ZY', kind: 'goods',
+    lines: [{ hsn: '60063200', qty: 99.32, rate: 209, unit: 'KGS', amount: 20757.88 }] },
+  { id: 7, status: 'accepted', vendor: 'Airtel', vendor_id: 4, invoice_no: 'CF/26962', invoice_date: '2026-10-12', subtotal: 899, tax: 161.82, total: 1060.82, tax_type: 'CGST+SGST', tax_rate: 18, supplier_gstin: '09AAACB2894G1ZM', kind: 'service', lines: [] },
+];
+const bBuckets = [{ name: 'Purchase Accounts', kind: 'expense', needs_bill: true }, { name: 'Suspense', kind: 'review', needs_bill: false }];
+const bLines = [{ id: 17, status: 'matched', txn_date: '2026-10-01', debit: 21796, credit: 0, bucket: 'Purchase Accounts', payee: 'chandrafas', remarks: 'MMT/IMPS/627514475918/fabric/ChandraFas' },
+  { id: 40, status: 'matched', txn_date: '2026-10-16', debit: 0, credit: 5000, bucket: 'Suspense', payee: null, remarks: 'UPI/110950000002/refund' }];
+const books = () => buildBooks({ from: '2026-10-01', next: '2026-11-01', start: '2026-10-01', bills: bBills, vendors: bVendors, handled: [], bankLines: bLines, buckets: bBuckets, payeeLinks: [] });
+
+test('a fabric purchase is an item invoice in the shape of the accountant\'s own: party and GSTIN, place of supply, the stock item with godown and batch, the bill on the supplier', () => {
+  const r = books();
+  const t = buildTallyFile({ vouchers: [], orders: new Map(), books: r.vouchers });
+  const p = t.file.tallymessage.find(m => m.vouchertypename === 'Purchase' && m.reference === 'CF/26962' && m.partyledgername === 'Chandra Fashion');
+  assert.deepEqual([p.vchentrymode, p.isinvoice, p.statename, p.placeofsupply, p.partygstin, p.vouchernumber, p.date], ['Item Invoice', true, 'Gujarat', 'Uttar Pradesh', '24AASFC4987G1ZY', 'CF/26962', '20261001']);
+  const item = p.allinventoryentries[0];
+  assert.deepEqual([item.stockitemname, item.rate, item.amount, item.billedqty, item.batchallocations[0].godownname, item.batchallocations[0].batchname, item.accountingallocations[0].ledgername],
+    ['KNITTED FABRIC', '209.00/KGS', '-20757.88', ' 99.32 KGS', 'Main Location', 'Primary Batch', 'Purchase Raw Material']);
+  const party = p.ledgerentries.find(e => e.ispartyledger);
+  assert.deepEqual([party.amount, party.isdeemedpositive, party.billallocations], ['21796.00', false, [{ name: 'CF/26962', billtype: 'New Ref', amount: '21796.00' }]]);   // the bill opens here; the payment below settles it
+});
+
+test('every voucher sums to zero, items included; a bill opens before the payment that settles it; two suppliers with one invoice number get different voucher numbers', () => {
+  const r = books();
+  const t = buildTallyFile({ vouchers: [], orders: new Map(), books: r.vouchers });
+  assert.ok(t.checks.find(c => c.id === 'balanced').ok, JSON.stringify(t.checks));
+  const same = t.file.tallymessage.filter(m => m.vouchertypename === 'Purchase').map(m => m.vouchernumber);
+  assert.deepEqual(same, ['CF/26962', 'CF/26962-2']);
+  const order = t.file.tallymessage.filter(m => m.date === '20261001').map(m => m.vouchertypename);
+  assert.deepEqual(order, ['Purchase', 'Payment']);
+});
+
+test('a payment: the supplier is debited against its bill, the bank credited with the reference and the bank\'s date; an unlinked receipt goes to its ledger', () => {
+  const t = buildTallyFile({ vouchers: [], orders: new Map(), books: books().vouchers });
+  const pay = t.file.tallymessage.find(m => m.vouchertypename === 'Payment');
+  const [sup, bank] = pay.allledgerentries;
+  assert.deepEqual([sup.ledgername, sup.amount, sup.isdeemedpositive, sup.billallocations], ['Chandra Fashion', '-21796.00', true, [{ name: 'CF/26962', billtype: 'Agst Ref', amount: '-21796.00' }]]);
+  assert.deepEqual([bank.ledgername, bank.amount, bank.bankallocations[0].instrumentnumber, bank.bankallocations[0].bankersdate, bank.bankallocations[0].transactiontype, bank.bankallocations[0].paymentfavouring],
+    ['ICICI Bank', '21796.00', '627514475918', '20261001', 'Others', 'Chandra Fashion']);
+  assert.equal(pay.vouchernumber, 'ERP/PY/2627/00017'); assert.equal(pay.persistedview, 'Accounting Voucher View');
+  const rc = t.file.tallymessage.find(m => m.vouchertypename === 'Receipt');
+  assert.deepEqual(rc.allledgerentries.map(e => [e.ledgername, e.amount]), [['ICICI Bank', '-5000.00'], ['Suspense', '5000.00']]);
+  assert.deepEqual(entriesOf(rc), rc.allledgerentries);
+});
+
+test('an expense bill is an accounting invoice with the expense line carrying its GST source and rates', () => {
+  const t = buildTallyFile({ vouchers: [], orders: new Map(), books: books().vouchers });
+  const a = t.file.tallymessage.find(m => m.partyledgername === 'M/s Bharti Airtel Ltd  UP');
+  assert.equal(a.vchentrymode, 'Accounting Invoice'); assert.equal(a.allinventoryentries, undefined);
+  const exp = a.ledgerentries.find(e => e.ledgername === 'Telephone and Internet Expenses GST');
+  assert.deepEqual([exp.amount, exp.gstovrdntypeofsupply, exp.ratedetails.map(r => r.gstratedutyhead)], ['-899.00', 'Services', ['CGST', 'SGST/UTGST']]);
+  assert.deepEqual(a.ledgerentries.filter(e => /Input/.test(e.ledgername)).map(e => [e.ledgername, e.amount]), [['CGST Input UP', '-80.91'], ['SGST Input UP', '-80.91']]);
+});
+
+test('invoice vouchers keep their entries under ledgerentries and accounting vouchers under allledgerentries, as in the accountant\'s own export', () => {
+  const t = buildTallyFile({ vouchers: [], orders: new Map(), books: books().vouchers });
+  for (const m of t.file.tallymessage) {
+    if (m.isinvoice) { assert.ok(m.ledgerentries, m.vouchernumber); assert.equal(m.allledgerentries, undefined); }
+    else { assert.ok(m.allledgerentries, m.vouchernumber); assert.equal(m.ledgerentries, undefined); }
+  }
 });

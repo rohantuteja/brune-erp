@@ -114,6 +114,21 @@ export function buildChecklist(d) {
     ? { id: 'recurring', title: `${plural(lacking.length, 'regular supplier invoice')} for the month not uploaded`, status: 'todo', detail: 'Their invoices are dated at the turn of the month; until they are in, the month is booked on estimates or not at all.', items: lacking.map(([v, w]) => `${v}: ${w}`), link: { label: 'Bills', tab: 'bills' } }
     : { id: 'recurring', title: 'Regular supplier invoices for the month are in', status: 'done', detail: 'Meta, Velocity, GoKwik and Easebuzz.', link: { label: 'Bills', tab: 'bills' } });
 
+  // ── Purchase and payment vouchers (tallyBooks.js) ──
+  const bb = d.books;
+  if (bb) {
+    const money = (n) => `₹${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    add('bills', (bb.problems || []).length
+      ? { id: 'billbuild', title: `${plural(bb.problems.length, 'bill')} cannot be made into a voucher`, status: 'todo', blocker: true, detail: 'Fix the supplier on the Bills page (its Tally ledger, or its expense ledger).', items: bb.problems.map(p => p.text), link: { label: 'Bills', tab: 'bills' } }
+      : { id: 'billbuild', title: `${plural(bb.purchases || 0, 'purchase voucher')} made from the month's bills`, status: 'done', detail: (bb.notes || []).length ? `${bb.notes.join(' ')}` : 'Fabric bills in kilos or metres become item invoices (KNITTED FABRIC, Shirting Fabric); every other bill is an accounting invoice against its expense ledger.', link: { label: 'Bills', tab: 'bills' } });
+    add('clear', (bb.unlinked || []).length
+      ? { id: 'suppliers', title: `${plural(bb.unlinked.length, 'bank payment')} to a supplier not linked to the supplier`, status: 'todo', blocker: true, detail: 'A payment to a supplier is posted to the supplier\'s ledger against its bill, so it has to know which supplier. Pick the supplier for each below.', items: bb.unlinked.map(l => `${dmy(l.txn_date)} ${money(l.debit)} ${String(l.payee || l.remarks || '').slice(0, 40)}`) }
+      : { id: 'suppliers', title: `${plural(bb.payments || 0, 'payment voucher')} made from the bank statement`, status: 'done', detail: 'Every payment to a supplier is placed against the supplier and its bill (or as an advance); the others go to their ledger.' });
+    if ((bb.advances || []).length) add('bills', { id: 'advances', title: `${plural(bb.advances.length, 'advance')} paid before the invoice`, status: 'info', detail: 'Booked as an advance on the supplier; the invoice, when it comes, is settled against it.', items: bb.advances.map(a => `${a.vendor}: ${money(a.left)} on ${dmy(a.date)}`) });
+    if ((bb.unpaid || []).length) add('bills', { id: 'unpaid', title: `${plural(bb.unpaid.length, 'bill')} still unpaid at the end of the month (${money(bb.unpaid.reduce((t, u) => t + u.left, 0))})`, status: 'info', detail: 'They stay open on the supplier in Tally until a payment settles them.', items: bb.unpaid.map(u => `${u.vendor} ${u.name}: ${money(u.left)}`) });
+    if ((bb.tdsPending || []).length) add('bills', { id: 'tds', title: `Tax deducted at source not applied for ${bb.tdsPending.join(', ')}`, status: 'todo', detail: 'The rate and the Tally ledger for it are still to be given: until then the invoice is booked without the deduction, and the supplier is credited the full amount.', items: [] });
+  }
+
   // ── 3. Clear up ──
   add('clear', d.bankUnresolved
     ? { id: 'lines', title: `${plural(d.bankUnresolved, 'bank or card line')} to decide`, status: 'todo', blocker: true, detail: 'Each needs a bucket (a Tally ledger): they cannot be left out of a file that has to balance.', link: { label: 'Bank & card', tab: 'bank' } }

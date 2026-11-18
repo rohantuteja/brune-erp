@@ -4,7 +4,8 @@ import { supabase } from '../lib/supabase';
 import { localToday } from '../lib/constants';
 import { accountingStart } from '../lib/gstData';
 import { monthsBetween, monthLabel } from '../lib/gstReport';
-import { fetchAccounting, markLedgers } from '../lib/accountingData';
+import { fetchAccounting, markLedgers, linkVendor } from '../lib/accountingData';
+import { bookChecks } from '../lib/tallyBooks';
 import { buildLedgersFile, ledgersFileName, withLedgers } from '../lib/tallyLedgers';
 import { buildChecklist } from '../lib/accountingChecklist';
 import { groupOrderVouchers, voucherPlan, TYPE_LABEL } from '../lib/tallyVouchers';
@@ -59,7 +60,38 @@ function StepRow({ step, onGo }) {
   );
 }
 
-export function AccountingView({ month, months, onMonth, checklist, plan, loading, error, onReload, onGo, onGenerate, built, ledgers, onLedgersFile, onMark }) {
+// One bank payment the ERP could not place: say which supplier it went to. A proper component: it holds its own choice.
+function SupplierLinkRow({ line, vendors, onLink }) {
+  const [vendorId, setVendorId] = useState('');
+  const [remember, setRemember] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const save = async () => { setBusy(true); await onLink([line.id], Number(vendorId), remember && !!line.payee); setBusy(false); };
+  return (
+    <li className="px-3 sm:px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <span className="text-xs tabular-nums text-stone-700 w-20 shrink-0">{String(line.txn_date).slice(0, 10)}</span>
+      <span className="text-xs tabular-nums font-medium text-stone-900 w-24 shrink-0">{inr(line.debit)}</span>
+      <span className="text-[11px] text-stone-500 min-w-0 flex-1 truncate" title={line.remarks}>{line.payee || line.remarks}</span>
+      <select value={vendorId} onChange={e => setVendorId(e.target.value)} className={`${field} w-56`} aria-label={`Supplier for the payment of ${inr(line.debit)}`}>
+        <option value="">Which supplier?</option>
+        {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+      </select>
+      {line.payee && <label className="inline-flex items-center gap-1 text-[11px] text-stone-600"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />Remember this payee</label>}
+      <button type="button" className={btn} disabled={!vendorId || busy} onClick={save}>Save</button>
+    </li>
+  );
+}
+
+function SupplierLinks({ lines, vendors, onLink }) {
+  return (
+    <section className="bg-white rounded-lg border border-amber-300">
+      <div className="px-3 sm:px-4 py-2 border-b border-amber-200 bg-amber-50 rounded-t-lg text-sm font-medium text-amber-900">Which supplier did these payments go to?</div>
+      <div className="px-3 sm:px-4 py-2 text-xs text-stone-600">The ERP places most payments by itself (the bill's exact amount, a payee it has seen, a name like Airtel). These it could not. Each is posted to the supplier you pick, against its bill or as an advance. Tick "Remember this payee" only when the payee is that supplier every time (not a person's own name). If it was not a supplier payment, file it on Bank & card under a bucket that needs no bill instead.</div>
+      <ul className="divide-y divide-stone-100">{lines.map(l => <SupplierLinkRow key={l.id} line={l} vendors={vendors} onLink={onLink} />)}</ul>
+    </section>
+  );
+}
+
+export function AccountingView({ month, months, onMonth, checklist, plan, loading, error, onReload, onGo, onGenerate, built, ledgers, onLedgersFile, onMark, books, vendors, onLink }) {
   const c = checklist;
   const total = c ? c.steps.filter(s => s.status !== 'info').length : 0;
   const done = c ? c.steps.filter(s => s.status === 'done').length : 0;
@@ -95,16 +127,18 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
             </section>
           ))}
 
+          {books && books.unlinked.length > 0 && <SupplierLinks lines={books.unlinked} vendors={(vendors || []).filter(v => v.booking !== 'tie_out')} onLink={onLink} />}
+
           <section className="bg-white rounded-lg border border-stone-200">
             <div className="px-3 sm:px-4 py-2 border-b border-stone-100 text-sm font-medium text-stone-900">Tally file for {monthLabel(month)}</div>
             <div className="px-3 sm:px-4 py-3 space-y-3">
-              <div className="text-xs text-stone-600 leading-relaxed">A JSON file of vouchers for TallyPrime to import, made from the ledger exactly as it stands: sales and credit notes by invoice, bank receipts by UTR, and the clearing of each customer's bill order by order. Nothing is sent to Tally: the accountant imports the file.</div>
+              <div className="text-xs text-stone-600 leading-relaxed">A JSON file of vouchers for TallyPrime to import: sales and credit notes by invoice, bank receipts by UTR and the clearing of each customer's bill order by order (all from the order ledger), the supplier bills as purchase vouchers, and the bank payments as payment vouchers settled against those bills. Nothing is sent to Tally: the accountant imports the file.</div>
               {plan && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead><tr className="text-stone-500 border-b border-stone-200"><th className="py-1.5 pr-2 text-left font-medium">Voucher type</th><th className="py-1.5 px-2 text-right font-medium">Vouchers</th><th className="py-1.5 px-2 text-right font-medium">Amount</th><th className="py-1.5 pl-2 text-left font-medium">From</th></tr></thead>
                     <tbody>
-                      {['sales', 'credit_note', 'receipt', 'journal'].filter(t => plan[t]).map(t => (
+                      {['sales', 'credit_note', 'purchase', 'payment', 'receipt', 'journal'].filter(t => plan[t]).map(t => (
                         <tr key={t} className="border-b border-stone-100">
                           <td className="py-1.5 pr-2">{TYPE_LABEL[t]}</td><td className="py-1.5 px-2 text-right tabular-nums">{plan[t].count}</td><td className="py-1.5 px-2 text-right tabular-nums">{inr(plan[t].amount)}</td>
                           <td className="py-1.5 pl-2 text-stone-500">{Object.entries(plan[t].sources).map(([k, n]) => `${k.replace(/_/g, ' ')} ${n}`).join(' · ')}{plan[t].unbalanced ? <span className="text-red-700"> · {plan[t].unbalanced} unbalanced</span> : null}</td>
@@ -132,7 +166,8 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
                   <div className="text-[11px] text-stone-600">Do the renames before importing: the vouchers use the new names.</div>
                 </div>
               )}
-              <div className="text-[11px] text-stone-500">Not in this first version yet: purchase vouchers (the bills), payment and receipt vouchers for the other bank lines, and the card journal. No stock items either: the sales are accounting invoices.</div>
+              {books && (books.summary.skipped.ignored || books.summary.skipped['order ledger receipt']) ? <div className="text-[11px] text-stone-500">Left out on purpose: {books.summary.skipped.ignored || 0} bank lines that make no entry (wholesale, returned payments, your own card payments) and {books.summary['skipped']?.['order ledger receipt'] || 0} payouts the order ledger already has a receipt for.</div> : null}
+              <div className="text-[11px] text-stone-500">Not in the file yet: the card journal, the stock journals and the month-end stock correction, and the Meta and Velocity provisions. Sales and credit notes still carry no stock items.</div>
               <div className="flex flex-wrap items-center gap-3">
                 <button type="button" className={btnDark} disabled={!c.ready} onClick={() => onGenerate(false)} title={c.ready ? '' : 'Finish the steps that block the file first'}>
                   {c.ready ? <Download className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}Generate Tally file
@@ -181,8 +216,9 @@ export default function AccountingPage({ showToast }) {
   const fresh = data && data.month === month ? data : null;
   const checklist = useMemo(() => fresh ? buildChecklist(fresh.checklistInput) : null, [fresh]);
   const vouchers = useMemo(() => fresh ? groupOrderVouchers(fresh.entries) : [], [fresh]);
-  const plan = useMemo(() => fresh ? voucherPlan(vouchers) : null, [fresh, vouchers]);
-  const ledgers = useMemo(() => fresh ? buildLedgersFile(fresh.tally) : null, [fresh]);
+  const books = fresh?.books ?? null;
+  const plan = useMemo(() => fresh ? voucherPlan([...vouchers, ...(books?.vouchers ?? [])]) : null, [fresh, vouchers, books]);
+  const ledgers = useMemo(() => fresh ? buildLedgersFile(fresh.tally, fresh.vendors) : null, [fresh]);
   const downloadJson = (obj, name) => {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -193,19 +229,23 @@ export default function AccountingPage({ showToast }) {
     try { const n = await markLedgers(supabase, names); showToast?.(`${n} ledger${n === 1 ? '' : 's'} marked as ready in Tally`, 'success'); await load(); }
     catch (err) { showToast?.(`Could not save: ${err.message}`, 'error'); }
   };
+  const onLink = async (ids, vendorId, remember) => {
+    try { await linkVendor(supabase, ids, vendorId, remember); showToast?.('Supplier saved', 'success'); await load(); }
+    catch (err) { showToast?.(`Could not save: ${err.message}`, 'error'); }
+  };
   const [built, setBuilt] = useState(null);
   useEffect(() => { setBuilt(null); }, [month]);
   const onGenerate = (test) => {
     try {
       const orders = new Map((fresh?.orders || []).map(o => [o.order_name, { state: o.state, saleDoc: o.saleDoc, channel: o.channel }]));
-      const r = buildTallyFile({ vouchers, orders, limit: test ? 3 : null });
-      const withL = withLedgers(r.file, fresh?.tally || []);
+      const r = buildTallyFile({ vouchers, orders, books: books?.vouchers ?? [], limit: test ? 3 : null });
+      const withL = withLedgers(r.file, fresh?.tally || [], fresh?.vendors || []);
       downloadJson(withL, tallyFileName(month, test));
-      setBuilt({ test, counts: { ...(ledgers && ledgers.create.length ? { ledger: ledgers.create.length } : {}), ...r.counts }, checks: r.checks });
+      setBuilt({ test, counts: { ...(ledgers && ledgers.create.length ? { ledger: ledgers.create.length } : {}), ...r.counts }, checks: [...r.checks, ...(books && !test ? bookChecks(books) : [])] });
     } catch (err) { showToast?.(`Could not make the file: ${err.message}`, 'error'); }
   };
 
   if (!month) return <div className="text-sm text-stone-500 px-1 py-6">Loading…</div>;
-  return <AccountingView month={month} months={months} onMonth={(m) => setP({ acmonth: m })} checklist={checklist} plan={plan} loading={loading} error={error} onReload={load} onGenerate={onGenerate} built={built} ledgers={ledgers} onMark={onMark} onLedgersFile={() => downloadJson(ledgers.file, ledgersFileName())}
+  return <AccountingView month={month} months={months} onMonth={(m) => setP({ acmonth: m })} checklist={checklist} plan={plan} loading={loading} error={error} onReload={load} onGenerate={onGenerate} built={built} ledgers={ledgers} onMark={onMark} books={books} vendors={fresh?.vendors} onLink={onLink} onLedgersFile={() => downloadJson(ledgers.file, ledgersFileName())}
     onGo={(tab) => navigate(`/analytics/${SLUG[tab] ?? tab}`)} />;
 }
