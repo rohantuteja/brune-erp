@@ -20,7 +20,7 @@ const orders = [
 const report = buildGstReport({ month: '2026-10', entries, orders, waiting: [{ order_name: '38500', channel: 'shopify', sale_date: '2026-10-31', state: 'Kerala', exceptions: [] }] });
 
 test('the workbook has one sheet per thing an accountant looks up, in a fixed order', () => {
-  assert.deepEqual(buildGstSheets(report).map(s => s.name), ['Summary', 'Shopify by state', 'Myntra by state', 'Sales invoices', 'Fee invoices (ERP)', 'Credit notes', 'Not invoiced yet']);
+  assert.deepEqual(buildGstSheets(report).map(s => s.name), ['Summary', 'B2C all (Table 7)', 'Myntra (Table 14)', 'Shopify by state', 'Sales invoices', 'Fee invoices (ERP)', 'Credit notes', 'Not invoiced yet']);
   assert.equal(gstFileName(report), 'GST-sales-2026-10.xlsx');
 });
 
@@ -38,15 +38,24 @@ test('read back from the file: totals, state rows and documents are the report\'
   assert.equal(Number(row('Orders placed this month, not invoiced yet')[1]), 1);
 
   const shop = out.get('Shopify by state');
-  assert.match(shop[0][0], /Shopify: supplies to customers, October 2026/);
+  assert.match(shop[0][0], /Shopify on its own, October 2026/);
   const mh = shop.find(r => r[0] === 'Maharashtra');
   assert.equal(Number(mh[6]), 476.19); assert.equal(Number(mh[7]), 23.81);      // net taxable, net IGST
   const total = shop.find(r => r[0] === 'Total');
   assert.equal(Number(total[6]), 570.48);
 
-  const my = out.get('Myntra by state');
-  assert.match(my[0][0], /29AAECM9636P1ZJ/);
+  const my = out.get('Myntra (Table 14)');
+  assert.match(my[0][0], /Table 14\(a\).*29AAECM9636P1ZJ/);
   assert.equal(my.find(r => r[0] === 'Uttar Pradesh')[1], '09');
+
+  // Table 7 holds BOTH channels' consumer sales by state and rate; Myntra's are in it too
+  const b2c = out.get('B2C all (Table 7)');
+  assert.match(b2c[0][0], /Table 7/);
+  assert.equal(Number(b2c.find(r => r[0] === 'Total')[6]), 1770.48);                       // Shopify 570.48 + Myntra 1,200
+  assert.equal(Number(b2c.find(r => r[0] === 'Uttar Pradesh')[6]), 1200);                 // only Myntra sold to UP in the fixture
+  const where = sum.find(r => String(r[0]).startsWith('Table 14(a)'));
+  assert.equal(Number(where[2]), 1200);                                                    // Myntra's net taxable value
+  assert.equal(Number(sum.find(r => String(r[0]).startsWith('Table 7'))[2]), 1770.48);
 
   assert.deepEqual(out.get('Sales invoices').slice(1).map(r => r[0]), ['INS0001', 'I1006']);
   assert.equal(out.get('Fee invoices (ERP)')[1][1], 'not numbered yet');

@@ -1,5 +1,5 @@
 // The Excel file behind Analytics → GST: the same figures as the screen, one sheet per thing an accountant looks up.
-//   Summary · Shopify by state · Myntra by state · Sales invoices · Fee invoices (ERP) · Credit notes · Not invoiced yet
+//   Summary · B2C all (Table 7) · Myntra (Table 14) · Shopify by state · Sales invoices · Fee invoices (ERP) · Credit notes · Not invoiced yet
 import { CHANNEL_LABEL, MYNTRA_GSTIN, stateTable } from './gstReport.js';
 
 const h = (...cols) => cols.map(v => ({ v, s: 'h' }));
@@ -12,13 +12,15 @@ const tax = (b) => Math.round((b.igst + b.cgst + b.sgst) * 100) / 100;
 
 function stateSheet(report, channel) {
   const { rows, total } = stateTable(report, channel);
-  const title = channel === 'myntra'
-    ? `Myntra: supplies through the e-commerce operator (GSTIN ${MYNTRA_GSTIN}), ${report.label}, by state and rate`
-    : `Shopify: supplies to customers, ${report.label}, by state and rate`;
+  const title = channel === 'all'
+    ? `Shopify and Myntra together, ${report.label}, by state and rate: the figures for GSTR-1 Table 7 (B2C)`
+    : channel === 'myntra'
+      ? `Myntra, ${report.label}: the summary for GSTR-1 Table 14(a), under the e-commerce operator (GSTIN ${MYNTRA_GSTIN}). These sales are also in Table 7.`
+      : `Shopify on its own, ${report.label}, by state and rate (not a GSTR-1 table: Table 7 needs Myntra's sales too)`;
   const body = rows.map(r => [r.state, r.stateCode, r.ratePct, m(r.sales.taxable), m(r.fees.taxable), m(r.returns.taxable), m(r.net.taxable), m(r.net.igst), m(r.net.cgst), m(r.net.sgst), m(tax(r.net)), r.sales.docs, r.returns.docs]);
   const totalRow = [{ v: 'Total', s: 'tt' }, { v: '', s: 'tt' }, { v: '', s: 'tt' }, t(total.sales.taxable), t(total.fees.taxable), t(total.returns.taxable), t(total.net.taxable), t(total.net.igst), t(total.net.cgst), t(total.net.sgst), t(tax(total.net)), { v: total.sales.docs, s: 'tt' }, { v: total.returns.docs, s: 'tt' }];
   return {
-    name: channel === 'myntra' ? 'Myntra by state' : 'Shopify by state', freeze: 3, cols: [24, 11, 8, 16, 16, 16, 18, 14, 14, 14, 14, 11, 12],
+    name: channel === 'all' ? 'B2C all (Table 7)' : channel === 'myntra' ? 'Myntra (Table 14)' : 'Shopify by state', freeze: 3, cols: [24, 11, 8, 16, 16, 16, 18, 14, 14, 14, 14, 11, 12],
     rows: [[{ v: title, s: 'title' }], [note('Net taxable value = sales + fee invoices - credit notes. Sales count in the month the order was placed; credit notes in the month they are dated. Tax columns are net of credit notes.')],
       h('State', 'State code', 'Rate %', 'Sales (taxable value)', 'Fee invoices (taxable)', 'Credit notes (taxable)', 'Net taxable value', 'Net IGST', 'Net CGST', 'Net SGST', 'Net tax', 'Sales invoices', 'Credit notes'), ...body, totalRow],
   };
@@ -38,6 +40,12 @@ export function buildGstSheets(report) {
       h('Taxable value and tax', 'Sales', 'Fee invoices (ERP)', 'Credit notes', 'Net taxable value', 'Net IGST', 'Net CGST', 'Net SGST', 'Net tax'),
       line('Shopify', T.shopify), line('Myntra', T.myntra), [{ v: 'Total', s: 'tt' }, t(T.all.sales.taxable), t(T.all.fees.taxable), t(T.all.returns.taxable), t(T.all.net.taxable), t(T.all.net.igst), t(T.all.net.cgst), t(T.all.net.sgst), t(tax(T.all.net))],
       [],
+      [{ v: 'Where it goes in GSTR-1', s: 'b' }],
+      h('Table', 'Which sales', 'Net taxable value', 'Net tax'),
+      ['Table 7: B2C, state and rate wise', 'Shopify + Myntra (sheet "B2C all (Table 7)")', m(T.all.net.taxable), m(tax(T.all.net))],
+      [`Table 14(a): supplies through an e-commerce operator, GSTIN ${MYNTRA_GSTIN}`, 'Myntra only (sheet "Myntra (Table 14)")', m(T.myntra.net.taxable), m(tax(T.myntra.net))],
+      [note('Myntra collects TCS under section 52, so its sales are summarised under its GSTIN in Table 14(a) AND are in Table 7: the GSTN advisory on Notification 26/2022 says the Table 14(a) summary is of supplies already reported in tables 4 to 10. No tax flows from Table 14(a) to GSTR-3B. Your accountant maps these figures onto the return.')],
+      [],
       [{ v: 'Documents', s: 'b' }],
       ['Sales invoices (Unicommerce)', T.all.sales.docs], ['Fee invoices (issued by the ERP)', T.all.fees.docs],
       ['Credit notes from Unicommerce', ucNotes], ['Credit notes issued by the ERP', report.docs.returns.length - ucNotes],
@@ -45,8 +53,6 @@ export function buildGstSheets(report) {
       [],
       [{ v: 'Checks', s: 'b' }],
       ...report.checks.map(c => [c.level === 'ok' ? 'OK' : c.level === 'info' ? 'Note' : c.level === 'warn' ? 'Check' : 'ERROR', c.text]),
-      [],
-      [note(`Myntra's supplies are reported under the e-commerce operator, Myntra Designs (GSTIN ${MYNTRA_GSTIN}).`)],
     ],
   };
   const saleSheet = {
@@ -68,7 +74,7 @@ export function buildGstSheets(report) {
     name: 'Not invoiced yet', freeze: 1, cols: [14, 13, 10, 22, 90],
     rows: [h('Order', 'Order date', 'Channel', 'State', 'Why'), ...report.waiting.map(x => [x.order, d(x.date), CHANNEL_LABEL[x.channel] || x.channel, x.state || '', x.reason])],
   };
-  return [summary, stateSheet(report, 'shopify'), stateSheet(report, 'myntra'), saleSheet, feeSheet, returnSheet, waitSheet];
+  return [summary, stateSheet(report, 'all'), stateSheet(report, 'myntra'), stateSheet(report, 'shopify'), saleSheet, feeSheet, returnSheet, waitSheet];
 }
 
 export const gstFileName = (report) => `GST-sales-${report.month}.xlsx`;

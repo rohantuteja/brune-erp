@@ -20,12 +20,23 @@ the arithmetic is in the browser (`src/lib/gstReport.js`, tested), so the figure
   should be empty.
 - The four Myntra orders placed on 27 and 30 Sep are booked in **October**, as the owner decided (September's books were closed
   and had no Myntra sales). The page says so under its checks. This is a one-off: nothing similar can happen again.
-- Myntra is a marketplace: its supplies are reported under the e-commerce operator (Myntra Designs, GSTIN
-  29AAECM9636P1ZJ) and are kept apart from Shopify's by a switch above the table.
+- **Myntra is both in Table 7 and in Table 14(a) of GSTR-1** (checked 18 Nov 2026 against the GSTN advisory on Notification
+  26/2022 and the GST portal's Table 14 help). Myntra is an e-commerce operator that collects TCS under section 52 (every payout
+  shows its TCS), and you invoice the customer yourself, so your sales through it are consumer (B2C) sales like Shopify's: they
+  go in **Table 7**, state and rate wise, together with Shopify's. In addition, **Table 14(a)** asks for "the ECO-GSTIN wise
+  summary of the supplies made through ECO on which ECO is liable to collect tax at source (TCS) and liability on which has
+  already been reported in any table 4 to 10", that is a summary under Myntra's GSTIN (Myntra Designs, 29AAECM9636P1ZJ) of sales
+  already in Table 7. "No taxable value or tax liabilities will be auto-populated from this table to GSTR-3B": tax is paid on
+  the normal tables, and the TCS Myntra deducts is claimed from the cash ledger, not through GSTR-1. Table 14(b) and Table 15
+  are for section 9(5) supplies (services such as transport and accommodation, not apparel). So the view's **Both channels**
+  figure is Table 7 and its **Myntra** figure is Table 14(a); Myntra must not be left out of Table 7. The portal's Table 14 fields
+  are the operator's GSTIN, the net value of supplies and the tax amounts; the advisory spells out "net of credit / debit note"
+  only for 14(b), so the 14(a) value is shown net of Myntra's credit notes to agree with Table 7, which the accountant should
+  confirm. Amendments go in Table 14A.
 
 ## What is on the page
 
-- A month picker (from the accounting start date; the last finished month is the default), a Shopify / Myntra / Both switch.
+- A month picker (from the accounting start date; the last finished month is the default) and a switch: **Both channels (Table 7)** (the default), **Myntra (Table 14)**, Shopify only.
 - Four cards: sales (sales invoices + fee invoices), credit notes, net taxable value, net GST (IGST, CGST, SGST).
 - Checks: every document has a state; no order waiting for an invoice; how many credit notes and invoices the ERP issued
   itself (they carry `ERP/CN/2627/NNNN` and `ERP/IN/2627/NNNN` numbers from the ledger, `docs/document-numbers.md`; an unnumbered one is a warning); the
@@ -33,8 +44,8 @@ the arithmetic is in the browser (`src/lib/gstReport.js`, tested), so the figure
 - **By state and rate**: sales, fee invoices, credit notes, net taxable value, net IGST, CGST and SGST, with a total row. A
   state or rate is a row of its own. UP sales carry CGST + SGST, every other state IGST (this follows the invoice).
 - Lists (paged): sales invoices, credit notes (with who issued each), ERP fee invoices, orders not invoiced yet.
-- **Download Excel**: always the whole month, both channels, whichever switch is selected. Sheets: Summary, Shopify by state,
-  Myntra by state, Sales invoices, Fee invoices (ERP), Credit notes, Not invoiced yet. Real numbers and real dates, a frozen
+- **Download Excel**: always the whole month, both channels, whichever switch is selected. Sheets: Summary (with a "Where it goes in GSTR-1" block), B2C all (Table 7), Myntra (Table 14), Shopify by state,
+  Sales invoices, Fee invoices (ERP), Credit notes, Not invoiced yet. Real numbers and real dates, a frozen
   header row, one file per month named `GST-sales-YYYY-MM.xlsx`.
 
 ## How it is computed

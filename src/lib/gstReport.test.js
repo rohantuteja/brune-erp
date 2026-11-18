@@ -158,3 +158,24 @@ test('documentsOf keeps two credit notes of one order apart', () => {
   ], new Map(), '2026-10');
   assert.deepEqual(d.map(x => x.taxable), [100, 200]);
 });
+
+test('"all" merges Shopify and Myntra by state and rate (GSTR-1 Table 7); Myntra on its own is the Table 14(a) summary', () => {
+  const rep = buildGstReport({ month: '2026-10', orders: [
+      { order_name: 'S1', channel: 'shopify', state: 'Karnataka', state_code: '29', rate: '0.05', sale_date: '2026-10-03' },
+      { order_name: 'M1', channel: 'myntra', state: 'Karnataka', state_code: '29', rate: '0.05', sale_date: '2026-10-04' },
+      { order_name: 'M2', channel: 'myntra', state: 'Kerala', state_code: '32', rate: '0.05', sale_date: '2026-10-05' } ],
+    entries: [
+      e('S1', '2026-10-03', 'sale', 'GST SALES', 0, 1000, { doc: 'INS1', part: 'goods', qty: 1 }), e('S1', '2026-10-03', 'sale', 'IGST OUTPUT UP', 0, 50, { doc: 'INS1' }),
+      e('M1', '2026-10-04', 'sale', 'GST SALES', 0, 2000, { doc: 'I1', part: 'goods', qty: 1 }), e('M1', '2026-10-04', 'sale', 'IGST OUTPUT UP', 0, 100, { doc: 'I1' }),
+      e('M2', '2026-10-05', 'sale', 'GST SALES', 0, 500, { doc: 'I2', part: 'goods', qty: 1 }), e('M2', '2026-10-05', 'sale', 'IGST OUTPUT UP', 0, 25, { doc: 'I2' }),
+    ] });
+  const all = stateTable(rep, 'all');
+  assert.equal(all.rows.length, 2);                                                       // Karnataka once, Kerala once
+  const ka = all.rows.find(r => r.stateCode === '29');
+  assert.equal(ka.sales.taxable, 3000); assert.equal(ka.net.igst, 150); assert.equal(ka.sales.docs, 2); assert.equal(ka.channel, 'all');
+  assert.equal(all.total.net.taxable, 3500);
+  const my = stateTable(rep, 'myntra');                                                   // Table 14(a): Myntra only
+  assert.equal(my.total.net.taxable, 2500); assert.equal(my.total.net.igst, 125);
+  assert.equal(stateTable(rep, 'shopify').total.net.taxable, 1000);
+  assert.equal(all.total.net.taxable, my.total.net.taxable + stateTable(rep, 'shopify').total.net.taxable);
+});
