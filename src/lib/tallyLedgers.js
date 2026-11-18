@@ -8,8 +8,11 @@
 //
 //   Sundry Debtors named "...(order control)"   bill by bill, Unregistered/Consumer (the customer ledgers every order's bill lives in)
 //   a supplier's own ledger (vendors.tally_ledger_name)   the owner's rule (18 Nov 2026): never a bare name. Bill by bill, GST registration type, GSTIN, PAN, state,
-//                                                country, mailing name. The key names for these are Tally's TDL names from memory: check them against an exported
-//                                                party ledger (Chandra Fashion) on the copy company before the first real import.
+//                                                country, mailing name, address, pincode. The accountant's files hold NO ledger master export (only vouchers and the
+//                                                trial balance), so the master's key names cannot be read from them. What his Day Book proves is what Tally keeps on a
+//                                                party (mailing name, address lines, pincode, state, country, GSTIN, PAN, registration type) and how it writes a list of
+//                                                strings (`address: [{ metadata: true, type: 'String' }, line, ...]`); the master keys (LEDMAILINGDETAILS, LEDGSTREGDETAILS,
+//                                                LEDSTATENAME, INCOMETAXNUMBER) are Tally's TDL names, to be confirmed by importing the test file into a copy company.
 //   everything else                             just the name and the group
 import { guid } from './tallyJson.js';
 import { stateOfGstin, stateByCode } from './gstStates.js';
@@ -41,9 +44,10 @@ export function partyDetails(v) {
   const state = stateOfGstin(gstin) || stateByCode(v.state_code);
   const pan = v.pan || (gstin.length === 15 ? gstin.slice(2, 12) : '');
   const reg = gstin ? 'Regular' : 'Unregistered/Consumer';
+  const addr = String(v.address ?? '').split('\n').map(x => x.trim()).filter(Boolean);
   return {
     isbillwiseon: true, gstregistrationtype: reg, ...(gstin ? { partygstin: gstin } : {}), ...(pan ? { incometaxnumber: pan } : {}), ...(state ? { ledstatename: state } : {}), countryofresidence: 'India',
-    ledgermailingdetails: [{ applicablefrom: '20260401', mailingname: v.name, ...(state ? { state } : {}), country: 'India' }],
+    ledmailingdetails: [{ applicablefrom: '20260401', ...(addr.length ? { address: [{ metadata: true, type: 'String' }, ...addr] } : {}), mailingname: v.name, ...(state ? { state } : {}), country: 'India', ...(v.pincode ? { pincode: String(v.pincode) } : {}) }],
     ledgstregdetails: [{ applicablefrom: '20260401', gstregistrationtype: reg, ...(state ? { placeofsupply: state } : {}), ...(gstin ? { gstin } : {}) }],
   };
 }

@@ -28,7 +28,7 @@ export async function fetchAccounting(supabase, month, today) {
   const bankUnresolved = (await supabase.from('finance_lines').select('id', { count: 'exact', head: true }).gte('txn_date', from).lt('txn_date', next).not('status', 'in', '(matched,ignored)')).count ?? 0;
 
   const bills = await pages((a, b) => supabase.from('vendor_invoices').select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, tax_rate, supplier_gstin, status, opening, kind, file_path, source, lines').neq('status', 'void').order('id').range(a, b));
-  const vendors = await pages((a, b) => supabase.from('vendors').select('id, name, gstin, pan, state_code, booking, tally_ledger_name, expense_ledger, tds_rate, tds_ledger, tds_to_confirm').order('id').range(a, b));
+  const vendors = await pages((a, b) => supabase.from('vendors').select('id, name, gstin, pan, state_code, address, pincode, booking, tally_ledger_name, expense_ledger, tds_rate, tds_ledger, tds_to_confirm').order('id').range(a, b));
   const billsReview = bills.filter(b => b.status === 'review' && !b.opening).length;
 
   let twoB = null;

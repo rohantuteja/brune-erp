@@ -70,7 +70,12 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
   `ledgerentries` and an accounting voucher's under `allledgerentries`: the file now does the same (it wrote `allledgerentries` for every voucher before), and the bank line carries
   Tally's own keys (`transactiontype`, `bankersdate`, `paymentfavouring`, `instrumentnumber`).
 - **Supplier ledgers are created with their details** (owner's rule, 18 Nov): bill by bill, GST registration type, GSTIN, PAN, state, country, mailing name, from the supplier record (`partyDetails`).
-  The key names are Tally's TDL names from memory: verify them against an exported party ledger on a copy company.
+  Address and pincode are on the supplier since migration 051 (read from the invoices of Vipul and PicknPack; Mittal Hosiery and Nykaa have no invoice copy yet, so none). **What his own files prove**
+  (18 Nov): the accountant's exports hold vouchers (Day Book, XML samples) and the trial balance, no ledger MASTER export; the Day Book shows what Tally keeps on a supplier (mailing name, address
+  lines, pincode, state, country, GSTIN, PAN, registration type) and that a list of strings is written `[{ metadata: true, type: 'String' }, line, ...]`. The voucher keys used for purchases
+  (`partyledgername`, `partygstin`, `statename`, `placeofsupply`, `gstregistrationtype`, `vchentrymode` ...) are copied from them. The master keys (`ledmailingdetails`, `ledgstregdetails`,
+  `ledstatename`, `incometaxnumber`) are Tally's own TDL names, not in his files: the copy-company import of the test file confirms them.
+- **An Airtel connection with no GST invoice** (owner, 18 Nov): its payment (₹960.82 on 3 Oct, "AirtelOfficeBil") is filed under `Telephone & Internet Expenses` (no GST), straight to that ledger, and the payee rule `adrija` points there. The registered connection's invoice (₹1,060.82, GST) is a bill like any other.
 - **Checked on the real October 2026 data (18 Nov):** 18 purchase vouchers (8 fabric item invoices, 10 expense bills) add up to the bills (₹8,45,020.16; Aggarwal's three wholesale bills and Easebuzz's tie-out
   left out); 52 payment vouchers (₹14,34,270.07) equal the 52 matched bank payments (the one the ERP first could not place, ₹960.82 to "adrija", is Airtel's: the word the payer typed on it,
   "AirtelOfficeBil", places it; it is an advance until its bill is uploaded); every voucher sums to zero (stock items included); advances ₹89,019 to Shree Vinayak (for the 3 Nov invoice) and bills unpaid at month end are listed.
