@@ -256,16 +256,26 @@ test('provisions: the month\'s spend is provided for from the invoice dated the 
   const vb = (id, date, sub) => bill({ id, vendor: 'Velocity', vendor_id: 7, invoice_no: `SF/${id}`, invoice_date: date, kind: 'service', subtotal: sub, tax: r(sub * 0.18), total: r(sub * 1.18) });
   const r = (n) => Math.round(n * 100) / 100;
   const all = [vb(20, '2026-10-01', 49572.84), vb(21, '2026-11-01', 26693.4), vb(22, '2026-12-01', 30000)];
-  const oct = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: [...all, bills[5]], vendors: [vel, vendors[2]], handled: [] });
+  const cfg = [{ vendor: 'Meta', expense: 'Marketing Expenses Provision' }, { vendor: 'Velocity', expense: 'Shipping Expenses Provision' }];
+  const oct = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: [...all, bills[5]], vendors: [vel, vendors[2]], handled: [], config: cfg });
   const p = oct.journals.find(j => j.source === 'provision');
   assert.deepEqual([p.date, p.number, p.lines.map(l => [l.account, l.debit, l.credit])], ['2026-10-31', 'ERP/PV/2627/VEL2610', [['Shipping Expenses Provision', 26693.4, 0], [BOOKS.provision, 0, 26693.4]]]);
   assert.equal(oct.journals.some(j => j.source === 'provision reversal'), false);                                    // the first month: nothing of the ERP's to reverse
   assert.match(oct.notes[0], /previous month's spend/);
   assert.equal(oct.missing.length, 1); assert.match(oct.missing[0], /^Meta/);                                         // Meta has billed (the 1 Oct invoice in the fixture) and the Nov one is not there
-  const nov = provisionJournals({ from: '2026-11-01', next: '2026-12-01', bills: all, vendors: [vel], handled: [] });
+  const nov = provisionJournals({ from: '2026-11-01', next: '2026-12-01', bills: all, vendors: [vel], handled: [], config: cfg });
   const rev = nov.journals.find(j => j.source === 'provision reversal');
   assert.deepEqual([rev.date, rev.number, rev.lines.map(l => [l.account, l.debit, l.credit])], ['2026-11-01', 'ERP/PR/2627/VEL2611', [[BOOKS.provision, 26693.4, 0], ['Shipping Expenses Provision', 0, 26693.4]]]);
   assert.equal(nov.journals.filter(j => j.source === 'provision').length, 1);                                         // and December's spend is provided for from the 1 Dec invoice
-  const withOpening = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: all, vendors: [vel], handled: [], openingProvisions: { Velocity: 49572.84 } });
+  const withOpening = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: all, vendors: [vel], handled: [], openingProvisions: { Velocity: 49572.84 }, config: cfg });
   assert.deepEqual(withOpening.journals.find(j => j.source === 'provision reversal').lines.map(l => [l.account, l.debit, l.credit]), [[BOOKS.provision, 49572.84, 0], ['Shipping Expenses Provision', 0, 49572.84]]);
+});
+
+test('by default only Meta is provisioned: Velocity is booked on its invoice date', () => {
+  const vel = { id: 7, name: 'Velocity', tally_ledger_name: 'Velocity Prepaid Recharge Account', booking: 'expense', expense_ledger: 'Shipping Expenses @ 18%' };
+  const vb = bill({ id: 21, vendor: 'Velocity', vendor_id: 7, invoice_no: 'SF/1126/1247', invoice_date: '2026-11-01', kind: 'service', subtotal: 26693.4, tax: 4804.81, total: 31498.21 });
+  const r = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: [vb, bills[5]], vendors: [vel, vendors[2]], handled: [] });
+  assert.deepEqual(r.journals.map(j => j.number), []);                                   // Meta's 1 Nov invoice is not there: nothing made, and Velocity never is
+  assert.equal(r.missing.length, 1); assert.match(r.missing[0], /^Meta/);
+  assert.equal(BOOKS.provisions.length, 1); assert.equal(BOOKS.provisions[0].vendor, 'Meta');
 });

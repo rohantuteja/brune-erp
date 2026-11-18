@@ -86,10 +86,13 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
 - **Easebuzz correction:** a confirmed, unvoided `gateway_trueups` row becomes a Journal dated its `voucher_date` (October: Dr Payment Gateway Expenses ₹0.47 / Cr IGST Input UP ₹0.47).
 - **Input GST of a bill its supplier has not filed** (the GSTR-2B of the bill's month is loaded and does not list it) is booked to `INPUT NOT CLAIMED FOR INV NOT IN 2A`, and a journal moves it to the input
   ledger in the month a later GSTR-2B shows it. October: Shree Vinayak SVF/26-27/265, ₹517.50. With no GSTR-2B loaded nothing is parked.
-- **Provisions** (Meta -> `Marketing Expenses Provision`, Velocity -> `Shipping Expenses Provision`, a ledger the file creates, migration 052; both against `Provision for Expenses`): at the month end a Journal
-  provides for the month's spend, taken from the invoice dated the 1st of the next month (before GST); on the 1st of the next month it is reversed, the day the invoice itself is booked in full. A
-  supplier with no such invoice yet is reported and BLOCKS the file (the month would miss its cost). October is the first month: its 1 Oct invoices (September's spend: Meta ₹5,04,308.30, Velocity
-  ₹49,572.84) are booked as October expense unless the accountant booked a 30 Sep provision; if he did, `app_settings.provision_opening` = `{"Meta": 504308.30, "Velocity": 49572.84}` makes the file reverse it on 1 Oct.
+- **Provisions: Meta only** (`Marketing Expenses Provision` against `Provision for Expenses`, the accountant's own ledgers): at the month end a Journal provides for the month's spend, taken from the invoice
+  dated the 1st of the next month (before GST); on the 1st of the next month it is reversed, the day the invoice itself is booked in full. A month whose Meta invoice dated the 1st is not in yet is reported and
+  BLOCKS the file (the month would miss its cost; October: Meta 2380957097, ₹3,37,967.03, provided on 31 Oct). **Velocity is NOT provisioned** (owner, 18 Nov 2026): it is booked on its invoice date, as the accountant's
+  books have always done (his Day Book books the 1 Sep Velocity invoice on 1 Sep, his Tally has no Velocity provision ledger); the ledger `Shipping Expenses Provision` added by migration 052 was dropped again (053).
+  To provision another supplier add it to `BOOKS.provisions`. October is the first month the ERP provisions, so Meta's 1 Oct invoice (September's spend, ₹5,04,308.30) is booked as October expense; if the accountant
+  booked a 30 Sep provision for it, `app_settings.provision_opening` = `{"Meta": 504308.30}` makes the file reverse it on 1 Oct. **Set it only when his Trial Balance at 30 Sep shows `Provision for Expenses` closing
+  at that amount**: the files held (Day Book and Trial Balance of 13 Oct) show none at 30 Sep, and an unverified reversal would be wrong.
 - **Stock items on sales and credit notes:** the goods of a sale or a return with their pieces are `BRUNE LADIES DRESSES` (HSN 6204, godown `Main Location`, batch `Primary Batch`, rate = amount / pieces);
   the COD charge, return fee and taxes stay ledger lines; the ERP's own fee invoices have no pieces and stay accounting invoices. October: 544 sales and 101 credit notes are item invoices, 571 and 105 pieces,
   the same rupees as the ledger (₹7,72,538.08 and ₹1,40,474.66), 1,307 vouchers in all, every one balanced.

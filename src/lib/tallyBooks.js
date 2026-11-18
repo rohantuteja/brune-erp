@@ -25,7 +25,8 @@ export const BOOKS = {
   parking: 'INPUT NOT CLAIMED FOR INV NOT IN 2A',                                  // input GST of a bill its supplier has not filed (not in GSTR-2B) waits here
   provision: 'Provision for Expenses',
   // Suppliers provisioned at the month end for the spend whose invoice comes on the 1st of the next month, and the ledger that takes the provision's expense.
-  provisions: [{ vendor: 'Meta', expense: 'Marketing Expenses Provision' }, { vendor: 'Velocity', expense: 'Shipping Expenses Provision' }],
+  // Only Meta (owner, 18 Nov 2026): Velocity stays booked on its invoice date, as the accountant's books have always done. To provision another supplier add it here.
+  provisions: [{ vendor: 'Meta', expense: 'Marketing Expenses Provision' }],
   firstProvisionMonth: '2026-10',                                                  // the ERP's own provisions begin with October 2026 (September is the accountant's)
 };
 
@@ -273,11 +274,11 @@ function twoBIndex(twoB) {
 }
 
 /** Month-end provisions for Meta and Velocity (their invoice for the month's spend is dated the 1st of the next month) and the reversal of last month's on the 1st. */
-export function provisionJournals({ from, next, bills, vendors, handled, openingProvisions = {} }) {
+export function provisionJournals({ from, next, bills, vendors, handled, openingProvisions = {}, config = BOOKS.provisions }) {
   const out = [], missing = [], notes = [];
   const month = from.slice(0, 7);
   const lastDay = lastDayOf(next);
-  for (const cfg of BOOKS.provisions) {
+  for (const cfg of config) {
     const v = (vendors || []).find(x => x.name === cfg.vendor);
     if (!v) continue;
     const mine = (bills || []).filter(b => b.vendor_id === v.id && b.status === 'accepted' && !isHandledBill(b, handled));
@@ -293,7 +294,7 @@ export function provisionJournals({ from, next, bills, vendors, handled, opening
     const opening = Number(openingProvisions?.[v.name]) || 0;
     if (opening > 0 && month === BOOKS.firstProvisionMonth) out.push(mk(`provisionrev|${v.name}${month}`, 'provision reversal', from, opening, BOOKS.provision, cfg.expense, `Reversal of the 30 Sep provision for ${v.name} (booked by the accountant)`));
     else if (thisInvoice && month > BOOKS.firstProvisionMonth) out.push(mk(`provisionrev|${v.name}${month}`, 'provision reversal', from, Number(thisInvoice.subtotal), BOOKS.provision, cfg.expense, `Reversal of the provision for ${v.name}: invoice ${thisInvoice.invoice_no} is booked in full today`));
-    else if (thisInvoice && month === BOOKS.firstProvisionMonth && !opening) notes.push(`${v.name}: the invoice dated ${String(thisInvoice.invoice_date).slice(0, 10)} (${Number(thisInvoice.subtotal).toLocaleString('en-IN', { minimumFractionDigits: 2 })} before GST) is the previous month's spend and is booked in ${month} as an expense, as no provision was made for it at 30 Sep.`);
+    else if (thisInvoice && month === BOOKS.firstProvisionMonth && !opening) notes.push(`${v.name}: the invoice dated ${String(thisInvoice.invoice_date).slice(0, 10)} (${Number(thisInvoice.subtotal).toLocaleString('en-IN', { minimumFractionDigits: 2 })} before GST) is the previous month's spend. No 30 Sep provision is recorded for it, so it is booked in ${month} as an expense; if the accountant did book one at 30 Sep, his Trial Balance at 30 Sep shows it and the reversal is added from that.`);
   }
   return { journals: out, missing, notes };
 }
