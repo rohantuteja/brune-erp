@@ -177,7 +177,7 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
                 </div>
               )}
               {books && (books.summary.skipped.ignored || books.summary.skipped['order ledger receipt']) ? <div className="text-[11px] text-stone-500">Left out on purpose: {books.summary.skipped.ignored || 0} bank lines that make no entry (wholesale, returned payments, your own card payments) and {books.summary['skipped']?.['order ledger receipt'] || 0} payouts the order ledger already has a receipt for.</div> : null}
-              <div className="text-[11px] text-stone-500">Not in the file yet: the stock journals and the month-end stock correction (they wait for the accountant's Stock Summary at 30 Sep), and the opening bills of the orders sold before October. Sales and credit notes carry the dress item and its pieces.</div>
+              <div className="text-[11px] text-stone-500">Not in the file yet: the stock journals and the month-end stock correction (they wait for the accountant's Stock Summary at 30 Sep), and the opening bills of the orders sold before October.</div>
               <div className="flex flex-wrap items-center gap-3">
                 <button type="button" className={btnDark} disabled={!c.ready} onClick={() => onGenerate(false)} title={c.ready ? '' : 'Finish the steps that block the file first'}>
                   {c.ready ? <Download className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}Generate Tally file

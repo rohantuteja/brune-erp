@@ -28,9 +28,9 @@ export const BOOKS = {
   // Only Meta (owner, 18 Nov 2026): Velocity stays booked on its invoice date, as the accountant's books have always done. To provision another supplier add it here.
   provisions: [{ vendor: 'Meta', expense: 'Marketing Expenses Provision' }],
   firstProvisionMonth: '2026-10',                                                  // the ERP's own provisions begin with October 2026 (September is the accountant's)
-  // What the landlord is paid for. The rent is booked on the last day of the month (Dr rent expense / Cr Rent Payable) and paid in the first days of the next month together with
-  // the electricity bill. His own 6 Sep payment of ₹25,512 ("RentnEB") went ₹18,000 to Rent Payable and ₹7,512 to Electricity Expenses: a payment to this bucket clears the month's
-  // rent on Rent Payable and everything above it is electricity.
+  // What the landlord is paid for. The rent is paid in the SAME month (6 Sep, 10 Oct), together with the electricity bill, and booked on the last day of the month (Dr rent expense / Cr Rent Payable).
+  // His own 6 Sep payment of ₹25,512 ("RentnEB") went ₹18,000 to Rent Payable and ₹7,512 to Electricity Expenses: a payment to this bucket clears the month's rent on Rent Payable and
+  // everything above it is electricity. (Salary is the opposite: paid in the NEXT month, see tallyMonthEnd.js.)
   rent: { payable: 'Rent Payable', electricity: 'Electricity Expenses' },
 };
 
