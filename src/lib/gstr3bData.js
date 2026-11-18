@@ -5,6 +5,7 @@
 // still works, it just cannot remember anything (`storeMissing`).
 import { fetchGstMonth, pages } from './gstData.js';
 import { monthBounds } from './gstReport.js';
+import { prevMonth, readRow } from './gstr3bCredit.js';
 
 const missing = (error) => !!error && (error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache|Could not find the table/i.test(error.message || ''));
 
@@ -37,19 +38,21 @@ export async function fetchGstr3bMonth(supabase, month) {
   let storeMissing = false;
   const file = await supabase.from('gstr2b_files').select('month, gstin, period, generated_on, file_name, source, docs, warnings, doc_count, uploaded_by_name, uploaded_at').eq('month', month).maybeSingle();
   if (file.error) { if (missing(file.error)) storeMissing = true; else throw new Error(file.error.message); }
-  const open = await supabase.from('gstr3b_months').select('month, opening_igst, opening_cgst, opening_sgst, note, updated_by_name, updated_at').eq('month', month).maybeSingle();
-  if (open.error) { if (missing(open.error)) storeMissing = true; else throw new Error(open.error.message); }
+  const credit = await supabase.from('gstr3b_months')
+    .select('month, opening_igst, opening_cgst, opening_sgst, note, source, updated_by_name, updated_at, filed_at, filed_by_name, filed, closing_igst, closing_cgst, closing_sgst')
+    .in('month', [month, prevMonth(month)]);
+  if (credit.error) { if (missing(credit.error)) storeMissing = true; else throw new Error(credit.error.message); }
+  const rows = credit.data || [];
 
   const f = file.data;
   const twoB = f ? { source: f.source, fileName: f.file_name, gstin: f.gstin, period: f.period, generatedOn: f.generated_on, docs: f.docs || [], warnings: f.warnings || [], checks: [], uploadedBy: f.uploaded_by_name, uploadedAt: f.uploaded_at } : null;
-  const o = open.data;
-  const opening = o ? { igst: Number(o.opening_igst), cgst: Number(o.opening_cgst), sgst: Number(o.opening_sgst), note: o.note || '', by: o.updated_by_name, at: o.updated_at } : null;
-  return { gst, bills, vendors, ledgerInput, tcsRows, trueups, ownGstin, twoB, opening, storeMissing };
+  const monthRow = readRow(rows.find(x => x.month === month)), prevRow = readRow(rows.find(x => x.month === prevMonth(month)));
+  return { gst, bills, vendors, ledgerInput, tcsRows, trueups, ownGstin, twoB, monthRow, prevRow, storeMissing };
 }
 
 const fail = (error) => { if (error) throw new Error(error.message); };
 
-/** The credit carried into the month, from the portal's electronic credit ledger. */
+/** A typed correction of the credit carried into the month (the portal shows something else). */
 export async function saveOpening(supabase, month, { igst, cgst, sgst, note }) {
   const { error } = await supabase.rpc('gstr3b_save_opening', { p_month: month, p_igst: igst, p_cgst: cgst, p_sgst: sgst, p_note: note || null });
   fail(error);
@@ -63,6 +66,20 @@ export async function saveTwoB(supabase, month, parsed) {
   });
   fail(error);
   return data;
+}
+
+/** The owner records that the month's return was filed with the figures on the screen: its closing credit carries into the next month by itself. */
+export async function markFiled(supabase, month, { opening, source, closing, filed }) {
+  const { error } = await supabase.rpc('gstr3b_mark_filed', {
+    p_month: month, p_opening_igst: opening.igst, p_opening_cgst: opening.cgst, p_opening_sgst: opening.sgst,
+    p_closing_igst: closing.igst, p_closing_cgst: closing.cgst, p_closing_sgst: closing.sgst, p_source: source, p_filed: filed,
+  });
+  fail(error);
+}
+
+export async function unmarkFiled(supabase, month) {
+  const { error } = await supabase.rpc('gstr3b_unmark_filed', { p_month: month });
+  fail(error);
 }
 
 export async function deleteTwoB(supabase, month) {

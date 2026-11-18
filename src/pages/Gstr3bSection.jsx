@@ -4,7 +4,8 @@ import { localToday } from '../lib/constants';
 import { accountingStart } from '../lib/gstData';
 import { buildGstReport, monthsBetween, monthLabel } from '../lib/gstReport';
 import { buildGstr3b, HEADS, HEAD_LABEL, MYNTRA_GSTIN } from '../lib/gstr3b';
-import { fetchGstr3bMonth, saveOpening, saveTwoB, deleteTwoB } from '../lib/gstr3bData';
+import { fetchGstr3bMonth, saveOpening, saveTwoB, deleteTwoB, markFiled, unmarkFiled } from '../lib/gstr3bData';
+import { resolveOpening, filedSnapshot, changedSinceFiled, nextMonth } from '../lib/gstr3bCredit';
 import { parseGstr2bFile, availableTotals } from '../lib/gstr2b';
 import { buildGstr3bSheets, buildUploadSheet, gstr3bFileName } from '../lib/gstr3bWorkbook';
 import { downloadXlsx } from '../lib/xlsxWrite';
@@ -202,8 +203,8 @@ function OpeningForm({ month, opening, storeMissing, onSave }) {
   };
   return (
     <div className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-3 space-y-2">
-      <div className="text-xs font-medium text-stone-900">Credit carried into {monthLabel(month)}</div>
-      <div className="text-[11px] text-stone-600">From the portal: Services → Ledgers → Electronic Credit Ledger, the balance after last month's return. The ERP cannot see the portal, so this is entered by hand, once a month.</div>
+      <div className="text-xs font-medium text-stone-900">Correct the credit carried into {monthLabel(month)}</div>
+      <div className="text-[11px] text-stone-600">Only if the portal's electronic credit ledger (Services → Ledgers) shows a different balance than the one above, for example by tax head. Normally nothing needs typing: the ERP carries each filed return's closing credit forward by itself.</div>
       <div className="flex flex-wrap items-end gap-2">
         {HEADS.map(k => (
           <label key={k} className="text-[11px] text-stone-600">{HEAD_LABEL[k]}
@@ -217,14 +218,72 @@ function OpeningForm({ month, opening, storeMissing, onSave }) {
       </div>
       {bad && <div className="text-xs text-red-700">Each balance must be a number, zero or more.</div>}
       {err && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2.5 py-1.5">{err}</div>}
-      {opening?.at && !storeMissing && <div className="text-[11px] text-stone-500">Saved by {opening.by || 'someone'} on {fmtStamp(opening.at)}.</div>}
       {storeMissing && <div className="text-[11px] text-amber-800">Remembering this needs the database update for this screen (migration 044), which has not been applied yet.</div>}
     </div>
   );
 }
 
+// ── The credit ledger the ERP keeps: opening, claimed, used, closing, and recording the return as filed ─────────────
+// A proper component: it holds the confirm step and the correction form.
+export function CreditLedgerPanel({ r, month, resolved, canWrite, storeMissing, onMarkFiled, onUnmarkFiled, onCorrect }) {
+  const P = r.payment;
+  const [confirm, setConfirm] = useState(false);
+  const [fix, setFix] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => { setConfirm(false); setFix(false); setErr(''); }, [month]);
+  const filed = resolved.filed;
+  const next = nextMonth(month);
+  const spent = Object.fromEntries(HEADS.map(c => [c, HEADS.reduce((t, k) => t + P.used[k][c], 0)]));
+  const changed = useMemo(() => changedSinceFiled(filed?.figures, r), [filed, r]);
+  const can = canWrite && r.itc.hasTwoB && r.openingSet;
+
+  const run = async (fn) => { setBusy(true); setErr(''); try { await fn(); setConfirm(false); } catch (e) { setErr(e.message); } setBusy(false); };
+
+  return (
+    <div className="space-y-2">
+      <HeadTable first={`Credit ledger, ${monthLabel(month)}`} rows={[
+        { key: 'open', label: 'Opening', note: r.openingSet ? resolved.text : `${resolved.text}: counted as nil`, heads: P.opening },
+        { key: 'claim', label: '+ Claimed this month', note: r.itc.hasTwoB ? 'all of GSTR-2B' : 'in your books, not checked against GSTR-2B', heads: P.claim },
+        { key: 'spent', label: '− Used to pay tax on sales', heads: { igst: -spent.igst, cgst: -spent.cgst, sgst: -spent.sgst } },
+        { key: 'close', label: `Closing: carries into ${monthLabel(next)}`, heads: P.closing, strong: true },
+      ]} />
+
+      {filed ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span><CheckCircle2 className="inline w-3.5 h-3.5 mr-1" />Recorded as filed on <b>{fmtStamp(filed.at)}</b>{filed.by ? ` by ${filed.by}` : ''}: <b>{inr(sum(filed.closing), 2)}</b> of credit carries into {monthLabel(next)} by itself.</span>
+            {canWrite && <button type="button" className={btn} disabled={busy} onClick={() => run(onUnmarkFiled)}>Undo</button>}
+          </div>
+          {changed.length > 0 && <div className="text-amber-900"><AlertTriangle className="inline w-3.5 h-3.5 mr-1" />Changed since you filed: {changed.map(c => `${c.what} (${HEAD_LABEL[c.head]}) was ${amt(c.was)}, now ${amt(c.now)}`).join('; ')}. The credit carried forward is the filed one.</div>}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 space-y-2">
+          {!confirm ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-stone-700">After you file {monthLabel(month)}'s GSTR-3B on the portal, record it here: its closing credit then becomes {monthLabel(next)}'s opening, with nothing to type.</span>
+              <button type="button" className={btnDark} disabled={!can || busy} onClick={() => setConfirm(true)} title={!r.itc.hasTwoB ? 'Load the GSTR-2B first' : !r.openingSet ? 'There is no opening credit to carry' : ''}>I filed {monthLabel(month)}'s return with these figures</button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-stone-800">
+              <span>This records the figures above as filed ({inr(P.cashTotal, 2)} paid in cash) and carries <b>{inr(sum(P.closing), 2)}</b> of credit into {monthLabel(next)}.</span>
+              <button type="button" className={btnDark} disabled={busy} onClick={() => run(onMarkFiled)}>Yes, record it</button>
+              <button type="button" className={btn} disabled={busy} onClick={() => setConfirm(false)}>Cancel</button>
+            </div>
+          )}
+          {!r.itc.hasTwoB && <div className="text-[11px] text-stone-500">Load the GSTR-2B first (section 2): the figures are only final once the credit comes from it.</div>}
+          <button type="button" className="text-[11px] text-stone-500 underline hover:text-stone-800" onClick={() => setFix(f => !f)}>The portal shows a different balance? Correct the opening</button>
+        </div>
+      )}
+      {err && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2.5 py-1.5">{err}</div>}
+      {fix && !filed && <OpeningForm month={month} opening={resolved.opening} storeMissing={storeMissing} onSave={async (v) => { await onCorrect(v); setFix(false); }} />}
+      {storeMissing && <div className="text-[11px] text-amber-800">Keeping the credit ledger needs the database update for this screen, which has not been applied yet.</div>}
+    </div>
+  );
+}
+
 // ── The report for one month (no data loading here: the container passes a built report) ──────────────────────────
-export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error, onReload, panel, openingForm, onExportUploads }) {
+export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error, onReload, panel, creditPanel, onExportUploads }) {
   const T = r?.itc.twoB;
   const L = r?.itc.lists;
   const itcRows = useMemo(() => {
@@ -397,8 +456,7 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
             <div className="text-xs text-stone-600 leading-relaxed">Myntra pays the TCS it collected to the government and reports it, so it should appear as a credit in your electronic <b>cash</b> ledger on the portal. Compare the two. How it reaches your return is for your accountant: this screen does not count it as a payment of tax.</div>
           </Section>
 
-          <Section n="4" title="Payment" caption="Table 6.1. Tax on sales less credit, in the portal's order: credit of one tax pays that tax first; integrated tax credit then pays central and state tax; central and state credit pay integrated tax only once integrated tax credit is used up, and never each other.">
-            {openingForm}
+          <Section n="4" title="Payment and credit ledger" caption="Table 6.1. The ERP keeps the electronic credit ledger itself: October opens with your Tally balance and every filed return carries its closing credit forward. Tax on sales less credit, in the portal's order: credit of one tax pays that tax first; integrated tax credit then pays central and state tax; central and state credit pay integrated tax only once integrated tax credit is used up, and never each other.">
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="text-stone-500 border-b border-stone-200">
@@ -422,11 +480,7 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
                 </tr></tfoot>
               </table>
             </div>
-            <HeadTable first="Credit" rows={[
-              { key: 'open', label: r.openingSet ? 'Carried in' : 'Carried in (not entered, counted as nil)', heads: P.opening },
-              { key: 'claim', label: 'Claimed this month', heads: P.claim },
-              { key: 'left', label: 'Left after this return: carry to next month', heads: P.closing, strong: true },
-            ]} />
+            {creditPanel}
           </Section>
         </>
       )}
@@ -460,12 +514,17 @@ export default function Gstr3bSection({ showToast }) {
   const fresh = data && data.month === month ? data : null;
   const sess = session.month === month ? session : { month, twoB: undefined, opening: undefined };
   const twoB = fresh ? (sess.twoB !== undefined ? sess.twoB : fresh.twoB) : null;
-  const opening = fresh ? (sess.opening !== undefined ? sess.opening : fresh.opening) : null;
+  const resolved = useMemo(() => {
+    if (!fresh) return { opening: null, source: null, text: '', filed: null };
+    if (sess.opening) return { opening: sess.opening, source: 'manual', text: 'Entered for this visit', filed: null };
+    return resolveOpening({ month, row: fresh.monthRow, prev: fresh.prevRow });
+  }, [fresh, month, sess.opening]);
+  const opening = resolved.opening;
 
   const r = useMemo(() => fresh ? buildGstr3b({
     month, gst: buildGstReport({ month, ...fresh.gst }), ownGstin: fresh.ownGstin, bills: fresh.bills, vendors: fresh.vendors,
-    ledgerInput: fresh.ledgerInput, trueups: fresh.trueups, tcsRows: fresh.tcsRows, twoB, opening,
-  }) : null, [fresh, month, twoB, opening]);
+    ledgerInput: fresh.ledgerInput, trueups: fresh.trueups, tcsRows: fresh.tcsRows, twoB, opening, openingLabel: resolved.text,
+  }) : null, [fresh, month, twoB, opening, resolved.text]);
 
   const exportXlsx = () => { try { downloadXlsx(gstr3bFileName(r), buildGstr3bSheets(r)); } catch (err) { showToast?.(`Could not make the Excel file: ${err.message}`, 'error'); } };
   const exportUploads = () => { try { downloadXlsx(`Bills-to-upload-${month}.xlsx`, [buildUploadSheet(r)]); } catch (err) { showToast?.(`Could not make the Excel file: ${err.message}`, 'error'); } };
@@ -475,17 +534,23 @@ export default function Gstr3bSection({ showToast }) {
     <TwoBPanel month={month} stored={twoB} storeMissing={storeMissing} sessionOnly={storeMissing && !!twoB}
       onSaved={load} onRemoved={load} onSession={(parsed) => setSession({ ...sess, month, twoB: parsed ? { ...parsed, uploadedAt: new Date().toISOString() } : null })} showToast={showToast} />
   );
-  const openingForm = fresh && (
-    <OpeningForm month={month} opening={opening} storeMissing={storeMissing}
-      onSave={async (v) => {
+  const creditPanel = fresh && r && (
+    <CreditLedgerPanel r={r} month={month} resolved={resolved} canWrite={!storeMissing} storeMissing={storeMissing}
+      onCorrect={async (v) => {
         if (storeMissing) setSession({ ...sess, month, opening: { ...v, at: null } });
-        else { await saveOpening(supabase, month, v); await load(); showToast?.(`Credit carried into ${monthLabel(month)} saved`, 'success'); }
-      }} />
+        else { await saveOpening(supabase, month, v); await load(); showToast?.(`Credit carried into ${monthLabel(month)} corrected`, 'success'); }
+      }}
+      onMarkFiled={async () => {
+        const snap = filedSnapshot(r, { opening: resolved.opening, source: resolved.source, twoBFile: twoB });
+        await markFiled(supabase, month, { opening: snap.payload.opening, source: snap.payload.source, closing: snap.payload.closing, filed: snap.payload.filed });
+        await load(); showToast?.(`${monthLabel(month)} recorded as filed: its closing credit carries forward`, 'success');
+      }}
+      onUnmarkFiled={async () => { await unmarkFiled(supabase, month); await load(); showToast?.(`${monthLabel(month)} is no longer recorded as filed`, 'success'); }} />
   );
 
   if (!month) return <div className="text-sm text-stone-500 px-1 py-6">Loading…</div>;
   return (
     <Gstr3bView r={r} months={months} month={month} onMonth={(m) => setP({ g3month: m })} onExport={exportXlsx} loading={loading} error={error} onReload={load}
-      panel={panel} openingForm={openingForm} onExportUploads={exportUploads} />
+      panel={panel} creditPanel={creditPanel} onExportUploads={exportUploads} />
   );
 }

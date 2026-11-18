@@ -86,10 +86,22 @@ on the GSTR-3B tab for a bill to be found.
 Order of set-off (sections 49 and 49A, Rule 88A): IGST credit pays IGST first; own-head credit pays CGST and SGST; leftover IGST credit
 pays CGST and SGST; CGST / SGST credit pay IGST only once IGST credit is used up, and never each other. The tests prove it conserves
 every rupee and pays cash only when no usable credit is left. Rule 86B (more than ₹50 lakh taxable in a month: at least 1% in cash) is
-flagged. The credit carried in is **entered by hand** each month from the portal's electronic credit ledger (the ERP cannot see the
-portal) and saved in `gstr3b_months`; the closing credit is shown so it can be compared with the portal after filing.
+flagged.
 
-## Storage (migration 044, applied only after the owner approves)
+**The electronic credit ledger is kept by the ERP (migration 045); nothing is typed.** Section 4 shows it: opening + claimed (all of GSTR-2B) - used to pay
+tax on sales = closing. **October 2026 opens with the owner's Tally trial balance** (1-Apr-26 to 30-Sep-26): "GST Credit Ledger UP" closing
+**₹13,41,161.00** (opening ₹7,24,983 + ₹9,24,929 added - ₹3,08,751 used). The GST output and input ledgers are nil at that date because the
+accountant journals them into the credit ledger every month, so September is already set off. Tally does not split the credit ledger by
+tax head, so it is shown as integrated tax (which pays any head; with credit of this size no cash is due either way). "GST Credit Ledger
+Delhi" (₹53,607) belongs to the other registration and is not used; "Gst Portal Balance" ₹13,94,768 is the two together. **Every later month
+opens with the closing credit of the previous month's return**, once the owner presses "I filed this month's return with these figures" after
+filing on the portal: the figures filed (tax on sales, credit claimed, cash, closing) are kept in `gstr3b_months.filed`, the closing carries
+forward by itself, and the page reports anything that has changed since (a late credit note, a bill accepted later) without moving the
+carried credit. Recording can be undone. If the previous month is not recorded as filed, nothing is carried and the page says so. A typed
+opening still exists, hidden behind "The portal shows a different balance? Correct the opening", as a correction (marked manual, refused for a
+month recorded as filed). Logic: `src/lib/gstr3bCredit.js` (tested).
+
+## Storage (migrations 044 and 045, applied 18 Nov 2026)
 
 `gstr2b_files` (the lines of a month's 2B), `gstr3b_months` (credit carried in), `gstr3b_log` (who loaded, replaced, removed or entered
 what). Readable by admins only (`finance_admin()`); written only through `gstr2b_save`, `gstr2b_delete`, `gstr3b_save_opening`
