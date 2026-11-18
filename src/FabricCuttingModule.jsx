@@ -10,6 +10,7 @@ import { myntraSyncNote, velocitySplit } from './lib/pipelineVelocity';
 import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 import LedgerSection from './pages/LedgerSection';
+import GstSection from './pages/GstSection';
 import ShipmentsSection from './pages/ShipmentsSection';
 import BankSection from './pages/BankSection';
 import VelocitySection from './pages/VelocitySection';
@@ -104,6 +105,7 @@ const ANALYTICS_TAB_TO_SLUG = {
   wip:          'wip',
   shipments:    'shipments',
   ledger:       'ledger',
+  gst:          'gst',
   bank:         'bank-and-card',
   velocity:     'velocity-wallet',
   myntra:       'myntra',
@@ -7195,6 +7197,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'wip', label: 'WIP Value' },
     { id: 'shipments', label: 'Shipments' },
     { id: 'ledger', label: 'Ledger' },
+    { id: 'gst', label: 'GST' },
     ...(isAdmin ? [{ id: 'bank', label: 'Bank & card' }, { id: 'bills', label: 'Bills' }, { id: 'velocity', label: 'Velocity wallet' }, { id: 'myntra', label: 'Myntra' }] : []),     // salaries, founders' payments and balances: admin only
     { id: 'production', label: 'Production' },
   ];
@@ -7215,6 +7218,9 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
 
       {/* ── LEDGER ── */}
       {activeSection === 'ledger' && <LedgerSection showToast={showToast} />}
+
+      {/* ── GST (the month's sales for GSTR-1, by state; Excel export) ── */}
+      {activeSection === 'gst' && <GstSection showToast={showToast} />}
 
       {/* ── BANK & CARD (admin only; the tables behind it refuse everyone else too) ── */}
       {activeSection === 'bank' && isAdmin && <BankSection showToast={showToast} />}
