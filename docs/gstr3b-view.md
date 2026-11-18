@@ -31,20 +31,27 @@ preview shows what was found and checks it (the month and GSTIN must be right, t
 agree with the lines read, sections the screen does not read are named). **Nothing is kept until Save**, and only the lines are kept
 (`gstr2b_files`), never the file. Another file for the month replaces the first.
 
-**Matching.**
+**GSTR-2B is the source of truth (the owner's rule, 18 Nov 2026).** The credit claimed is everything GSTR-2B lists as available (not
+"ITC not available", not reverse charge; supplier credit notes taken off), **whether or not the ERP has the bill**: a supplier can have
+filed and still be late sending the invoice. The bills only explain the credit, and produce the list of bills still to upload.
+
+**Matching (to explain the credit, never to limit it).**
 - A bill is matched to a 2B line by supplier GSTIN and invoice number (`normInvoice`: no case, punctuation or leading zeros). A bill
   with no supplier GSTIN (Goexcelsior) is matched by invoice number and tax amount.
 - The payment gateway and Myntra are matched **by supplier** (GSTIN), because the ERP holds no invoice numbers for them: the 2B total
   for the supplier against what the ledger booked in the month. Their invoices and the ledger lines fall in different months, so a
-  difference is expected and only noted.
-- Every 2B line lands in exactly one place (a test proves nothing is lost): matched and claimable; matched but the bill is still in
-  review (held); marked "ITC not available" or reverse charge (left out, listed); a supplier credit/debit note (reduces/adds credit);
-  gateway or Myntra (supplier level); or an invoice with no bill in the ERP (listed, **not claimed unless the owner ticks the box**).
-- When a bill and its 2B line differ, **the smaller figure per tax head is claimed** and the line is flagged.
-- A bill dated in the month that is not in 2B is "not claimable this month"; it appears in the month the supplier reports it. A bill
-  dated before the books started that turns up in this month's 2B is flagged for a check against double claiming.
+  difference is expected and only noted. Easebuzz's invoice is still on the upload list until it is uploaded as a tie-out bill.
+- Every 2B line lands in exactly one place (a test proves nothing is lost): with a bill in the ERP (matched, differs, or the bill is still
+  in review); gateway or Myntra (supplier level); supplier credit/debit note; no bill yet (**the "Bills to upload" list**); or left out
+  (marked "ITC not available", or reverse charge, both listed).
+- When a bill and its 2B line differ, **the 2B figure is claimed** and the bill is flagged (check the bill, or ask the supplier).
+- **Bills to upload:** each invoice in 2B with no bill in the ERP, by supplier, with GSTIN, number, date, taxable value, tax, invoice
+  value and whether the supplier is already a vendor (by GSTIN, or by name when the vendor has no GSTIN) or will be created on the
+  first bill. It has its own Excel download and a sheet in the main workbook.
+- A bill dated in the month that is not in 2B is not claimed this month (the supplier has not filed it); it appears in the month the
+  supplier files it. A bill dated before the books started that turns up in this month's 2B is flagged for a check against double claiming.
 - A bill whose tax type does not fit the supplier's state (IGST from a supplier in the buyer's state, or CGST + SGST from another state)
-  is flagged: it cannot be claimed as charged.
+  is flagged as a data check on the bill.
 
 **Without a 2B** the claim is simply the books, shown in amber as "not checked against GSTR-2B", with a warning.
 
@@ -73,7 +80,7 @@ Anything in the 2B file it does not read is named in the preview.
 ## Open points for the accountant
 
 - How the TCS credit appears in Table 6.1 / the cash ledger (sources silent).
-- Whether to claim 2B lines that have no bill, and whether to hold back 2B credit with a reversal in 4(B)(2).
+- Whether any 2B credit should be held back with a reversal in 4(B)(2) (for example Nykaa Fashion's ₹4,500 if the owner finds it is not his purchase).
 - **The Excel reader was checked against the owner's real October 2026 GSTR-2B** (18 Nov 2026): 23 invoices from 16 suppliers, and the
   total equals the file's own "ITC Available" summary to the paisa (IGST 1,90,300.58, CGST 80.91, SGST 80.91). That file has no Rate column,
   dd/mm/yyyy dates, "GSTR-1/1A/IFF/GSTR-5 Period" headers, a "B2B-DNR" sheet for debit notes and about twenty other sheets (amendments,
@@ -83,12 +90,12 @@ Anything in the 2B file it does not read is named in the preview.
 
 ## October 2026 with the real 2B (18 Nov 2026)
 
-13 of the 14 bills dated in October match 2B (the amounts agree within paise). Claimable from 2B and supported by bills: ₹1,09,235.05
-IGST + ₹80.91 CGST + ₹80.91 SGST. 2B holds ₹81,065.53 more IGST for seven invoices the ERP has no bill for: Aggarwal Traders 1068, 1069,
+13 of the 14 bills dated in October match 2B (the amounts agree within paise). Claimed (all of 2B, the source of truth): ₹1,90,300.58
+IGST + ₹80.91 CGST + ₹80.91 SGST, of which ₹81,065.53 IGST is for seven invoices the ERP has no bill for (they go on the upload list): Aggarwal Traders 1068, 1069,
 1070 (₹73,267.03, taxable ₹14,65,340.50, all dated 25 Oct), Nykaa Fashion MH2601194236 (₹4,500), Unicommerce UC2627/GGNA/910 (₹2,340),
 Goexcelsior HR/26-27/0026152 (₹900), Google 5732193357 (₹58.50). One bill is not in 2B: Shree Vinayak SVF/26-27/265 (₹517.50: the supplier
 has not reported it). Myntra's 2B (₹1,247.40) agrees with the ledger (₹1,247.38). Easebuzz's invoice N2627/000100369 has ₹1,235.65 of GST
-against ₹635.78 booked, because GoKwik's settlement report is loaded only to 11 Oct. Output tax ₹32,210.01 is covered by credit: cash ₹0.
+against ₹635.78 booked, because GoKwik's settlement report is loaded only to 11 Oct. Output tax ₹32,210.01 is covered by credit: cash ₹0, about ₹1,58,252 of credit left to carry on (carried-in credit not entered).
 
 ## October 2026 before a 2B was loaded (indicative)
 

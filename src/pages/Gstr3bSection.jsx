@@ -6,7 +6,7 @@ import { buildGstReport, monthsBetween, monthLabel } from '../lib/gstReport';
 import { buildGstr3b, HEADS, HEAD_LABEL, MYNTRA_GSTIN } from '../lib/gstr3b';
 import { fetchGstr3bMonth, saveOpening, saveTwoB, deleteTwoB } from '../lib/gstr3bData';
 import { parseGstr2bFile, availableTotals } from '../lib/gstr2b';
-import { buildGstr3bSheets, gstr3bFileName } from '../lib/gstr3bWorkbook';
+import { buildGstr3bSheets, buildUploadSheet, gstr3bFileName } from '../lib/gstr3bWorkbook';
 import { downloadXlsx } from '../lib/xlsxWrite';
 import { Collapsible, StatCard, useUrlParams } from '../components/AnalyticsKit';
 import { DocTable, defaultMonth } from './GstSection';
@@ -16,7 +16,7 @@ import { Download, Info, CheckCircle2, AlertCircle, AlertTriangle, RotateCcw, Up
 // the gateway / Myntra GST lines (input credit), GSTR-2B (what may be claimed) and the credit carried in. It files nothing.
 // Rules and reasoning: docs/gstr3b-view.md.
 
-const URL_DEFAULTS = { g3month: '', g3unm: '0' };
+const URL_DEFAULTS = { g3month: '' };
 const inr = (n, digits = 0) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const amt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace('-', '−');
 const dash = (n) => (Math.abs(n || 0) < 0.005 ? '–' : amt(n));
@@ -224,7 +224,7 @@ function OpeningForm({ month, opening, storeMissing, onSave }) {
 }
 
 // ── The report for one month (no data loading here: the container passes a built report) ──────────────────────────
-export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error, onReload, panel, claimUnmatched, onClaimUnmatched, openingForm }) {
+export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error, onReload, panel, openingForm, onExportUploads }) {
   const T = r?.itc.twoB;
   const L = r?.itc.lists;
   const itcRows = useMemo(() => {
@@ -232,11 +232,11 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
     const C = r.itc.claim;
     if (T) {
       return [
-        { key: 'portal', label: 'In GSTR-2B', note: 'what GSTR-2B shows for Table 4(A)(5)', heads: T.portal },
-        ...(sum(T.held) ? [{ key: 'held', label: 'Less: bill still waiting for your review', heads: T.held, sign: '−', tone: 'text-stone-500' }] : []),
-        ...(sum(T.unmatched) && !T.claimedUnmatched ? [{ key: 'unmatched', label: 'Less: no bill in the ERP', heads: T.unmatched, sign: '−', tone: 'text-stone-500' }] : []),
-        ...(sum(T.excess) ? [{ key: 'excess', label: 'Less: 2B higher than the bill', heads: T.excess, sign: '−', tone: 'text-stone-500' }] : []),
-        { key: 'claim', label: 'Claimable this month', heads: C, strong: true },
+        { key: 'claim', label: 'Claimable this month: all of what GSTR-2B shows', note: 'GSTR-2B is the source of truth, so every line it lists as available is claimed (Table 4(A)(5))', heads: C, strong: true },
+        { key: 'withBill', label: 'of which: invoices that have a bill in the ERP', heads: T.withBill, tone: 'text-stone-500' },
+        { key: 'suppliers', label: 'of which: gateway and Myntra', note: 'booked at each payout and settlement', heads: T.suppliers, tone: 'text-stone-500' },
+        ...(sum(T.notes) ? [{ key: 'notes', label: 'of which: credit / debit notes from suppliers', heads: T.notes, tone: 'text-stone-500' }] : []),
+        { key: 'noBill', label: 'of which: invoices with no bill in the ERP yet', note: 'upload them: the list is below', heads: T.noBill, tone: sum(T.noBill) ? 'text-amber-800' : 'text-stone-500' },
         { key: 'books', label: 'For comparison: your books this month', note: 'accepted bills dated in the month + gateway and Myntra lines', heads: r.itc.books.total, tone: 'text-stone-500' },
       ];
     }
@@ -265,7 +265,7 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
       </div>
 
       <div className="text-xs text-stone-700 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 leading-relaxed">
-        This does not file anything. Since July 2025 the portal fills <b>Tables 3.1 and 3.2</b> from your GSTR-1 and they cannot be edited, so section 1 is a cross-check of what it will show. <b>Table 4</b> (input credit) can only be claimed as shown in GSTR-2B: load it in section 2. Section 4 shows what is left to pay.
+        This does not file anything. Since July 2025 the portal fills <b>Tables 3.1 and 3.2</b> from your GSTR-1 and they cannot be edited, so section 1 is a cross-check of what it will show. <b>Table 4</b> (input credit) is claimed as GSTR-2B shows it, which is the source of truth even where a supplier's bill has not reached you: load it in section 2. Section 4 shows what is left to pay.
       </div>
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
@@ -275,7 +275,7 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
             <StatCard label="Tax on sales" value={inr(r.outward.tax, 2)} sub={`IGST ${inr(r.outward.igst, 2)} · CGST ${inr(r.outward.cgst, 2)} · SGST ${inr(r.outward.sgst, 2)}`} />
-            <StatCard label={T ? 'Credit to claim (GSTR-2B)' : 'Credit in your books'} value={inr(sum(r.itc.claim), 2)} tone={T ? 'text-emerald-800' : 'text-amber-800'} sub={T ? `${inr(sum(T.portal), 2)} in GSTR-2B` : 'not checked against GSTR-2B yet'} />
+            <StatCard label={T ? 'Credit to claim (GSTR-2B)' : 'Credit in your books'} value={inr(sum(r.itc.claim), 2)} tone={T ? 'text-emerald-800' : 'text-amber-800'} sub={T ? (L.toUpload.length ? `${L.toUpload.length} bill${L.toUpload.length === 1 ? '' : 's'} still to upload` : 'every invoice has its bill') : 'not checked against GSTR-2B yet'} />
             <StatCard label="Cash to pay" value={inr(P.cashTotal, 2)} tone={P.cashTotal > 0 ? 'text-red-700' : 'text-emerald-800'} sub={`after ${inr(P.itcUsedTotal, 2)} paid with credit`} />
             <StatCard label="Credit left after this return" value={inr(P.closingTotal, 2)} sub={r.openingSet ? 'carried to next month' : 'credit carried in is not entered'} />
           </div>
@@ -316,38 +316,51 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
             </Collapsible>
           </Section>
 
-          <Section n="2" title="Input tax credit" caption="Table 4. Bills are matched to GSTR-2B by supplier GSTIN and invoice number. The payment gateway and Myntra are matched by supplier: the ERP books their GST at each payout and settlement and holds no invoice numbers.">
+          <Section n="2" title="Input tax credit" caption="Table 4. GSTR-2B is the source of truth: the credit claimed is what suppliers have filed, even if their bill has not reached the ERP yet. Bills are matched to it by supplier GSTIN and invoice number; the payment gateway and Myntra by supplier.">
             {panel}
             <HeadTable first="Table 4(A)(5): all other ITC" rows={itcRows} />
-            {T && sum(T.unmatched) > 0 && (
-              <label className="flex items-center gap-2 text-xs text-stone-700">
-                <input type="checkbox" checked={claimUnmatched} onChange={e => onClaimUnmatched(e.target.checked)} />
-                Also claim the {inr(sum(T.unmatched), 2)} in GSTR-2B that has no bill in the ERP <span className="text-stone-500">(only if the invoices are yours)</span>
-              </label>
-            )}
             {T && (
               <>
+                <Collapsible id="g3-upload" title="Bills to upload" count={L.toUpload.length} tone={L.toUpload.length ? 'amber' : 'neutral'} defaultOpen={L.toUpload.length > 0}
+                  summary={L.toUpload.length ? 'in GSTR-2B, no bill in the ERP: upload each on the Bills page' : 'every invoice in GSTR-2B has its bill'}>
+                  {L.toUpload.length === 0 ? <div className="text-xs text-stone-500">Every invoice in GSTR-2B has a bill in the ERP.</div> : (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs text-stone-600">{L.toUpload.length} invoice{L.toUpload.length === 1 ? '' : 's'} from {new Set(L.toUpload.map(x => x.gstin)).size} supplier{new Set(L.toUpload.map(x => x.gstin)).size === 1 ? '' : 's'}, {inr(sum(L.toUpload.reduce((a, x) => ({ igst: a.igst + x.twoB.igst, cgst: a.cgst + x.twoB.cgst, sgst: a.sgst + x.twoB.sgst }), { igst: 0, cgst: 0, sgst: 0 })), 2)} of tax. Their credit is already claimed.</div>
+                        <button type="button" className={btn} onClick={onExportUploads}><Download className="w-3.5 h-3.5" /> Download this list</button>
+                      </div>
+                      <DocTable rows={[...L.toUpload].sort((a, b) => String(a.vendor).localeCompare(String(b.vendor)) || String(a.date).localeCompare(String(b.date)))} noun="invoices" columns={[
+                        { label: 'Supplier', cell: x => <>{x.vendor}{!x.knownVendor && <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-sky-100 text-sky-900">new vendor</span>}</> },
+                        { label: 'GSTIN', muted: true, cell: x => x.gstin }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) },
+                        { label: 'Taxable', right: true, cell: x => amt(x.taxable) }, { label: 'Tax', right: true, cell: x => amt(sum(x.twoB)) }, { label: 'Invoice value', right: true, cell: x => amt(x.value) },
+                        { label: '', muted: true, cell: x => x.why === 'gateway' ? 'for the gateway fee tie-out' : '' },
+                      ]} />
+                    </div>
+                  )}
+                </Collapsible>
                 <Collapsible id="g3-matched" title="Bills matched to GSTR-2B" count={L.matched.length + L.differs.length} tone={L.differs.length ? 'amber' : 'neutral'} summary={L.differs.length ? `${L.differs.length} differ` : 'all agree'}>
                   <DocTable rows={[...L.differs, ...L.matched]} noun="bills" columns={[
                     { label: 'Supplier', cell: x => x.vendor }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) },
                     { label: 'Tax on the bill', right: true, cell: x => amt(x.tax) }, { label: 'Tax in 2B', right: true, cell: x => amt(sum(x.twoB)) },
-                    { label: '', muted: true, cell: x => L.differs.includes(x) ? 'differs: the smaller is claimed' : '' },
+                    { label: '', muted: true, cell: x => L.differs.includes(x) ? 'differs: the 2B figure is claimed' : '' },
                   ]} />
                 </Collapsible>
-                <Collapsible id="g3-no2b" title="Bills not in GSTR-2B" count={L.notIn2b.length} tone={L.notIn2b.length ? 'amber' : 'neutral'} summary="the supplier has not reported them yet: not claimable this month">
+                <Collapsible id="g3-no2b" title="Bills not in GSTR-2B" count={L.notIn2b.length} tone={L.notIn2b.length ? 'amber' : 'neutral'} summary="the supplier has not filed them yet: not claimed this month">
                   <DocTable rows={L.notIn2b} noun="bills" columns={[
                     { label: 'Supplier', cell: x => x.vendor }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) }, { label: 'Tax', right: true, cell: x => amt(x.tax) },
                   ]} />
                 </Collapsible>
-                <Collapsible id="g3-only2b" title="In GSTR-2B but not in the ERP" count={L.onlyIn2b.length + L.notes.length} tone={L.onlyIn2b.length ? 'amber' : 'neutral'} summary="upload the bill, or leave the credit unclaimed if it is not yours">
-                  <DocTable rows={[...L.onlyIn2b.map(x => ({ ...x, what: 'Invoice, no bill' })), ...L.notes.map(x => ({ ...x, what: x.kind === 'credit_note' ? 'Credit note (reduces credit)' : 'Debit note' }))]} noun="lines" columns={[
-                    { label: 'Supplier', cell: x => x.vendor || x.gstin }, { label: 'GSTIN', muted: true, cell: x => x.gstin }, { label: 'Number', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) },
-                    { label: 'What', muted: true, cell: x => x.what }, { label: 'Tax', right: true, cell: x => amt(sum(x.twoB)) },
-                  ]} />
-                </Collapsible>
+                {L.notes.length > 0 && (
+                  <Collapsible id="g3-notes" title="Credit and debit notes from suppliers" count={L.notes.length} summary="they reduce (or add to) the credit">
+                    <DocTable rows={L.notes} noun="notes" columns={[
+                      { label: 'Supplier', cell: x => x.vendor || x.gstin }, { label: 'Number', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) },
+                      { label: 'What', muted: true, cell: x => x.kind === 'credit_note' ? 'Credit note' : 'Debit note' }, { label: 'Tax', right: true, cell: x => amt(sum(x.twoB)) },
+                    ]} />
+                  </Collapsible>
+                )}
               </>
             )}
-            <Collapsible id="g3-held" title="Bills waiting for your review" count={L.held.length} tone={L.held.length ? 'amber' : 'neutral'} summary="not claimed until accepted on the Bills page">
+            <Collapsible id="g3-held" title="Bills waiting for your review" count={L.held.length} tone={L.held.length ? 'amber' : 'neutral'} summary={T ? 'claimed from GSTR-2B: accept them on the Bills page' : 'not claimed until accepted on the Bills page'}>
               <DocTable rows={L.held} noun="bills" columns={[
                 { label: 'Supplier', cell: x => x.vendor }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) }, { label: 'Tax', right: true, cell: x => amt(x.tax) },
                 { label: '', muted: true, cell: x => x.in2b ? 'in GSTR-2B' : '' },
@@ -448,14 +461,14 @@ export default function Gstr3bSection({ showToast }) {
   const sess = session.month === month ? session : { month, twoB: undefined, opening: undefined };
   const twoB = fresh ? (sess.twoB !== undefined ? sess.twoB : fresh.twoB) : null;
   const opening = fresh ? (sess.opening !== undefined ? sess.opening : fresh.opening) : null;
-  const claimUnmatched = p.g3unm === '1';
 
   const r = useMemo(() => fresh ? buildGstr3b({
     month, gst: buildGstReport({ month, ...fresh.gst }), ownGstin: fresh.ownGstin, bills: fresh.bills, vendors: fresh.vendors,
-    ledgerInput: fresh.ledgerInput, trueups: fresh.trueups, tcsRows: fresh.tcsRows, twoB, opening, claimUnmatched,
-  }) : null, [fresh, month, twoB, opening, claimUnmatched]);
+    ledgerInput: fresh.ledgerInput, trueups: fresh.trueups, tcsRows: fresh.tcsRows, twoB, opening,
+  }) : null, [fresh, month, twoB, opening]);
 
   const exportXlsx = () => { try { downloadXlsx(gstr3bFileName(r), buildGstr3bSheets(r)); } catch (err) { showToast?.(`Could not make the Excel file: ${err.message}`, 'error'); } };
+  const exportUploads = () => { try { downloadXlsx(`Bills-to-upload-${month}.xlsx`, [buildUploadSheet(r)]); } catch (err) { showToast?.(`Could not make the Excel file: ${err.message}`, 'error'); } };
   const storeMissing = !!fresh?.storeMissing;
 
   const panel = fresh && (
@@ -473,6 +486,6 @@ export default function Gstr3bSection({ showToast }) {
   if (!month) return <div className="text-sm text-stone-500 px-1 py-6">Loading…</div>;
   return (
     <Gstr3bView r={r} months={months} month={month} onMonth={(m) => setP({ g3month: m })} onExport={exportXlsx} loading={loading} error={error} onReload={load}
-      panel={panel} openingForm={openingForm} claimUnmatched={claimUnmatched} onClaimUnmatched={(on) => setP({ g3unm: on ? '1' : '0' })} />
+      panel={panel} openingForm={openingForm} onExportUploads={exportUploads} />
   );
 }

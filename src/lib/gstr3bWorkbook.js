@@ -1,6 +1,6 @@
 // The Excel file behind Analytics → GSTR-3B: the same figures as the screen, laid out as the return is (Tables 3.1, 3.2, 4, 6.1), then the
 // lists an accountant checks them against.
-//   Summary · 3.2 by state · ITC bills · In 2B only · Suppliers · Payment 6.1
+//   Summary · 3.2 by state · ITC bills · Bills to upload · Other 2B lines · Suppliers · Payment 6.1
 import { HEADS, HEAD_LABEL, MYNTRA_GSTIN } from './gstr3b.js';
 import { monthLabel } from './gstReport.js';
 
@@ -14,7 +14,25 @@ const tt = (v) => ({ v, s: 'tt' });
 const sum = (x) => Math.round((x.igst + x.cgst + x.sgst) * 100) / 100;
 const LEVEL = { ok: 'OK', info: 'Note', warn: 'Check', error: 'ERROR' };
 
-const RESULT = { matched: 'In GSTR-2B: agrees', differs: 'In GSTR-2B: amounts differ (smaller claimed)', notIn2b: 'Not in GSTR-2B: not claimable yet', held: 'Waiting for your review: not claimed', unavailable: 'GSTR-2B says ITC not available', rcm: 'Reverse charge: not in 4(A)(5)' };
+const RESULT = { matched: 'In GSTR-2B: agrees', differs: 'In GSTR-2B: amounts differ (the GSTR-2B figure is claimed)', notIn2b: 'Not in GSTR-2B: not claimed this month', held: 'In GSTR-2B, bill waiting for your review: claimed (accept the bill)', unavailable: 'GSTR-2B says ITC not available', rcm: 'Reverse charge: not in 4(A)(5)' };
+
+/** The bills still to upload because GSTR-2B shows them and the ERP has none: by supplier, oldest first. Used by the workbook and by the page's own download. */
+export function buildUploadSheet(r) {
+  const rows = [...(r.itc.lists.toUpload ?? [])].sort((a, b) => String(a.vendor).localeCompare(String(b.vendor)) || String(a.date).localeCompare(String(b.date)) || String(a.no).localeCompare(String(b.no)));
+  const total = rows.reduce((a, x) => ({ taxable: a.taxable + x.taxable, value: a.value + x.value, igst: a.igst + x.twoB.igst, cgst: a.cgst + x.twoB.cgst, sgst: a.sgst + x.twoB.sgst }), { taxable: 0, value: 0, igst: 0, cgst: 0, sgst: 0 });
+  const r2 = (n) => Math.round(n * 100) / 100;
+  return {
+    name: 'Bills to upload', freeze: 4, cols: [34, 18, 14, 22, 13, 15, 13, 13, 13, 15, 15, 40], rows: [
+      [{ v: `Bills to upload: ${monthLabel(r.month)}`, s: 'title' }],
+      [note('Invoices that suppliers have filed (they are in GSTR-2B and their credit is claimed) but that the ERP has no bill for. Upload each one on Analytics → Bills. A supplier that is not yet a vendor in the ERP is created on the first bill.')],
+      [],
+      h('Supplier', 'Supplier GSTIN', 'Vendor in the ERP?', 'Invoice no', 'Invoice date', 'Taxable value', 'IGST', 'CGST', 'SGST', 'Tax', 'Invoice value', 'What to upload'),
+      ...rows.map(x => [x.vendor || '', x.gstin, x.knownVendor ? 'yes' : 'no: new vendor', x.no, x.date ? d(x.date) : '', m(x.taxable), m(x.twoB.igst), m(x.twoB.cgst), m(x.twoB.sgst), m(sum(x.twoB)), m(x.value),
+        x.why === 'gateway' ? 'The invoice, for the gateway fee tie-out' : 'The bill (purchase or expense)']),
+      [tt(`${rows.length} invoice${rows.length === 1 ? '' : 's'}`), tt(''), tt(''), tt(''), tt(''), t(r2(total.taxable)), t(r2(total.igst)), t(r2(total.cgst)), t(r2(total.sgst)), t(r2(total.igst + total.cgst + total.sgst)), t(r2(total.value)), tt('')],
+    ],
+  };
+}
 
 export function buildGstr3bSheets(r) {
   const label = monthLabel(r.month);
@@ -42,8 +60,11 @@ export function buildGstr3bSheets(r) {
       [b('Table 4: input tax credit')],
       h('', 'Basis', 'Integrated tax', 'Central tax', 'State/UT tax'),
       ...(T ? [
-        ['4(A)(5) All other ITC: what GSTR-2B shows', 'GSTR-2B', ...rows3(T.portal)],
-        ['Not claimed: waiting for your review, in 2B higher than the bill, or no bill for it', '', ...rows3(HEADS.reduce((a, k) => ({ ...a, [k]: Math.round((T.portal[k] - C[k]) * 100) / 100 }), {}))],
+        ['4(A)(5) All other ITC: what GSTR-2B shows (GSTR-2B is the source of truth: all of it is claimed)', 'GSTR-2B', ...rows3(T.portal)],
+        ['   of which: invoices that have a bill in the ERP', '', ...rows3(T.withBill)],
+        ['   of which: gateway and Myntra (booked at each payout / settlement)', '', ...rows3(T.suppliers)],
+        ['   of which: credit / debit notes from suppliers', '', ...rows3(T.notes)],
+        ['   of which: invoices with NO bill in the ERP yet (see sheet "Bills to upload")', '', ...rows3(T.noBill)],
       ] : [['Input credit in your books (not checked against GSTR-2B)', 'Books', ...rows3(r.itc.books.total)]]),
       ['4(C) Net ITC claimable this month', T ? 'GSTR-2B' : 'Books (not checked)', ...rows3(C)],
       [],
@@ -83,14 +104,15 @@ export function buildGstr3bSheets(r) {
     ],
   };
 
-  const only = [...L.onlyIn2b.map(x => ['In GSTR-2B, no bill', x]), ...L.notes.map(x => [x.kind === 'credit_note' ? 'Credit note from supplier (reduces credit)' : 'Debit note from supplier', x]),
+  const other = [...L.notes.map(x => [x.kind === 'credit_note' ? 'Credit note from supplier (reduces credit)' : 'Debit note from supplier', x]),
     ...['unavailable', 'rcm'].flatMap(k => L[k].filter(x => !x.heads).map(x => [RESULT[k], x]))];
-  const onlySheet = {
-    name: 'In 2B only', freeze: 1, cols: [40, 30, 18, 20, 13, 13, 13, 13, 30], rows: [
+  const otherSheet = {
+    name: 'Other 2B lines', freeze: 1, cols: [40, 30, 18, 20, 13, 13, 13, 13, 30], rows: [
       h('What', 'Supplier', 'Supplier GSTIN', 'Number', 'Date', 'IGST', 'CGST', 'SGST', 'Reason'),
-      ...only.map(([what, x]) => [what, x.vendor || '', x.gstin || '', x.no, x.date ? d(x.date) : '', ...rows3(x.twoB), x.reason || '']),
+      ...other.map(([what, x]) => [what, x.vendor || '', x.gstin || '', x.no, x.date ? d(x.date) : '', ...rows3(x.twoB), x.reason || '']),
     ],
   };
+  const uploadSheet = buildUploadSheet(r);
 
   const suppliersSheet = {
     name: 'Suppliers', cols: [44, 12, 15, 15, 15, 15, 15, 15, 15, 15], rows: [
@@ -118,7 +140,7 @@ export function buildGstr3bSheets(r) {
       ['Carry to next month', ...rows3(P.closing)],
     ],
   };
-  return [summary, stateSheet, billsSheet, onlySheet, suppliersSheet, paySheet];
+  return [summary, stateSheet, billsSheet, uploadSheet, otherSheet, suppliersSheet, paySheet];
 }
 
 export const gstr3bFileName = (r) => `GSTR-3B-${r.month}.xlsx`;

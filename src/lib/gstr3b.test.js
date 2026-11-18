@@ -153,59 +153,64 @@ test('trueups add to the gateway\'s books', () => {
   assert.equal(r.itc.books.groups.find(g => g.id === 'gateway').heads.igst, r2(2.5 + 3.5 + 5.25));
 });
 
-// ── ITC against GSTR-2B ──
-test('with a GSTR-2B: bills match by supplier GSTIN and invoice number; the claim is what is both in 2B and supported', () => {
+// ── ITC against GSTR-2B: it is the source of truth ──
+test('with a GSTR-2B the claim is everything it lists as available, with or without a bill in the ERP', () => {
   const r = buildGstr3b({ ...base, twoB: full2b() });
   assert.equal(r.itc.basis, 'twob');
   assert.deepEqual(r.itc.lists.matched.map(x => x.no).sort(), ['2026-27/1695', '2380933755', 'HF2709I013498070']);
-  assert.deepEqual(r.itc.lists.held.map(x => x.no), ['2026-27/1700']);                // in 2B but the bill is still in review: not claimed
+  assert.deepEqual(r.itc.lists.held.map(x => x.no), ['2026-27/1700']);                // the bill is still in review, but it is in 2B: claimed
   assert.equal(r.itc.lists.held[0].in2b, true);
-  assert.deepEqual(r.itc.lists.onlyIn2b.map(x => x.no), ['S/1']);                      // a stranger's invoice: no bill
-  assert.deepEqual(r.itc.lists.unavailable.map(x => x.no), ['MYN/2']);                 // marked ITC not available
+  assert.deepEqual(r.itc.lists.toUpload.map(x => [x.no, x.why]), [['EB/1', 'gateway'], ['S/1', 'bill']]);      // no bill in the ERP: to upload (Easebuzz's invoice is uploaded for the tie-out)
+  assert.deepEqual(r.itc.lists.unavailable.map(x => x.no), ['MYN/2']);                 // marked ITC not available: left out
   assert.deepEqual(r.itc.lists.notes.map(x => x.no), ['CN-1']);                        // Meta's credit note reduces the credit
   const sup = Object.fromEntries(r.itc.lists.suppliers.map(s => [s.id, s]));
   assert.deepEqual(sup.gateway.twoB, { igst: 18, cgst: 0, sgst: 0 });
   assert.deepEqual(sup.myntra.twoB, { igst: 36, cgst: 0, sgst: 0 });
-  // claim: Meta 90775.49 + Vipul 1453.15 + Airtel 80.91 x2 + gateway 18 + Myntra 36 - Meta credit note 1.8
-  assert.deepEqual(r.itc.claim, { igst: r2(90775.49 + 1453.15 + 18 + 36 - 1.8), cgst: 80.91, sgst: 80.91 });
+  // claim = 2B: Meta 90775.49 + Vipul 1453.15 and 50 + Easebuzz 18 + Myntra 36 + the stranger 90 - Meta credit note 1.8
+  assert.deepEqual(r.itc.claim, { igst: r2(90775.49 + 1453.15 + 50 + 18 + 36 + 90 - 1.8), cgst: 80.91, sgst: 80.91 });
+  assert.deepEqual(r.itc.claim, r.itc.twoB.portal);
+  const { cess, ...heads } = availableTotals(full2b().docs);
+  assert.deepEqual(r.itc.claim, heads);
 });
 
-test('the 2B total splits exactly into claimed, held, unmatched and excess: nothing is lost between them', () => {
+test('the 2B total splits exactly into with a bill, gateway and Myntra, supplier notes and no bill: nothing is lost between them', () => {
   const r = buildGstr3b({ ...base, twoB: full2b() });
   const t = r.itc.twoB;
-  for (const k of ['igst', 'cgst', 'sgst']) {
-    const parts = t.claimBills[k] + t.supplierClaim[k] + t.notesClaim[k] + t.unmatched[k] + t.excess[k] + t.held[k];
-    assert.equal(r2(parts), t.portal[k], k);
-  }
-  const { cess, ...heads } = availableTotals(full2b().docs);
-  assert.equal(cess, 0);
-  assert.deepEqual(t.portal, heads);
+  for (const k of ['igst', 'cgst', 'sgst']) assert.equal(r2(t.withBill[k] + t.suppliers[k] + t.notes[k] + t.noBill[k]), t.portal[k], k);
+  assert.equal(t.noBill.igst, 90);                                  // only the stranger's invoice has no bill and no supplier-level home
 });
 
-test('unmatched 2B entries are only claimed when the person says so', () => {
-  const off = buildGstr3b({ ...base, twoB: full2b() });
-  const on = buildGstr3b({ ...base, twoB: full2b(), claimUnmatched: true });
-  assert.equal(r2(on.itc.claim.igst - off.itc.claim.igst), 90);
-});
-
-test('a bill that differs from 2B: the smaller figure is claimed and it is flagged', () => {
-  const two = twoBJson({ b2b: [{ ctin: '07AFJPJ5098M1ZS', trdnm: 'Vipul', inv: [inv('2026-27/1695', '04-10-2026', 29063, 1600)] }] });
-  const r = buildGstr3b({ ...base, twoB: two });
+test('a bill that differs from 2B: the GSTR-2B figure is claimed and the bill is flagged, whichever is larger', () => {
+  const higher = twoBJson({ b2b: [{ ctin: '07AFJPJ5098M1ZS', trdnm: 'Vipul', inv: [inv('2026-27/1695', '04-10-2026', 29063, 1600)] }] });
+  const r = buildGstr3b({ ...base, twoB: higher });
   assert.equal(r.itc.lists.differs.length, 1);
-  assert.equal(r.itc.lists.differs[0].claim.igst, 1453.15);
-  assert.equal(r.itc.twoB.excess.igst, r2(1600 - 1453.15));
+  assert.equal(r.itc.claim.igst, 1600);
   assert.ok(r.checks.find(c => c.id === 'differs'));
-  // and the other way: the bill is higher than 2B, claim 2B
-  const two2 = twoBJson({ b2b: [{ ctin: '07AFJPJ5098M1ZS', trdnm: 'Vipul', inv: [inv('2026-27/1695', '04-10-2026', 29063, 1000)] }] });
-  assert.equal(buildGstr3b({ ...base, twoB: two2 }).itc.lists.differs[0].claim.igst, 1000);
+  const lower = twoBJson({ b2b: [{ ctin: '07AFJPJ5098M1ZS', trdnm: 'Vipul', inv: [inv('2026-27/1695', '04-10-2026', 29063, 1000)] }] });
+  assert.equal(buildGstr3b({ ...base, twoB: lower }).itc.claim.igst, 1000);
 });
 
-test('bills not in 2B are listed and not claimed; the check says why', () => {
+test('a bill the supplier has not filed is not claimed and is listed; nothing else changes', () => {
   const two = twoBJson({ b2b: [{ ctin: '06AABCF5150G1ZZ', trdnm: 'Facebook', inv: [inv('2380933755', '01-10-2026', 504308.3, 90775.49)] }] });
   const r = buildGstr3b({ ...base, twoB: two });
   assert.deepEqual(r.itc.lists.notIn2b.map(x => x.no).sort(), ['2026-27/1695', 'HF2709I013498070']);
   assert.ok(r.checks.find(c => c.id === 'not2b'));
-  assert.equal(r.itc.claim.cgst, 0);
+  assert.deepEqual(r.itc.claim, { igst: 90775.49, cgst: 0, sgst: 0 });
+});
+
+test('Easebuzz\'s invoice drops off the upload list once it is uploaded as a tie-out bill, and is still claimed once', () => {
+  const eb = [...bills, bill(20, 3, 'Easebuzz', 'EB/1', '2026-10-01', 100, 18)];
+  const r = buildGstr3b({ ...base, bills: eb, twoB: full2b() });
+  assert.deepEqual(r.itc.lists.toUpload.map(x => x.no), ['S/1']);
+  assert.equal(r.itc.lists.suppliers.find(s => s.id === 'gateway').twoB.igst, 18);
+  assert.equal(r.itc.claim.igst, r2(90775.49 + 1453.15 + 50 + 18 + 36 + 90 - 1.8));
+  assert.equal(r.itc.books.billCount, 3);                           // and it is still not in the books totals
+});
+
+test('the upload list says whether the supplier is already a vendor in the ERP, and carries the invoice value', () => {
+  const r = buildGstr3b({ ...base, twoB: full2b() });
+  const s1 = r.itc.lists.toUpload.find(x => x.no === 'S/1');
+  assert.deepEqual([s1.knownVendor, s1.taxable, s1.value, s1.gstin], [false, 500, 590, '07AAMCP7214N1ZW']);
 });
 
 test('a bill with no supplier GSTIN is matched by invoice number and amount', () => {
@@ -269,4 +274,11 @@ test('Rule 86B: above ₹50 lakh a month the use of credit is limited, and the s
   const big = buildGstReport({ month: '2026-10', entries: sale('Z', '2026-10-02', 6_000_000, 'IGST OUTPUT UP', 300000), orders: [o('Z', 'shopify', 'Maharashtra', '27')] });
   assert.ok(buildGstr3b({ ...base, gst: big }).checks.find(c => c.id === '86b'));
   assert.equal(buildGstr3b(base).checks.find(c => c.id === '86b'), undefined);
+});
+
+test('a supplier counts as already a vendor by name when the vendor has no GSTIN on file', () => {
+  const two = twoBJson({ b2b: [{ ctin: '06AAJCG9963C1ZD', trdnm: 'GOEXCELSIOR PRIVATE LIMITED', inv: [inv('HR/1', '18-10-2026', 5000, 900)] }, { ctin: '07AKFPR5912D1Z9', trdnm: 'AGGARWAL TRADERS', inv: [inv('1068', '25-10-2026', 465205, 23260.25)] }] });
+  const r = buildGstr3b({ ...base, vendors: [...vendors, { id: 30, name: 'Goexcelsior', gstin: null, booking: 'expense' }], twoB: two });
+  const byNo = Object.fromEntries(r.itc.lists.toUpload.map(x => [x.no, x.knownVendor]));
+  assert.deepEqual(byNo, { 'HR/1': true, '1068': false });
 });

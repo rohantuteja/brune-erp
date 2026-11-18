@@ -6,8 +6,10 @@
 //      edited, so this part is a cross-check of what the portal will show once GSTR-1 is filed.
 //   2. Input tax credit (Table 4): what the ERP's books hold (accepted supplier bills; the GST on gateway fees and on Myntra's fees that
 //      the order ledger books at each payout and settlement) against GSTR-2B, the portal's list of what suppliers reported about you.
-//      Only credit that is in GSTR-2B can be claimed. Bills are matched to it by supplier GSTIN and invoice number; the gateway and Myntra
-//      are matched by supplier, because the ERP does not hold their invoice numbers.
+//      **GSTR-2B is the source of truth** (the owner's rule, 18 Nov 2026): everything it lists as available is claimed, whether or not the
+//      ERP has the bill yet, because a supplier can have filed and still be late sending the invoice. The bills only explain the credit and
+//      produce the list of bills still to upload. Bills are matched to 2B by supplier GSTIN and invoice number; the gateway and Myntra are
+//      matched by supplier, because the ERP does not hold their invoice numbers.
 //   3. TCS: what Myntra deducted (section 52), to compare with the TCS credit in the portal's electronic cash ledger.
 //   4. Payment (Table 6.1): output tax less input credit, using the portal's own order of set-off (sections 49 and 49A, Rule 88A).
 //
@@ -56,7 +58,7 @@ const avail = (d) => d.itc === 'Y' && !d.rcm ? add(h3(), docHeads(d), signOf(d))
 
 const headOfAccount = (a) => /^igst/i.test(a) ? 'igst' : /^cgst/i.test(a) ? 'cgst' : /^sgst/i.test(a) ? 'sgst' : null;
 
-export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], ledgerInput = [], trueups = [], tcsRows = [], twoB = null, opening = null, claimUnmatched = false }) {
+export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], ledgerInput = [], trueups = [], tcsRows = [], twoB = null, opening = null }) {
   const own = String(ownGstin ?? '').slice(0, 2);
   const checks = [];
   const note = (level, id, text) => checks.push({ id, level, text });
@@ -111,105 +113,116 @@ export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], le
 
   const nowInMonth = (d) => !!d && String(d).slice(0, 7) === month;
   const live = bills.filter(b => b.status !== 'void');
-  const normBills = live.filter(b => vendorById.get(b.vendor_id)?.booking !== 'tie_out').map(b => {
+  const normBills = live.map(b => {
     const { heads, known } = billHeads(b);
     const gstin = String(b.supplier_gstin || vendorById.get(b.vendor_id)?.gstin || '').toUpperCase() || null;
-    return { id: b.id, vendor: b.vendor, no: b.invoice_no, date: b.invoice_date, gstin, status: b.status, opening: !!b.opening, kind: b.kind, taxType: b.tax_type, taxable: num(b.subtotal), heads, tax: total(heads), taxKnown: known, fileName: b.file_name ?? null };
+    return { id: b.id, vendor: b.vendor, no: b.invoice_no, date: b.invoice_date, gstin, status: b.status, tieOut: vendorById.get(b.vendor_id)?.booking === 'tie_out', opening: !!b.opening, kind: b.kind, taxType: b.tax_type, taxable: num(b.subtotal), heads, tax: total(heads), taxKnown: known, fileName: b.file_name ?? null };
   });
   for (const b of normBills) {
     if (b.gstin && GSTIN_RE.test(b.gstin) && b.taxKnown) {
       const expectIgst = b.gstin.slice(0, 2) !== own;
       const hasIgst = b.heads.igst > 0;
-      if (expectIgst !== hasIgst && b.tax > 0) b.issue = `${b.vendor} ${b.no} charges ${expectIgst ? 'CGST + SGST' : 'IGST'} but the supplier is ${expectIgst ? 'in another state' : 'in your state'}: it cannot be claimed as charged.`;
+      if (expectIgst !== hasIgst && b.tax > 0) b.issue = `${b.vendor} ${b.no} charges ${expectIgst ? 'CGST + SGST' : 'IGST'} but the supplier is ${expectIgst ? 'in another state' : 'in your state'}: check the bill.`;
     }
     if (!b.taxKnown) b.issue = `${b.vendor} ${b.no} has a tax type the ERP does not recognise (${b.taxType || 'none'}); it is counted as IGST.`;
   }
   for (const b of normBills) if (b.issue) note('warn', `bill-${b.id}`, b.issue);
 
-  const booksBills = normBills.filter(b => b.status === 'accepted' && !b.opening && nowInMonth(b.date));
-  const heldBills = normBills.filter(b => b.status === 'review' && !b.opening && nowInMonth(b.date));
+  const booksBills = normBills.filter(b => !b.tieOut && b.status === 'accepted' && !b.opening && nowInMonth(b.date));
+  const heldBills = normBills.filter(b => !b.tieOut && b.status === 'review' && !b.opening && nowInMonth(b.date));
   const billsBooks = booksBills.reduce((a, b) => add(a, b.heads), h3());
   const ledgerBooks = groups.reduce((a, g) => add(a, g.books), h3());
   const books = { bills: billsBooks, groups: groups.map(g => ({ id: g.id, name: g.name, heads: g.books, lines: g.lines })), ledger: ledgerBooks, total: add(billsBooks, ledgerBooks), billCount: booksBills.length };
 
   // ── 2b. Against GSTR-2B ──
-  const lists = { matched: [], differs: [], notIn2b: [], held: [], onlyIn2b: [], unavailable: [], rcm: [], notes: [], suppliers: [] };
+  const lists = { matched: [], differs: [], notIn2b: [], held: [], toUpload: [], unavailable: [], rcm: [], notes: [], suppliers: [] };
+  const vendorByGstin = new Map(vendors.filter(v => v.gstin).map(v => [String(v.gstin).toUpperCase(), v]));
+  // A supplier is "already a vendor" by GSTIN, or by name when the vendor was created without a GSTIN (Goexcelsior: "GOEXCELSIOR PRIVATE LIMITED").
+  const nameKey = (x) => String(x ?? '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(/\b(pvt|private|limited|ltd|llp|the|m\/s)\b/g, ' ').replace(/[^a-z0-9]/g, '');
+  const vendorKeys = vendors.map(v => nameKey(v.name)).filter(k => k.length >= 4);
+  const isVendor = (d) => vendorByGstin.has(d.ctin) || (() => { const k = nameKey(d.supplier); return k.length >= 4 && vendorKeys.some(n => k.includes(n) || n.includes(k)); })();
   let claim, basis, twoBTotals = null;
   if (!twoB) {
     claim = books.total; basis = 'books';
     lists.notIn2b = booksBills.map(b => ({ ...b }));
     lists.held = heldBills.map(b => ({ ...b }));
-    note('warn', 'no2b', 'No GSTR-2B has been loaded for this month, so the input credit below is what your books hold, not what you may claim. Only credit that is in GSTR-2B can be claimed: load the file to check.');
+    note('warn', 'no2b', 'No GSTR-2B has been loaded for this month, so the input credit below is what your books hold, not what you may claim. GSTR-2B decides the credit: load the file.');
   } else {
     basis = 'twob';
     const docs = twoB.docs.map((d, i) => ({ ...d, _i: i }));
-    const used = new Set();
+    const used = new Set(), uploaded = new Set();
     const byKey = new Map();
     for (const d of docs) if (d.kind !== 'credit_note') { const k = `${d.ctin}|${normInvoice(d.no)}`; byKey.set(k, [...(byKey.get(k) ?? []), d]); }
     const pairs = [];
     for (const b of normBills) {
       const cands = b.gstin
-        ? (byKey.get(`${b.gstin}|${normInvoice(b.no)}`) ?? []).filter(d => !used.has(d._i))
-        : docs.filter(d => !used.has(d._i) && d.kind === 'invoice' && normInvoice(d.no) === normInvoice(b.no) && near(total(docHeads(d)), b.tax));
-      if (cands[0]) { used.add(cands[0]._i); pairs.push({ b, d: cands[0] }); }
+        ? (byKey.get(`${b.gstin}|${normInvoice(b.no)}`) ?? []).filter(d => !used.has(d._i) && !uploaded.has(d._i))
+        : docs.filter(d => !used.has(d._i) && !uploaded.has(d._i) && d.kind === 'invoice' && normInvoice(d.no) === normInvoice(b.no) && near(total(docHeads(d)), b.tax));
+      if (!cands[0]) continue;
+      // The payment gateway's own invoice is only compared (tie-out): its GST is claimed at supplier level below, from the same line.
+      if (b.tieOut) uploaded.add(cands[0]._i); else { used.add(cands[0]._i); pairs.push({ b, d: cands[0] }); }
     }
-    let claimBills = h3(), excess = h3(), heldIn2b = h3();
+    let withBill = h3(), supplierClaim = h3(), notesClaim = h3(), noBill = h3();
     for (const { b, d } of pairs) {
       const row = { ...b, doc: d, twoB: docHeads(d), taxable2b: d.taxable, itc: d.itc, reason: d.reason, supplierPeriod: d.supplierPeriod };
       if (b.opening) note('info', `opening-${b.id}`, `${b.vendor} ${b.no} is dated before the books started but is in this month's GSTR-2B. Check that it was not claimed in an earlier return.`);
       if (d.rcm) { lists.rcm.push(row); continue; }
       if (d.itc === 'N') { lists.unavailable.push(row); continue; }
-      if (b.status === 'review') { lists.held.push({ ...row, in2b: true }); heldIn2b = add(heldIn2b, avail(d)); continue; }
-      if (b.status !== 'accepted') continue;
       const a = avail(d);
-      const same = near(total(a), b.tax) && near(d.taxable, b.taxable);
-      // Never claim more than the bill supports: per head, the smaller of the two.
-      const mine = h3(Math.min(a.igst, b.heads.igst), Math.min(a.cgst, b.heads.cgst), Math.min(a.sgst, b.heads.sgst));
-      claimBills = add(claimBills, mine);
-      excess = add(excess, a, 1); excess = add(excess, mine, -1);
-      (same ? lists.matched : lists.differs).push({ ...row, claim: mine });
+      withBill = add(withBill, a);
+      if (b.status === 'review') { lists.held.push({ ...row, in2b: true }); continue; }
+      (near(total(a), b.tax) && near(d.taxable, b.taxable) ? lists.matched : lists.differs).push(row);
     }
     for (const b of booksBills) if (!pairs.some(p => p.b === b)) lists.notIn2b.push({ ...b });
     for (const b of heldBills) if (!pairs.some(p => p.b === b)) lists.held.push({ ...b });
 
     const groupOf = (ctin) => groups.find(g => g.gstins.has(ctin));
-    let supplierClaim = h3(), notesClaim = h3(), onlyAvail = h3();
     const bySupplier = new Map();
+    const party = (d) => ({ vendor: d.supplier, no: d.no, date: d.date, gstin: d.ctin, taxable: d.taxable, value: d.value, twoB: avail(d), reason: d.reason, supplierPeriod: d.supplierPeriod, knownVendor: isVendor(d), doc: d });
     for (const d of docs) {
       if (used.has(d._i)) continue;
-      const g = groupOf(d.ctin);
-      if (d.rcm) { lists.rcm.push({ vendor: d.supplier, no: d.no, date: d.date, gstin: d.ctin, twoB: docHeads(d), reason: d.reason, doc: d }); continue; }
-      if (d.itc === 'N') { lists.unavailable.push({ vendor: d.supplier, no: d.no, date: d.date, gstin: d.ctin, twoB: docHeads(d), reason: d.reason, doc: d }); continue; }
-      const a = avail(d);
-      if (g) { const s = bySupplier.get(g.id) ?? { group: g, docs: 0, twoB: h3() }; s.docs++; s.twoB = add(s.twoB, a); bySupplier.set(g.id, s); supplierClaim = add(supplierClaim, a); continue; }
-      if (d.kind !== 'invoice') { lists.notes.push({ vendor: d.supplier, no: d.no, date: d.date, gstin: d.ctin, kind: d.kind, twoB: a, doc: d }); notesClaim = add(notesClaim, a); continue; }
-      lists.onlyIn2b.push({ vendor: d.supplier, no: d.no, date: d.date, gstin: d.ctin, twoB: a, supplierPeriod: d.supplierPeriod, taxable: d.taxable, doc: d });
-      onlyAvail = add(onlyAvail, a);
+      if (d.rcm) { lists.rcm.push(party(d)); continue; }
+      if (d.itc === 'N') { lists.unavailable.push(party(d)); continue; }
+      const a = avail(d), g = groupOf(d.ctin);
+      if (g) {
+        const sp = bySupplier.get(g.id) ?? { group: g, docs: 0, twoB: h3() };
+        sp.docs++; sp.twoB = add(sp.twoB, a); bySupplier.set(g.id, sp); supplierClaim = add(supplierClaim, a);
+        // Easebuzz's invoice is not a bill the ERP books, but it is uploaded on the Bills page to true the fees up: it is on the list until it is.
+        if (g.id === 'gateway' && !uploaded.has(d._i) && d.kind === 'invoice') lists.toUpload.push({ ...party(d), why: 'gateway' });
+        continue;
+      }
+      if (d.kind !== 'invoice') { lists.notes.push({ ...party(d), kind: d.kind }); notesClaim = add(notesClaim, a); continue; }
+      lists.toUpload.push({ ...party(d), why: 'bill' });
+      noBill = add(noBill, a);
     }
     for (const g of groups) {
       if (g.id === 'other') continue;
-      const s = bySupplier.get(g.id);
-      lists.suppliers.push({ id: g.id, name: g.name, docs: s?.docs ?? 0, twoB: s?.twoB ?? h3(), books: g.books, diff: add(s?.twoB ?? h3(), g.books, -1) });
+      const sp = bySupplier.get(g.id);
+      lists.suppliers.push({ id: g.id, name: g.name, docs: sp?.docs ?? 0, twoB: sp?.twoB ?? h3(), books: g.books, diff: add(sp?.twoB ?? h3(), g.books, -1) });
     }
-    claim = add(add(claimBills, supplierClaim), add(notesClaim, claimUnmatched ? onlyAvail : h3()));
-    twoBTotals = { portal: docs.reduce((a, d) => add(a, avail(d)), h3()), claimBills, supplierClaim, notesClaim, unmatched: onlyAvail, excess, held: heldIn2b, claimedUnmatched: claimUnmatched };
-
+    const portal = docs.reduce((a, d) => add(a, avail(d)), h3());
+    claim = portal;                                                   // GSTR-2B is the source of truth
+    twoBTotals = { portal, withBill, suppliers: supplierClaim, notes: notesClaim, noBill };
     const negClaim = HEADS.filter(k => claim[k] < -0.005);
     if (negClaim.length) note('warn', 'negclaim', `Credit notes from suppliers are larger than the credit in ${negClaim.map(k => HEAD_LABEL[k]).join(', ')} this month. The excess is reversed in Table 4(B); ask your accountant.`);
+
     // Checks on the file itself
     if (twoB.period && twoB.period !== month) note('error', 'period', `This GSTR-2B is for ${monthLabel(twoB.period)}, not ${monthLabel(month)}. Load the file for ${monthLabel(month)}.`);
     if (ownGstin && twoB.gstin && twoB.gstin !== ownGstin) note('error', 'gstin', `This GSTR-2B is for GSTIN ${twoB.gstin}, not yours (${ownGstin}).`);
     for (const w of twoB.warnings ?? []) note('info', 'twob-not-read', w);
     for (const c of twoB.checks ?? []) if (!c.ok && c.id !== 'read') note('warn', `twob-${c.id}`, c.detail);
-    if (lists.notIn2b.length) note('warn', 'not2b', `${plural(lists.notIn2b.length, 'bill')} dated this month ${lists.notIn2b.length === 1 ? 'is' : 'are'} not in GSTR-2B (${money(total(lists.notIn2b.reduce((a, b) => add(a, b.heads), h3())))} of tax): the supplier has not reported ${lists.notIn2b.length === 1 ? 'it' : 'them'} yet, so ${lists.notIn2b.length === 1 ? 'it' : 'they'} cannot be claimed this month. ${lists.notIn2b.length === 1 ? 'It appears' : 'They appear'} in the month the supplier reports ${lists.notIn2b.length === 1 ? 'it' : 'them'}.`);
-    if (lists.onlyIn2b.length) note('warn', 'only2b', `${plural(lists.onlyIn2b.length, 'invoice')} in GSTR-2B ${lists.onlyIn2b.length === 1 ? 'has' : 'have'} no bill in the ERP (${money(total(onlyAvail))} of tax). ${claimUnmatched ? 'They are counted as claimed because you chose to.' : 'They are not counted. Upload the bill, or leave the credit unclaimed if it is not yours.'}`);
-    if (lists.differs.length) note('warn', 'differs', `${plural(lists.differs.length, 'bill')} differ${lists.differs.length === 1 ? 's' : ''} from GSTR-2B in tax or taxable value. The smaller figure is claimed.`);
-    if (lists.held.length) note('warn', 'held', `${plural(lists.held.length, 'bill')} dated this month ${lists.held.length === 1 ? 'is' : 'are'} still waiting for your review on the Bills page (${money(total(lists.held.reduce((a, b) => add(a, b.heads), h3())))} of tax), so ${lists.held.length === 1 ? 'it is' : 'they are'} not claimed yet.`);
-    if (lists.unavailable.length) note('info', 'unavailable', `${plural(lists.unavailable.length, 'line')} in GSTR-2B ${lists.unavailable.length === 1 ? 'is' : 'are'} marked "ITC not available" (${money(total(lists.unavailable.reduce((a, b) => add(a, b.twoB), h3())))} of tax), so ${lists.unavailable.length === 1 ? 'it is' : 'they are'} left out.`);
+      if (lists.toUpload.length) {
+      const supplierCount = new Set(lists.toUpload.map(x => x.gstin)).size;
+      note('warn', 'toupload', `${plural(lists.toUpload.length, 'invoice')} from ${plural(supplierCount, 'supplier')} ${lists.toUpload.length === 1 ? 'is' : 'are'} in GSTR-2B but ${lists.toUpload.length === 1 ? 'has' : 'have'} no bill in the ERP (${money(total(lists.toUpload.reduce((a, x) => add(a, x.twoB), h3())))} of tax). ${lists.toUpload.length === 1 ? 'It is' : 'They are'} claimed, because GSTR-2B is what counts: upload the bill${lists.toUpload.length === 1 ? '' : 's'} so the books catch up (the list is in section 2).`);
+    }
+    if (lists.notIn2b.length) note('warn', 'not2b', `${plural(lists.notIn2b.length, 'bill')} dated this month ${lists.notIn2b.length === 1 ? 'is' : 'are'} not in GSTR-2B (${money(total(lists.notIn2b.reduce((a, b) => add(a, b.heads), h3())))} of tax): the supplier has not filed ${lists.notIn2b.length === 1 ? 'it' : 'them'} yet, so ${lists.notIn2b.length === 1 ? 'it is' : 'they are'} not claimed this month. ${lists.notIn2b.length === 1 ? 'It appears' : 'They appear'} in the month the supplier files ${lists.notIn2b.length === 1 ? 'it' : 'them'}.`);
+    if (lists.differs.length) note('warn', 'differs', `${plural(lists.differs.length, 'bill')} differ${lists.differs.length === 1 ? 's' : ''} from GSTR-2B in tax or taxable value. The GSTR-2B figure is claimed: check the bill, or ask the supplier.`);
+    if (lists.held.some(x => x.in2b)) note('warn', 'held', `${plural(lists.held.filter(x => x.in2b).length, 'bill')} in GSTR-2B ${lists.held.filter(x => x.in2b).length === 1 ? 'is' : 'are'} still waiting for your review on the Bills page. The credit is claimed from GSTR-2B; accept the bill${lists.held.filter(x => x.in2b).length === 1 ? '' : 's'} so the books agree.`);
+    if (lists.unavailable.length) note('info', 'unavailable', `${plural(lists.unavailable.length, 'line')} in GSTR-2B ${lists.unavailable.length === 1 ? 'is' : 'are'} marked "ITC not available" (${money(total(lists.unavailable.reduce((a, x) => add(a, x.twoB), h3())))} of tax), so ${lists.unavailable.length === 1 ? 'it is' : 'they are'} left out.`);
     if (lists.rcm.length) note('warn', 'rcm', `${plural(lists.rcm.length, 'line')} in GSTR-2B ${lists.rcm.length === 1 ? 'is' : 'are'} reverse charge: that tax is reported in Table 3.1(d) and claimed in Table 4(A)(3), which this screen does not work out. Ask your accountant.`);
-    for (const s of lists.suppliers) {
-      if (s.docs && Math.abs(total(s.diff)) > 1) note('info', `supplier-${s.id}`, `${s.name}: GSTR-2B has ${money(total(s.twoB))} of tax and your books booked ${money(total(s.books))} this month (a difference of ${money(Math.abs(total(s.diff)))}). Their invoices and your payout lines fall in different months, so some difference is normal; the ERP does not hold their invoice numbers.`);
-      if (!s.docs && total(s.books) > 1) note('warn', `supplier-${s.id}`, `${s.name}: your books booked ${money(total(s.books))} of input GST this month but GSTR-2B has no invoice from them, so none of it is claimed yet. It is claimed in the month their invoice appears in GSTR-2B.`);
+    for (const sp of lists.suppliers) {
+      if (sp.docs && Math.abs(total(sp.diff)) > 1) note('info', `supplier-${sp.id}`, `${sp.name}: GSTR-2B has ${money(total(sp.twoB))} of tax and your books booked ${money(total(sp.books))} this month (a difference of ${money(Math.abs(total(sp.diff)))}). Their invoices and your payout lines fall in different months, so some difference is normal; the ERP does not hold their invoice numbers.`);
+      if (!sp.docs && total(sp.books) > 1) note('warn', `supplier-${sp.id}`, `${sp.name}: your books booked ${money(total(sp.books))} of input GST this month but GSTR-2B has no invoice from them, so none of it is claimed yet. It is claimed in the month their invoice appears in GSTR-2B.`);
     }
   }
 
@@ -233,7 +246,7 @@ export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], le
   return {
     month, ownGstin: ownGstin ?? null, ownState: own,
     outward, interstate: { rows: interRows, ...inter }, intra, unknownState,
-    itc: { basis, hasTwoB: !!twoB, books, twoB: twoBTotals, claim, lists, claimUnmatched },
+    itc: { basis, hasTwoB: !!twoB, books, twoB: twoBTotals, claim, lists },
     tcs, payment, openingSet, notes: opening?.note ?? '',
     checks,
   };
