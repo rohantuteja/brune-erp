@@ -9,7 +9,8 @@ import { groupOrderVouchers, accountTotals } from './tallyVouchers.js';
 
 export const TALLY = {
   gstin: '09AALCR1014K1ZB', state: 'Uttar Pradesh', registration: 'Uttar Pradesh Registration',
-  types: { sales: 'SALES UP', credit_note: 'Credit Note', receipt: 'Receipt', journal: 'Journal', payment: 'Payment', purchase: 'Purchase UP', expense: 'GST EXPENSES' },
+  // The owner (18 Nov 2026): SALES UP, Purchase UP and GST EXPENSES are voucher NAMES in his Tally, not types; the types are the standard ones.
+  types: { sales: 'Sales', credit_note: 'Credit Note', receipt: 'Receipt', journal: 'Journal', payment: 'Payment', purchase: 'Purchase', expense: 'Purchase', stock_journal: 'Stock Journal' },
   customer: 'Customer (order control)', myntra: 'Myntra receivable (order control)', bank: 'ICICI Bank',
 };
 // Receivable / payable ledgers that Tally tracks bill by bill, and what names their bills.

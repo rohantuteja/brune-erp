@@ -16,7 +16,7 @@ const find = (file, type) => file.tallymessage.find(m => m.vouchertypename === t
 test('a sale: party on top, place of supply in Tally\'s spelling, debits negative and credits positive, a New Ref bill named by the invoice', () => {
   const { file, errors } = buildTallyFile({ vouchers: groupOrderVouchers(entries), orders });
   assert.deepEqual(errors, []);
-  const s = find(file, 'SALES UP');
+  const s = find(file, 'Sales');
   assert.deepEqual([s.date, s.vouchernumber, s.partyledgername, s.placeofsupply, s.gstregistrationtype, s.vchentrymode], ['20261003', 'INS1', 'Customer (order control)', 'Jammu & Kashmir', 'Unregistered/Consumer', 'Accounting Invoice']);
   const cust = s.allledgerentries.find(x => x.ledgername === 'Customer (order control)');
   assert.deepEqual([cust.isdeemedpositive, cust.amount, cust.ispartyledger], [true, '-1050.00', true]);

@@ -10,10 +10,10 @@ Generate button disabled.
 | Section | Step | Blocks the file? |
 |---|---|---|
 | Uploads | the month has ended | yes |
-| | ICICI statement runs to the month end | yes |
+| | ICICI statement runs to the month end (its end date is its LAST TRANSACTION: up to 3 days short is a note that does not block, for a holiday with no transaction; more than 3 blocks) | yes |
 | | Kotak card statement covers the cycle ending on the 20th | yes |
 | | every Easebuzz credit of the month in the bank is matched to a GoKwik payout line (the bank decides, not the date of the last transaction: payments made in the last days of the month are paid out, and listed in the report, next month; a first version compared the last transaction date and wrongly blocked October on 18 Nov) | yes |
-| | Velocity wallet ledger runs to the month end | yes |
+| | Velocity wallet ledger runs to the month end (same 3-day tolerance, same reason) | yes |
 | | Myntra settlement reports (how far loaded) | information |
 | | GSTR-2B loaded for the month | no |
 | Bills | no bill waiting for review | yes |
@@ -31,7 +31,7 @@ Generate button disabled.
 First version, as the owner asked: a file, not a sync. The order ledger's entries are grouped into vouchers exactly as the ledger holds
 them (the owner's rule: reproduce the ledger event by event, nothing lumped into monthly journals):
 
-- **Sales** (`SALES UP`): each Unicommerce sale invoice and each ERP fee invoice (₹99 return fee, retained COD charge): Dr Customer (or
+- **Sales** (type `Sales`): each Unicommerce sale invoice and each ERP fee invoice (₹99 return fee, retained COD charge): Dr Customer (or
   Myntra receivable) / Cr GST SALES + output tax. Party, place of supply (the order's state in Tally's spelling, "Jammu & Kashmir"),
   Unregistered/Consumer, an *accounting invoice* (no stock items). A New Ref bill named by the invoice number.
 - **Credit Note**: Unicommerce's and the ERP's own: clears the customer's bill (Agst Ref) of the sale invoice.
@@ -61,8 +61,19 @@ the owner presses "The accountant imported this file into Tally" (and "I renamed
 vouchers, **has not been imported on a real Tally**: try it on a copy company.
 
 ## Not in the first version (listed on the page)
-Purchase vouchers from the bills (`Purchase UP`, expense bills as `GST EXPENSES`, the gateway true-up), payment and receipt vouchers for the other
+Purchase vouchers from the bills (type `Purchase`: the owner's `Purchase UP` and `GST EXPENSES` are voucher *names*, not types; the gateway true-up), payment and receipt vouchers for the other
 bank lines (salaries, rent, suppliers, Suspense), the card journal (`Rohan (Director Personal Credit Card)`), stock items on sales and the monthly stock
 journal, the Meta and Velocity month-end provisions, an export log that stops an already-exported voucher from changing (rule: an entry exported to
 Tally is never changed; a correction is a new document dated when it is found). Decisions still open are in the memory notes `tally-accountant-answers`
 and `tally-ledgers-to-create`.
+
+## Voucher types (the owner, 18 Nov 2026)
+`SALES UP`, `Purchase UP` and `GST EXPENSES` are voucher **names** in his Tally, not types. The file uses the standard types: **Sales, Credit Note, Receipt, Payment,
+Purchase, Journal** (and Stock Journal). Stock: sales stay accounting invoices (no stock items); closing stock stays a journal, as the accountant does it today
+(a stock journal turning fabric into dresses and work in progress, and his own entry for the wholesale stock). The ERP will generate that monthly Stock Journal from
+the cutting and production data (next slice).
+
+## How each "covers the month" step decides (checked 18 Nov 2026)
+Each date a step reads has a different meaning: a **bank statement** and a **Velocity ledger** end at their last transaction; a **card statement** ends at its billing date
+(the period in the PDF header, exact); **GoKwik's report** is judged by the bank (every Easebuzz credit of the month matched to a payout), never by the last transaction
+date, because payments made on the last days of a month are paid out in the next month and appear in the next month's report.

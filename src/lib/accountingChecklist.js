@@ -11,6 +11,7 @@ import { monthBounds, monthLabel } from './gstReport.js';
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const dmy = (d) => { if (!d) return ''; const [y, m, dd] = String(d).slice(0, 10).split('-'); return `${dd}/${m}/${y}`; };
+const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
 const addDays = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
 
 /** The last day of 'YYYY-MM'. */
@@ -53,9 +54,15 @@ export function buildChecklist(d) {
 
   // ── 1. Uploads ──
   const bank = (d.accounts || []).find(a => a.kind === 'bank'), card = (d.accounts || []).find(a => a.kind === 'card');
-  add('uploads', bank && bank.periodTo >= end
-    ? { id: 'bank', title: 'Bank statement covers the whole month', status: 'done', detail: `${bank.name}: statements run to ${dmy(bank.periodTo)}.`, link: { label: 'Bank & card', tab: 'bank' } }
-    : { id: 'bank', title: 'Upload the bank statement to the end of the month', status: 'todo', blocker: true, detail: bank?.periodTo ? `${bank.name}: statements stop at ${dmy(bank.periodTo)}, the month ends ${dmy(end)}.` : 'No bank statement has been uploaded.', link: { label: 'Bank & card', tab: 'bank' } });
+  // A statement's end date is the date of its LAST TRANSACTION, not the day it was downloaded to: a quiet last day (a holiday) leaves it a day or two short. Up to
+  // QUIET_DAYS short is asked about but does not block; more than that is a statement that really stops early.
+  const bk = { link: { label: 'Bank & card', tab: 'bank' } };
+  const bankGap = bank?.periodTo ? daysBetween(bank.periodTo, end) : null;
+  add('uploads', bankGap !== null && bankGap <= 0
+    ? { id: 'bank', title: 'Bank statement covers the whole month', status: 'done', detail: `${bank.name}: statements run to ${dmy(bank.periodTo)}.`, ...bk }
+    : bankGap !== null && bankGap <= QUIET_DAYS
+      ? { id: 'bank', title: `Bank statement's last transaction is ${plural(bankGap, 'day')} before the month end`, status: 'todo', detail: `${bank.name}: the last transaction is on ${dmy(bank.periodTo)}, the month ends ${dmy(end)}. Fine if nothing happened in between (a holiday); if the statement should have gone to the month end, upload a longer one.`, ...bk }
+      : { id: 'bank', title: 'Upload the bank statement to the end of the month', status: 'todo', blocker: true, detail: bank?.periodTo ? `${bank.name}: statements stop at ${dmy(bank.periodTo)}, the month ends ${dmy(end)}.` : 'No bank statement has been uploaded.', ...bk });
 
   const cardEnd = `${d.month}-20`;
   add('uploads', card && card.periodTo >= cardEnd
@@ -68,11 +75,15 @@ export function buildChecklist(d) {
     ? { id: 'gokwik', title: 'Upload the GoKwik settlement report', status: 'todo', blocker: true, detail: 'No GoKwik report has been uploaded.', ...gk }
     : (d.gokwikUnproven || 0) > 0
       ? { id: 'gokwik', title: `${plural(d.gokwikUnproven, 'Easebuzz credit')} in the bank not matched to a GoKwik payout`, status: 'todo', blocker: true, detail: `The report reaches payouts of ${dmy(d.gokwikSettledTo)}. Download the newer rawSettlementReport so these payouts can be matched to their orders and booked.`, ...gk }
-      : { id: 'gokwik', title: 'Every GoKwik payout of the month is in the report', status: 'done', detail: `${d.gokwikPayouts || 0} Easebuzz credit${d.gokwikPayouts === 1 ? '' : 's'} in the bank, all matched to the report (it reaches payouts of ${dmy(d.gokwikSettledTo)}). Payments of the last days of the month are paid out, and listed, next month.`, ...gk });
+      : { id: 'gokwik', title: 'Every GoKwik payout of the month is in the report', status: 'done', detail: `${(d.gokwikPayouts || 0) ? `${d.gokwikPayouts} Easebuzz credit${d.gokwikPayouts === 1 ? '' : 's'} in the bank, all matched to the report` : 'No Easebuzz credit in the bank this month'} (the report reaches payouts of ${dmy(d.gokwikSettledTo)}). Payments of the last days of the month are paid out, and listed, next month: that is not a gap.`, ...gk });
 
-  add('uploads', d.velocityTo && d.velocityTo >= end
-    ? { id: 'velocity', title: 'Velocity wallet ledger covers the whole month', status: 'done', detail: `Ledger runs to ${dmy(d.velocityTo)}.`, link: { label: 'Velocity wallet', tab: 'velocity' } }
-    : { id: 'velocity', title: 'Upload the Velocity wallet ledger to the end of the month', status: 'todo', blocker: true, detail: d.velocityTo ? `The stored ledger stops at ${dmy(d.velocityTo)}.` : 'No Velocity ledger has been uploaded.', link: { label: 'Velocity wallet', tab: 'velocity' } });
+  const vl = { link: { label: 'Velocity wallet', tab: 'velocity' } };
+  const vGap = d.velocityTo ? daysBetween(d.velocityTo, end) : null;
+  add('uploads', vGap !== null && vGap <= 0
+    ? { id: 'velocity', title: 'Velocity wallet ledger covers the whole month', status: 'done', detail: `Ledger runs to ${dmy(d.velocityTo)}.`, ...vl }
+    : vGap !== null && vGap <= QUIET_DAYS
+      ? { id: 'velocity', title: `Velocity ledger's last entry is ${plural(vGap, 'day')} before the month end`, status: 'todo', detail: `The last entry is on ${dmy(d.velocityTo)}, the month ends ${dmy(end)}. Fine if nothing happened in the wallet in between (a holiday); otherwise upload a longer ledger.`, ...vl }
+      : { id: 'velocity', title: 'Upload the Velocity wallet ledger to the end of the month', status: 'todo', blocker: true, detail: d.velocityTo ? `The stored ledger stops at ${dmy(d.velocityTo)}.` : 'No Velocity ledger has been uploaded.', ...vl });
 
   add('uploads', d.myntraSettledTo
     ? { id: 'myntra', title: 'Myntra settlement reports', status: 'info', detail: `Loaded to the payout of ${dmy(d.myntraSettledTo)}. Download the newest settled report from the Myntra partner portal if more payouts have reached the bank since.`, link: { label: 'Bank & card', tab: 'bank' } }
@@ -150,6 +161,9 @@ export function buildChecklist(d) {
   const todo = steps.filter(s => s.status === 'todo');
   return { steps, blockers, todo, ready: blockers.length === 0, sections: SECTIONS.map(s => ({ ...s, steps: steps.filter(x => x.section === s.id) })) };
 }
+
+/** How many days short of the month end a bank statement or wallet ledger may stop (a holiday with no transaction) before it blocks the file. */
+export const QUIET_DAYS = 3;
 
 export const SECTIONS = [
   { id: 'uploads', title: 'Uploads' }, { id: 'bills', title: 'Bills' }, { id: 'clear', title: 'Clear up' }, { id: 'gst', title: 'GST' }, { id: 'tally', title: 'Tally' },
