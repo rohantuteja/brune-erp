@@ -7,7 +7,7 @@ const m = (v) => ({ v, s: 'm' });
 const t = (v) => ({ v, s: 't' });
 const d = (v) => ({ v, s: 'd' });
 const note = (v) => ({ v, s: 'note' });
-const issuer = (x) => x.issuedBy === 'unicommerce' ? 'Unicommerce' : x.number ? 'ERP' : 'ERP (numbered at the Tally export)';
+const issuer = (x) => x.issuedBy === 'unicommerce' ? 'Unicommerce' : x.number ? 'ERP' : 'ERP (not numbered yet)';
 const tax = (b) => Math.round((b.igst + b.cgst + b.sgst) * 100) / 100;
 
 function stateSheet(report, channel) {
@@ -55,12 +55,12 @@ export function buildGstSheets(report) {
       ...report.docs.sales.map(x => [x.number || '', x.order, d(x.date), CHANNEL_LABEL[x.channel] || x.channel, x.state || '', x.stateCode || '', x.ratePct, m(x.taxable), m(x.igst), m(x.cgst), m(x.sgst), m(x.total), x.qty || '', x.invoiceDate ? d(x.invoiceDate) : ''])],
   };
   const feeSheet = {
-    name: 'Fee invoices (ERP)', freeze: 1, cols: [13, 30, 12, 10, 22, 8, 8, 15, 12, 12, 12, 15, 34],
+    name: 'Fee invoices (ERP)', freeze: 1, cols: [13, 18, 12, 10, 22, 8, 8, 15, 12, 12, 12, 15, 34],
     rows: [h('Date', 'Number', 'Order', 'Channel', 'State', 'State code', 'Rate %', 'Taxable value', 'IGST', 'CGST', 'SGST', 'Invoice value', 'What for'),
-      ...report.docs.fees.map(x => [d(x.date), x.number || 'ERP/IN (numbered at the Tally export)', x.order, CHANNEL_LABEL[x.channel] || x.channel, x.state || '', x.stateCode || '', x.ratePct, m(x.taxable), m(x.igst), m(x.cgst), m(x.sgst), m(x.total), x.reason])],
+      ...report.docs.fees.map(x => [d(x.date), x.number || 'not numbered yet', x.order, CHANNEL_LABEL[x.channel] || x.channel, x.state || '', x.stateCode || '', x.ratePct, m(x.taxable), m(x.igst), m(x.cgst), m(x.sgst), m(x.total), x.reason])],
   };
   const returnSheet = {
-    name: 'Credit notes', freeze: 1, cols: [13, 18, 32, 12, 13, 10, 22, 8, 8, 15, 12, 12, 12, 15, 6, 36],
+    name: 'Credit notes', freeze: 1, cols: [13, 18, 24, 12, 13, 10, 22, 8, 8, 15, 12, 12, 12, 15, 6, 36],
     rows: [h('Credit note date', 'Number', 'Issued by', 'Order', 'Order date', 'Channel', 'State', 'State code', 'Rate %', 'Taxable value', 'IGST', 'CGST', 'SGST', 'Credit note value', 'Qty', 'What for'),
       ...report.docs.returns.map(x => [d(x.date), x.number || '', issuer(x), x.order, x.orderDate ? d(x.orderDate) : '', CHANNEL_LABEL[x.channel] || x.channel, x.state || '', x.stateCode || '', x.ratePct, m(x.taxable), m(x.igst), m(x.cgst), m(x.sgst), m(x.total), x.qty || '', x.reason])],
   };

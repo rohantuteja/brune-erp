@@ -68,7 +68,7 @@ function DocTable({ rows, columns, noun }) {
 
 const docColumns = (extra = []) => [
   { label: 'Date', cell: r => fmtDate(r.date) },
-  { label: 'Number', cell: r => r.number || <span className="text-stone-400">numbered at the Tally export</span> },
+  { label: 'Number', cell: r => r.number || <span className="text-amber-700">not numbered yet</span> },
   { label: 'Order', cell: r => r.order },
   ...extra,
   { label: 'State', cell: r => r.state || <span className="text-amber-700">none</span> },
