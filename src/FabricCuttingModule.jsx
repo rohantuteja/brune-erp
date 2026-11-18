@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useAppData } from './hooks/useAppData';
 import { STANDARD_SIZES, orderSizes, localToday, isRunActive, getBatchSyncStatus, batchSyncSystem, presetRange, batchTurnaroundDays, attributeBatch } from './lib/constants';
-import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle } from 'lucide-react';
+import { Package, Scissors, Plus, Search, X, CheckCircle2, TrendingDown, Boxes, Layers, Ruler, Clock, Check, ChevronDown, ChevronRight, ChevronUp, History, Menu, Home, ArrowRight, Database, Edit2, Trash2, Calculator, SlidersHorizontal, ArrowDownUp, Copy, Users, BarChart2, Wallet, LogOut, UserCog, Camera, Download, UserX, UserCheck, ShoppingBag, RefreshCw, AlertCircle, Landmark } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 import { usePermissions } from './contexts/PermissionsContext';
 import { supabase } from './lib/supabase';
@@ -13,6 +13,7 @@ import LedgerSection from './pages/LedgerSection';
 import GstSection from './pages/GstSection';
 import Gstr3bSection from './pages/Gstr3bSection';
 import SupplierFilingSection from './pages/SupplierFilingSection';
+import AccountingPage from './pages/AccountingPage';
 import ShipmentsSection from './pages/ShipmentsSection';
 import BankSection from './pages/BankSection';
 import VelocitySection from './pages/VelocitySection';
@@ -95,6 +96,7 @@ const PAGE_TO_PATH = {
   shopify: '/shopify',
   payments: '/payments',
   analytics: '/analytics',
+  accounting: '/accounting',
   masters: '/masters',
   users: '/users',
 };
@@ -495,6 +497,7 @@ export default function FabricCuttingModule() {
                 activePage === 'shopify' ? 'Shopify Inventory' :
                 activePage === 'payments' ? 'Payments' :
                 activePage === 'analytics' ? 'Analytics' :
+                activePage === 'accounting' ? 'Accounting' :
                 activePage === 'users' ? 'User Management' : 'Master Data'
               }</p>
             </div>
@@ -653,6 +656,8 @@ export default function FabricCuttingModule() {
             saveAlertSettings={saveAlertSettings}
           />
         )}
+
+        {activePage === 'accounting' && isAdmin && <AccountingPage showToast={showToast} />}
 
         {activePage === 'users' && (
           <UserManagementPage showToast={showToast} />
@@ -3055,6 +3060,7 @@ function NavDrawer({ activePage, onClose, onNavigate, can, isAdmin, profile, onS
     { id: 'payments', label: 'Payments', icon: <Wallet className="w-5 h-5" />, sub: 'Karigar piece-rate payouts', permKey: 'can_view_payments' },
     { id: 'costing', label: 'Costing', icon: <Calculator className="w-5 h-5" />, sub: 'Cost per piece per style', permKey: 'can_view_costing' },
     { id: 'analytics', label: 'Analytics', icon: <BarChart2 className="w-5 h-5" />, sub: 'Insights & reports', permKey: 'can_view_analytics' },
+    { id: 'accounting', label: 'Accounting', icon: <Landmark className="w-5 h-5" />, sub: 'Month-end checklist & Tally export', adminOnly: true },
     { id: 'masters', label: 'Master Data', icon: <Database className="w-5 h-5" />, sub: 'Fabric, suppliers, styles', permKey: 'can_view_masters' },
   ];
 
