@@ -11,6 +11,8 @@ import UserManagementPage from './pages/UserManagementPage';
 import ShopifyInventoryPage from './pages/ShopifyInventoryPage';
 import LedgerSection from './pages/LedgerSection';
 import GstSection from './pages/GstSection';
+import Gstr3bSection from './pages/Gstr3bSection';
+import SupplierFilingSection from './pages/SupplierFilingSection';
 import ShipmentsSection from './pages/ShipmentsSection';
 import BankSection from './pages/BankSection';
 import VelocitySection from './pages/VelocitySection';
@@ -106,6 +108,8 @@ const ANALYTICS_TAB_TO_SLUG = {
   shipments:    'shipments',
   ledger:       'ledger',
   gst:          'gst',
+  gstr3b:       'gstr-3b',
+  supfile:      'supplier-filing',
   bank:         'bank-and-card',
   velocity:     'velocity-wallet',
   myntra:       'myntra',
@@ -7198,7 +7202,7 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
     { id: 'shipments', label: 'Shipments' },
     { id: 'ledger', label: 'Ledger' },
     { id: 'gst', label: 'GST' },
-    ...(isAdmin ? [{ id: 'bank', label: 'Bank & card' }, { id: 'bills', label: 'Bills' }, { id: 'velocity', label: 'Velocity wallet' }, { id: 'myntra', label: 'Myntra' }] : []),     // salaries, founders' payments and balances: admin only
+    ...(isAdmin ? [{ id: 'gstr3b', label: 'GSTR-3B' }, { id: 'supfile', label: 'Supplier filing' }, { id: 'bank', label: 'Bank & card' }, { id: 'bills', label: 'Bills' }, { id: 'velocity', label: 'Velocity wallet' }, { id: 'myntra', label: 'Myntra' }] : []),     // salaries, founders' payments and balances: admin only
     { id: 'production', label: 'Production' },
   ];
 
@@ -7223,6 +7227,8 @@ function AnalyticsPage({ inventory, fabricTypes, suppliers, runs, productionBatc
       {activeSection === 'gst' && <GstSection showToast={showToast} />}
 
       {/* ── BANK & CARD (admin only; the tables behind it refuse everyone else too) ── */}
+      {activeSection === 'gstr3b' && isAdmin && <Gstr3bSection showToast={showToast} />}
+      {activeSection === 'supfile' && isAdmin && <SupplierFilingSection showToast={showToast} />}
       {activeSection === 'bank' && isAdmin && <BankSection showToast={showToast} />}
       {activeSection === 'bills' && isAdmin && <BillsSection showToast={showToast} />}
       {activeSection === 'velocity' && isAdmin && <VelocitySection showToast={showToast} />}
