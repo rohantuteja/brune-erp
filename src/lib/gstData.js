@@ -6,7 +6,7 @@ const PAGE = 1000;
 const CHUNK = 100;
 export const FALLBACK_START = '2026-10-01';      // app_settings.accounting_start_date: the books before it are closed
 
-async function pages(build) {
+export async function pages(build) {
   const out = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await build(from, from + PAGE - 1);

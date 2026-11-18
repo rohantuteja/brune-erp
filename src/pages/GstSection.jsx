@@ -31,7 +31,7 @@ const CHECK_STYLE = {
 };
 
 /** The last month that has ended (the one being filed), or the current month if the books only started this month. */
-function defaultMonth(start, today) {
+export function defaultMonth(start, today) {
   const startMonth = start.slice(0, 7), thisMonth = today.slice(0, 7);
   const [y, m] = thisMonth.split('-').map(Number);
   const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
@@ -40,7 +40,7 @@ function defaultMonth(start, today) {
 
 // ── A list of documents, paged ─────────────────────────────────────────────────────────────────────────────────────
 // A proper component (it holds its own page state), not inlined in a .map().
-function DocTable({ rows, columns, noun }) {
+export function DocTable({ rows, columns, noun }) {
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   useEffect(() => { setPage(1); }, [rows]);
