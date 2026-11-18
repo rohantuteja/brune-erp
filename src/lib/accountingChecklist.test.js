@@ -27,9 +27,9 @@ test('a month that has not ended blocks the file', () => {
 });
 
 test('uploads that stop short of the month end are blockers, each saying where they stop', () => {
-  const c = buildChecklist({ ...good(), accounts: [{ kind: 'bank', name: 'ICICI', periodTo: '2026-10-28' }, { kind: 'card', name: 'Kotak', periodTo: '2026-09-20' }], gokwikSettledTo: '2026-10-12', gokwikPayouts: 12, gokwikUnproven: 17, velocityTo: '2026-09-30' });
+  const c = buildChecklist({ ...good(), accounts: [{ kind: 'bank', name: 'ICICI', periodTo: '2026-10-25' }, { kind: 'card', name: 'Kotak', periodTo: '2026-09-20' }], gokwikSettledTo: '2026-10-12', gokwikPayouts: 12, gokwikUnproven: 17, velocityTo: '2026-09-30' });
   for (const id of ['bank', 'card', 'gokwik', 'velocity']) { assert.equal(step(c, id).status, 'todo', id); assert.equal(step(c, id).blocker, true, id); }
-  assert.match(step(c, 'bank').detail, /28\/10\/2026/);
+  assert.match(step(c, 'bank').detail, /25\/10\/2026/);
   assert.match(step(c, 'gokwik').title, /17 Easebuzz credits in the bank not matched/);
   assert.match(step(c, 'gokwik').detail, /12\/10\/2026/);
   assert.equal(c.blockers.length, 4);
@@ -120,4 +120,23 @@ test('GoKwik: payments of the last day of the month paid out next month do not m
   const bad = buildChecklist({ ...good(), gokwikUnproven: 1 });
   assert.equal(step(bad, 'gokwik').blocker, true);
   assert.match(step(bad, 'gokwik').title, /^1 Easebuzz credit in the bank/);
+});
+
+test('a quiet last day (a holiday) does not block: a bank statement or wallet ledger up to 3 days short is asked about, more is a blocker', () => {
+  for (const [id, key, mk] of [['bank', 'accounts', (to) => [{ kind: 'bank', name: 'ICICI', periodTo: to }, { kind: 'card', name: 'Kotak', periodTo: '2026-10-20' }]], ['velocity', 'velocityTo', (to) => to]]) {
+    const at = (to) => step(buildChecklist({ ...good(), [key]: mk(to) }), id);
+    assert.equal(at('2026-10-31').status, 'done');
+    for (const to of ['2026-10-30', '2026-10-29', '2026-10-28']) { assert.equal(at(to).status, 'todo', `${id} ${to}`); assert.equal(at(to).blocker, false, `${id} ${to}`); }
+    assert.match(at('2026-10-30').title, /1 day before the month end/);
+    assert.match(at('2026-10-30').detail, /holiday/);
+    assert.equal(at('2026-10-27').blocker, true);
+  }
+  // ... and the file is still ready when the only thing open is such a note
+  assert.equal(buildChecklist({ ...good(), accounts: [{ kind: 'bank', name: 'ICICI', periodTo: '2026-10-30' }, { kind: 'card', name: 'Kotak', periodTo: '2026-10-20' }] }).ready, true);
+});
+
+test('GoKwik: a month with no Easebuzz credit at all is fine; the detail says so', () => {
+  const c = buildChecklist({ ...good(), gokwikPayouts: 0, gokwikUnproven: 0 });
+  assert.equal(step(c, 'gokwik').status, 'done');
+  assert.match(step(c, 'gokwik').detail, /No Easebuzz credit in the bank this month/);
 });
