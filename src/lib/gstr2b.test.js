@@ -142,3 +142,82 @@ test('the reader round-trips what the writer makes (shared and inline strings)',
   const sheets = await xlsxSheets(bytes);
   assert.deepEqual(sheets.get('A'), [['a', '1', 'b'], ['', 'c']]);
 });
+
+// ── The portal's workbook as it really is (checked against a real October 2026 file): no Rate column, dd/mm/yyyy dates, "1/1A/IFF" in the
+// period headers, an "ITC Available" summary, debit notes on their own sheet, and a sheet for everything else (empty most months). ──
+const realReadMe = [['Goods and Services Tax - GSTR-2B'], [], [], ['Financial Year', '', '2026-27'], ['Tax Period', '', 'October'], ['GSTIN', '', '09AALCR1014K1ZB'], ['Legal Name', '', 'SOME COMPANY PRIVATE LIMITED'], ['Trade Name (if any)', '', 'SOME'], ['Date of generation', '', '14/11/2026']];
+const realB2bHead = [['Goods and Services Tax - GSTR-2B'], [], [], ['Taxable inward supplies received from registered persons'],
+  ['GSTIN of supplier', 'Trade/Legal name', 'Invoice Details', '', '', '', 'Place of supply', 'Supply Attract Reverse Charge', 'Taxable Value (₹)', 'Tax Amount', '', '', '', "GSTR-1/1A/IFF/GSTR-5 Period", "GSTR-1/1A/IFF/GSTR-5 Filing Date", 'ITC Availability', 'Reason', 'Applicable % of Tax Rate', 'Source', 'IRN', 'IRN Date'],
+  ['', '', 'Invoice number', 'Invoice type', 'Invoice Date', 'Invoice Value(₹)', '', '', '', 'Integrated Tax(₹)', 'Central Tax(₹)', 'State/UT Tax(₹)', 'Cess(₹)']];
+const realInv = (g, name, no, dt, val, tx, i, c, s, itc = 'Yes') => [g, name, no, 'Regular', dt, val, 'Uttar Pradesh', 'No', tx, i, c, s, 0, "Oct'26", '10/11/2026', itc, '', '100%', 'E-Invoice', 'abc', dt];
+const realNoteHead = (title) => [['Goods and Services Tax - GSTR-2B'], [], [], [title],
+  ['GSTIN of supplier', 'Trade/Legal name', 'Credit note/Debit note details', '', '', '', '', 'Place of supply', 'Supply Attract Reverse Charge', 'Taxable Value (₹)', 'Tax Amount', '', '', '', 'Whether ITC to be reduced in the same period', 'Amount declared by taxpayer', '', '', '', 'Remarks', 'GSTR-1/IFF/1A/GSTR-5 Period', 'GSTR-1/IFF/1A/GSTR-5 Filing Date', 'ITC Availability', 'Reason'],
+  ['', '', 'Note number', 'Note type', 'Note Supply type', 'Note date', 'Note Value (₹)', '', '', '', 'Integrated Tax(₹)', 'Central Tax(₹)', 'State/UT Tax(₹)', 'Cess(₹)', '', 'Integrated Tax(₹)', 'Central Tax(₹)', 'State/UT Tax(₹)', 'Cess(₹)']];
+const realDnrHead = [['Goods and Services Tax - GSTR-2B'], [], [], ['Debit notes (Original)'],
+  ['GSTIN of supplier', 'Trade/Legal name', 'Debit note details', '', '', '', '', 'Place of supply', 'Supply Attract Reverse Charge', 'Taxable Value (₹)', 'Tax Amount', '', '', '', 'GSTR-1/IFF/1A Period', 'GSTR-1/IFF/1A Filing Date', 'ITC Availability', 'Reason', 'Applicable % of Tax Rate', 'Source', 'IRN', 'IRN Date'],
+  ['', '', 'Note number', 'Note type', 'Note Supply type', 'Note date', 'Note Value (₹)', '', '', '', 'Integrated Tax(₹)', 'Central Tax(₹)', 'State/UT Tax(₹)', 'Cess(₹)']];
+const summaryRows = (a, b) => [['FORM GSTR-2B'], [], [], [], ['FORM SUMMARY - ITC Available'], ['S.no.', 'Heading', 'GSTR-3B table', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)', 'Advisory'],
+  ['Credit which may be availed under FORM GSTR-3B'], ['Part A', 'ITC Available - Credit may be claimed in relevant tax period'],
+  ['I', 'All other ITC - Supplies from registered persons', '4(A)(5)', a[0], a[1], a[2], 0, 'Net input tax credit may be availed under Table 4(A)(5)'],
+  ['Details', 'B2B - Invoices (IMS)', '', a[0], a[1], a[2], 0], ['Part B', 'ITC Available - Credit notes should be net-off against relevant ITC available in Part A'],
+  ['I', 'Others', '4(A)', b[0], b[1], b[2], 0, 'Credit Notes shall be net-off against the ITC claimed']];
+const unreadEmpty = (title) => [['Goods and Services Tax - GSTR-2B'], [], [], [title], ['GSTIN of supplier', 'Trade/Legal name', 'Invoice Details'], ['', '', 'Invoice number']];
+
+async function realFile(extra = [], over = {}) {
+  const sheets = [
+    ['Read me', realReadMe],
+    ['ITC Available', over.summary ?? summaryRows([1100 + 5, 80.91, 80.91 + 0], [0, 0, 0])],
+    ['B2B', [...realB2bHead, realInv('29AACCW3721H1ZA', 'WHITE WIZARD TECHNOLOGIES PRIVATE LIMITED', 'SF/1026/1158', '01/10/2026', 58495.95, 49572.84, 1100, 0, 0), realInv('09AAACB2894G1ZL', 'M/S BHARTI AIRTEL LTD.', 'HF2709I013498070', '12/10/2026', 1060.82, 899, 0, 80.91, 80.91), realInv('07AAMCP7214N1ZW', 'PICKNPACK', 'ECOM/1', '27/10/2026', 879.1, 745, 5, 0, 0)]],
+    ['B2B-CDNR', [...realNoteHead('Debit/Credit notes (Original)')]],
+    ['B2B-DNR', realDnrHead],
+    ['B2BA', unreadEmpty('Amendments to previous period invoices')],
+    ['ECO', unreadEmpty('Documents reported by ECO')],
+    ...extra,
+  ];
+  return viaFile(sheets);
+}
+
+test('real layout: no Rate column, dd/mm/yyyy dates, 1/1A/IFF period headers; the summary sheet agrees; empty sheets say nothing', async () => {
+  const p = await realFile();
+  assert.equal(p.docs.length, 3);
+  assert.equal(p.period, '2026-10');
+  assert.equal(p.legalName, 'SOME COMPANY PRIVATE LIMITED');
+  const ww = p.docs.find(d => d.no === 'SF/1026/1158');
+  assert.deepEqual([ww.date, ww.taxable, ww.igst, ww.value, ww.supplierPeriod, ww.itc], ['2026-10-01', 49572.84, 1100, 58495.95, "Oct'26", 'Y']);
+  assert.deepEqual(p.warnings, []);
+  assert.equal(p.checks.find(c => c.id === 'summary').ok, true);
+});
+
+test('real layout: a credit note and a debit note are read, and the summary is Part A less Part B', async () => {
+  const note = (head, ...rows) => [...head, ...rows];
+  const cn = ['06AABCF5150G1ZZ', 'FACEBOOK', 'CN-1', 'Credit note', 'Regular', '20/10/2026', 118, 'Uttar Pradesh', 'No', 100, 18, 0, 0, 0, 'No', 0, 0, 0, 0, '', "Oct'26", '11/11/2026', 'Yes', ''];
+  const dn = ['07AAMCP7214N1ZW', 'PICKNPACK', 'DN-1', 'Debit note', 'Regular', '21/10/2026', 59, 'Uttar Pradesh', 'No', 50, 9, 0, 0, 0, "Oct'26", '11/11/2026', 'Yes', '', '100%'];
+  // Part A (invoices 1100 + 5 + debit note 9 = 1114 IGST) less Part B (credit note 18) = 1096
+  const p = await viaFile([
+    ['Read me', realReadMe], ['ITC Available', summaryRows([1114, 80.91, 80.91], [18, 0, 0])],
+    ['B2B', [...realB2bHead, realInv('29AACCW3721H1ZA', 'WW', 'SF/1', '01/10/2026', 1, 1, 1100, 0, 0), realInv('09AAACB2894G1ZL', 'AIRTEL', 'H1', '12/10/2026', 1, 1, 0, 80.91, 80.91), realInv('07AAMCP7214N1ZW', 'PNP', 'E1', '27/10/2026', 1, 1, 5, 0, 0)]],
+    ['B2B-CDNR', note(realNoteHead('Debit/Credit notes (Original)'), cn)],
+    ['B2B-DNR', note(realDnrHead, dn)],
+  ]);
+  const c = p.docs.find(d => d.no === 'CN-1'), d = p.docs.find(x => x.no === 'DN-1');
+  assert.deepEqual([c.kind, c.igst, c.date, c.itc], ['credit_note', 18, '2026-10-20', 'Y']);
+  assert.deepEqual([d.kind, d.igst, d.date], ['debit_note', 9, '2026-10-21']);
+  assert.equal(availableTotals(p.docs).igst, 1096);
+  assert.equal(p.checks.find(x => x.id === 'summary').ok, true);
+});
+
+test('real layout: if the summary sheet says more than the lines read, the preview says so', async () => {
+  const p = await realFile([], { summary: summaryRows([5000, 80.91, 80.91], [0, 0, 0]) });
+  const s = p.checks.find(c => c.id === 'summary');
+  assert.equal(s.ok, false);
+  assert.match(s.detail, /IGST 5000/);
+});
+
+test('real layout: a sheet of reversals or IMS rejections with lines in it is named, with its line count', async () => {
+  const rej = [['Goods and Services Tax - GSTR-2B'], [], [], ['ITC Rejected for taxable inward supplies'], ['GSTIN of supplier', 'Trade/Legal name', 'Invoice Details'], ['', '', 'Invoice number'], ['06AABCF5150G1ZZ', 'FACEBOOK', 'X1', 'Regular', '01/10/2026', 118, 'Uttar Pradesh', 100, 18]];
+  const rev = [['Goods and Services Tax - GSTR-2B'], [], [], ['ITC Reversed - Others'], ['GSTIN of supplier', 'Trade/Legal name', 'Invoice Details'], ['', '', 'Invoice number'], ['27AAVCS2699M1Z5', 'EB', 'Y1', 'Regular', '02/10/2026', 118, 'Uttar Pradesh', 100, 18]];
+  const p = await realFile([['B2B(Rejected)', rej], ['B2B (ITC Reversal)', rev]]);
+  assert.equal(p.warnings.length, 2);
+  assert.match(p.warnings.join(' '), /1 line of documents you rejected on the portal \(IMS\)/);
+  assert.match(p.warnings.join(' '), /1 line of invoices whose credit has to be reversed \(Rule 37A\)/);
+});

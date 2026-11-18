@@ -74,10 +74,23 @@ Anything in the 2B file it does not read is named in the preview.
 
 - How the TCS credit appears in Table 6.1 / the cash ledger (sources silent).
 - Whether to claim 2B lines that have no bill, and whether to hold back 2B credit with a reversal in 4(B)(2).
-- The 2B file layouts (JSON and Excel) were written from the portal's published layout, not from a real file: **try the first real
-  file** and, if the preview says it cannot read it, send the file's sheet names and header row.
+- **The Excel reader was checked against the owner's real October 2026 GSTR-2B** (18 Nov 2026): 23 invoices from 16 suppliers, and the
+  total equals the file's own "ITC Available" summary to the paisa (IGST 1,90,300.58, CGST 80.91, SGST 80.91). That file has no Rate column,
+  dd/mm/yyyy dates, "GSTR-1/1A/IFF/GSTR-5 Period" headers, a "B2B-DNR" sheet for debit notes and about twenty other sheets (amendments,
+  ISD, ECO, imports, ITC reversal, IMS rejections), all empty that month. The reader now reads B2B, B2B-CDNR and B2B-DNR, cross-checks the
+  summary sheet (Part A less Part B) like the JSON path does, and names any other sheet that has lines in it. The JSON layout is still
+  from the published description only. Tests use synthetic fixtures with the real layout; **never commit the real file**.
 
-## October 2026 (indicative, before a 2B is loaded)
+## October 2026 with the real 2B (18 Nov 2026)
+
+13 of the 14 bills dated in October match 2B (the amounts agree within paise). Claimable from 2B and supported by bills: ₹1,09,235.05
+IGST + ₹80.91 CGST + ₹80.91 SGST. 2B holds ₹81,065.53 more IGST for seven invoices the ERP has no bill for: Aggarwal Traders 1068, 1069,
+1070 (₹73,267.03, taxable ₹14,65,340.50, all dated 25 Oct), Nykaa Fashion MH2601194236 (₹4,500), Unicommerce UC2627/GGNA/910 (₹2,340),
+Goexcelsior HR/26-27/0026152 (₹900), Google 5732193357 (₹58.50). One bill is not in 2B: Shree Vinayak SVF/26-27/265 (₹517.50: the supplier
+has not reported it). Myntra's 2B (₹1,247.40) agrees with the ledger (₹1,247.38). Easebuzz's invoice N2627/000100369 has ₹1,235.65 of GST
+against ₹635.78 booked, because GoKwik's settlement report is loaded only to 11 Oct. Output tax ₹32,210.01 is covered by credit: cash ₹0.
+
+## October 2026 before a 2B was loaded (indicative)
 
 Tax on sales ₹32,210.01 (IGST ₹30,156.06, CGST ₹1,027.01, SGST ₹1,026.94) on ₹6,44,217.09 taxable, equal to the GST view's net.
 Table 3.2: 26 states, ₹6,03,137 taxable, IGST ₹30,156.06 (equal to 3.1). Books hold ₹1,09,315.39 of credit (14 accepted bills

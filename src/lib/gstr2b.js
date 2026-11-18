@@ -167,25 +167,60 @@ function periodFromReadMe(m) {
   return `${year}-${String(month).padStart(2, '0')}`;
 }
 
+// Sheets of the portal's workbook that this screen does not read. A real file has all of them, empty most months; one with lines in it is
+// named in the preview, because it can change the credit (amendments, reversals, ISD, e-commerce operators, imports, IMS rejections).
+const NOT_READ_SHEETS = [
+  [/^b2ba$/i, 'amended invoices (B2BA)'], [/^b2b-cdnra$/i, 'amended credit / debit notes (B2B-CDNRA)'], [/^b2b-dnra$/i, 'amended debit notes (B2B-DNRA)'],
+  [/^isda?$/i, 'input service distributor credit (ISD)'], [/^ecoa?$/i, 'supplies through e-commerce operators (ECO)'],
+  [/^impg(a|sez|seza)?$/i, 'imports of goods (IMPG)'],
+  [/^b2ba? ?\(itc reversal\)$/i, 'invoices whose credit has to be reversed (Rule 37A): Table 4(B)(2)'],
+  [/\(rejected\)$/i, 'documents you rejected on the portal (IMS)'],
+];
+const looksLikeData = (r) => r.some(c => /^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(str(c)) || (/^-?\d+(\.\d+)?$/.test(str(c)) && Number(c) !== 0));
+
+/** The "ITC Available" summary sheet says what the portal will put in Table 4(A)(5): Part A (all other ITC) less Part B (credit notes). */
+function summaryCheck(sheets, docs) {
+  const name = [...sheets.keys()].find(n => /^itc available$/i.test(n.trim()));
+  const rows = name ? sheets.get(name) : null;
+  if (!rows) return null;
+  const a = rows.findIndex(r => /^all other itc/i.test(cleanLabel(r[1])));
+  const b = rows.findIndex((r, i) => i > a && /^others$/i.test(cleanLabel(r[1])));
+  if (a < 0) return null;
+  const heads = ['igst', 'cgst', 'sgst'];
+  const val = (r, i) => r2(num(r?.[3 + i]));
+  const expect = Object.fromEntries(heads.map((k, i) => [k, r2(val(rows[a], i) - (b >= 0 ? val(rows[b], i) : 0))]));
+  const mine = availableTotals(docs);
+  const off = heads.filter(k => Math.abs(mine[k] - expect[k]) > 1);
+  return { id: 'summary', ok: off.length === 0, detail: off.length
+    ? `The file's own summary of available credit (IGST ${expect.igst}, CGST ${expect.cgst}, SGST ${expect.sgst}) differs from the lines read (IGST ${mine.igst}, CGST ${mine.cgst}, SGST ${mine.sgst}). Some lines may not have been read.`
+    : "The invoices read add up to the file's own summary of available credit." };
+}
+
 export function parseGstr2bSheets(sheets) {
   const names = [...sheets.keys()];
   const find = (re) => names.find(n => re.test(n.trim()));
-  const b2b = find(/^b2b$/i), cdn = find(/^b2b[- _]?cdnr$/i);
+  const b2b = find(/^b2b$/i), cdn = find(/^b2b[- _]?cdnr$/i), dnr = find(/^b2b[- _]?dnr$/i);
   if (!b2b && !cdn) throw new Error('This does not look like a GSTR-2B Excel file: it has no "B2B" sheet.');
   const errors = [];
   const inv = b2b ? readExcelSheet(sheets.get(b2b), () => 'invoice') : { docs: [] };
   if (inv.error) errors.push(`B2B sheet: ${inv.error}`);
   const nt = cdn ? readExcelSheet(sheets.get(cdn), (t) => /^d/i.test(t) ? 'debit_note' : 'credit_note') : { docs: [] };
   if (nt.error) errors.push(`B2B-CDNR sheet: ${nt.error}`);
+  const dn = dnr ? readExcelSheet(sheets.get(dnr), () => 'debit_note') : { docs: [] };
+  if (dn.error) errors.push(`B2B-DNR sheet: ${dn.error}`);
   if (errors.length) throw new Error(`The columns in this file are not the ones expected (${errors.join('; ')}). Download the file again from the portal, or use the JSON version.`);
 
   const me = find(/^read ?me$/i) ? readMe(sheets.get(find(/^read ?me$/i))) : {};
   const warnings = [];
-  for (const [re, label] of [[/^b2ba$/i, NOT_READ_LABEL.b2ba], [/^b2b[- _]?cdnra$/i, NOT_READ_LABEL.cdnra], [/^isd$/i, NOT_READ_LABEL.isd], [/^eco$/i, NOT_READ_LABEL.ecom]]) {
-    const n = find(re);
-    if (n && (sheets.get(n) ?? []).some(r => GSTIN_RE.test(str(r[0]).toUpperCase()))) warnings.push(`The file also has ${label}, which this screen does not read. Look at it on the portal.`);
+  for (const n of names) {
+    const hit = NOT_READ_SHEETS.find(([re]) => re.test(n.trim()));
+    if (!hit) continue;
+    const lines = (sheets.get(n) ?? []).slice(4).filter(looksLikeData).length;
+    if (lines) warnings.push(`The file also has ${lines} line${lines === 1 ? '' : 's'} of ${hit[1]}, which this screen does not read. Look at ${lines === 1 ? 'it' : 'them'} on the portal.`);
   }
-  return finish({ source: 'excel', gstin: me.gstin ?? null, legalName: me.legalName ?? null, period: periodFromReadMe(me), generatedOn: parseDate(me.generatedOn), warnings }, [...inv.docs, ...nt.docs]);
+  const docs = [...inv.docs, ...nt.docs, ...dn.docs];
+  const sum = summaryCheck(sheets, docs);
+  return finish({ source: 'excel', gstin: me.gstin ?? null, legalName: me.legalName ?? null, period: periodFromReadMe(me), generatedOn: parseDate(me.generatedOn), warnings }, docs, sum ? [sum] : []);
 }
 
 /** A picked file (name + bytes) → the parsed 2B. Throws an Error with a plain sentence when it cannot be read. */
