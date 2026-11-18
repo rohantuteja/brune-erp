@@ -8,7 +8,8 @@ import { fetchAccounting, markLedgers, linkVendor } from '../lib/accountingData'
 import { bookChecks } from '../lib/tallyBooks';
 import { buildLedgersFile, ledgersFileName, withLedgers } from '../lib/tallyLedgers';
 import { buildChecklist } from '../lib/accountingChecklist';
-import { groupOrderVouchers, voucherPlan, TYPE_LABEL } from '../lib/tallyVouchers';
+import { groupOrderVouchers, voucherPlan, accountTotals, TYPE_LABEL } from '../lib/tallyVouchers';
+import { monthEndJournals } from '../lib/tallyMonthEnd';
 import { buildTallyFile, tallyFileName } from '../lib/tallyJson';
 import { useUrlParams } from '../components/AnalyticsKit';
 import { CheckCircle2, Circle, Info, RotateCcw, ArrowRight, Lock, ChevronDown, ChevronRight, Download, AlertTriangle } from 'lucide-react';
@@ -132,7 +133,7 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
           <section className="bg-white rounded-lg border border-stone-200">
             <div className="px-3 sm:px-4 py-2 border-b border-stone-100 text-sm font-medium text-stone-900">Tally file for {monthLabel(month)}</div>
             <div className="px-3 sm:px-4 py-3 space-y-3">
-              <div className="text-xs text-stone-600 leading-relaxed">A JSON file of vouchers for TallyPrime to import: sales and credit notes by invoice (with the pieces on BRUNE LADIES DRESSES), bank receipts by UTR and the clearing of each customer's bill order by order (all from the order ledger), the supplier bills as purchase vouchers, the bank payments as payment vouchers settled against those bills, the founder's card as one journal per statement, the Easebuzz correction and the month-end provisions. Nothing is sent to Tally: the accountant imports the file.</div>
+              <div className="text-xs text-stone-600 leading-relaxed">A JSON file of vouchers for TallyPrime to import: sales and credit notes by invoice (with the pieces on BRUNE LADIES DRESSES), bank receipts by UTR and the clearing of each customer's bill order by order (all from the order ledger), the supplier bills as purchase vouchers, the bank payments as payment vouchers settled against those bills, the founder's card as one journal per statement, the Easebuzz correction, the month-end provisions, and the month-end journals the accountant used to book by hand (GST into the credit ledger, directors' and staff salary, rent). Nothing is sent to Tally: the accountant imports the file.</div>
               {plan && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -214,10 +215,13 @@ export default function AccountingPage({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   const fresh = data && data.month === month ? data : null;
-  const checklist = useMemo(() => fresh ? buildChecklist(fresh.checklistInput) : null, [fresh]);
   const vouchers = useMemo(() => fresh ? groupOrderVouchers(fresh.entries) : [], [fresh]);
   const books = fresh?.books ?? null;
-  const plan = useMemo(() => fresh ? voucherPlan([...vouchers, ...(books?.vouchers ?? [])]) : null, [fresh, vouchers, books]);
+  // The month-end journals are worked out from the month's own vouchers (the GST ledgers they clear), then written with the others.
+  const monthEnd = useMemo(() => fresh ? monthEndJournals({ ...fresh.bounds, totals: accountTotals([...vouchers, ...(books?.vouchers ?? [])]), ...fresh.monthEndInput }) : null, [fresh, vouchers, books]);
+  const bookVouchers = useMemo(() => [...(books?.vouchers ?? []), ...(monthEnd?.journals ?? [])], [books, monthEnd]);
+  const checklist = useMemo(() => fresh ? buildChecklist({ ...fresh.checklistInput, monthEnd: { missing: monthEnd.missing, journals: monthEnd.journals.length, notes: monthEnd.notes } }) : null, [fresh, monthEnd]);
+  const plan = useMemo(() => fresh ? voucherPlan([...vouchers, ...bookVouchers]) : null, [fresh, vouchers, bookVouchers]);
   const ledgers = useMemo(() => fresh ? buildLedgersFile(fresh.tally, fresh.vendors) : null, [fresh]);
   const downloadJson = (obj, name) => {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
@@ -238,7 +242,7 @@ export default function AccountingPage({ showToast }) {
   const onGenerate = (test) => {
     try {
       const orders = new Map((fresh?.orders || []).map(o => [o.order_name, { state: o.state, saleDoc: o.saleDoc, channel: o.channel }]));
-      const r = buildTallyFile({ vouchers, orders, books: books?.vouchers ?? [], limit: test ? 3 : null });
+      const r = buildTallyFile({ vouchers, orders, books: bookVouchers, limit: test ? 3 : null });
       const withL = withLedgers(r.file, fresh?.tally || [], fresh?.vendors || []);
       downloadJson(withL, tallyFileName(month, test));
       setBuilt({ test, counts: { ...(ledgers && ledgers.create.length ? { ledger: ledgers.create.length } : {}), ...r.counts }, checks: [...r.checks, ...(books && !test ? bookChecks(books) : [])] });

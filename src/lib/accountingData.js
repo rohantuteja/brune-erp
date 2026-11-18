@@ -5,6 +5,7 @@ import { monthBounds } from './gstReport.js';
 import { buildGstr3b } from './gstr3b.js';
 import { missingLedgers } from './accountingChecklist.js';
 import { buildBooks } from './tallyBooks.js';
+import { MONTH_END } from './tallyMonthEnd.js';
 
 const missingTable = (error) => !!error && (error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache|Could not find the table/i.test(error.message || ''));
 const must = (r) => { if (r.error) throw new Error(r.error.message); return r.data; };
@@ -80,7 +81,13 @@ export async function fetchAccounting(supabase, month, today) {
   const po = await supabase.from('app_settings').select('value').eq('key', 'provision_opening').maybeSingle();
   let provisionOpening = {};
   try { const v = po.data?.value; provisionOpening = typeof v === 'string' ? JSON.parse(v) : (v || {}); } catch { provisionOpening = {}; }
-  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening });
+  // The month-end journals (GST, directors, salary, rent): the salary of a month is paid in the first days of the next, so those bank lines are read too; the rent and a salary figure the owner gives are settings.
+  const nextDay = new Date(`${next}T00:00:00Z`); nextDay.setUTCDate(nextDay.getUTCDate() + 15);
+  const salaryNext = bankIds.length ? must(await supabase.from('finance_lines').select('id, txn_date, debit').in('account_id', bankIds).eq('bucket', 'Salary Payable').eq('status', 'matched').gte('txn_date', next).lt('txn_date', nextDay.toISOString().slice(0, 10)).order('txn_date')) : [];
+  const setting = async (key) => { const r = await supabase.from('app_settings').select('value').eq('key', key).maybeSingle(); let v = r.data?.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch { /* keep the text */ } } return v ?? null; };
+  const rentSetting = Number(await setting('rent_monthly')) || null;
+  const monthEndInput = { salaryNext, rentMonthly: rentSetting, salaryOverride: (await setting('salary_expense')) || {} };
+  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening, rentMonthly: rentSetting || MONTH_END.rent.monthly });
   const used = [
     ...entries.map(e => e.account),
     ...books.vouchers.flatMap(v => [...v.lines, ...(v.itemLines || [])].map(l => l.account)),
@@ -94,7 +101,7 @@ export async function fetchAccounting(supabase, month, today) {
     books: { unlinked: books.unlinked, problems: books.problems, notes: books.notes, advances: books.advances, unpaid: books.unpaid, tdsPending: books.tdsPending, purchases: books.summary.purchases.count, payments: books.summary.payments.count,
       provisionsMissing: books.provisionsMissing, provisionNotes: books.provisionNotes, provisions: books.vouchers.filter(v => /provision/.test(v.source)).length, parked: books.parked, card: books.summary.card },
   };
-  return { checklistInput, entries, orders, tally, books, vendors };
+  return { checklistInput, entries, orders, tally, books, vendors, monthEndInput, bounds: { from, next } };
 }
 
 /** The accountant created or renamed these ledgers in Tally: they stop blocking the file. Returns how many moved. */

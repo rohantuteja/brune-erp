@@ -133,6 +133,14 @@ export function buildChecklist(d) {
     if ((bb.tdsPending || []).length) add('bills', { id: 'tds', title: `Tax deducted at source not applied for ${bb.tdsPending.join(', ')}`, status: 'todo', detail: 'The rate and the Tally ledger for it are still to be given: until then the invoice is booked without the deduction, and the supplier is credited the full amount.', items: [] });
   }
 
+  // ── Month-end journals: GST into the credit ledger, directors' and staff salary, rent ──
+  if (d.monthEnd) {
+    const me = d.monthEnd;
+    add('clear', me.missing.length
+      ? { id: 'monthend', title: `${plural(me.missing.length, 'month-end figure')} still needed (${me.journals} month-end journal${me.journals === 1 ? '' : 's'} made)`, status: 'todo', blocker: true, detail: 'The GST journals, the directors\' salary, and the salary and rent of the month are made by the ERP as the accountant has always booked them; these figures are not known yet.', items: me.missing }
+      : { id: 'monthend', title: `${plural(me.journals, 'month-end journal')} made: GST into the credit ledger, salary, rent`, status: 'done', detail: (me.notes || []).join(' ') || 'As the accountant booked them in September, from the month\'s own figures.' });
+  }
+
   // ── 3. Clear up ──
   add('clear', d.bankUnresolved
     ? { id: 'lines', title: `${plural(d.bankUnresolved, 'bank or card line')} to decide`, status: 'todo', blocker: true, detail: 'Each needs a bucket (a Tally ledger): they cannot be left out of a file that has to balance.', link: { label: 'Bank & card', tab: 'bank' } }

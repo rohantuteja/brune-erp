@@ -279,3 +279,22 @@ test('by default only Meta is provisioned: Velocity is booked on its invoice dat
   assert.equal(r.missing.length, 1); assert.match(r.missing[0], /^Meta/);
   assert.equal(BOOKS.provisions.length, 1); assert.equal(BOOKS.provisions[0].vendor, 'Meta');
 });
+
+test('a payment to the landlord clears the month\'s rent on Rent Payable and books the rest as electricity, as the accountant split his 6 Sep payment', () => {
+  const bk = [...buckets, { name: 'Rent Payable', kind: 'liability', needs_bill: false }];
+  const run = (ls, rentMonthly) => buildBooks({ from: '2026-10-01', next: '2026-11-01', start: '2026-10-01', bills: [], vendors, handled: [], bankLines: ls, buckets: bk, payeeLinks: [], rentMonthly });
+  const pay = (r) => r.vouchers.find(v => v.type === 'payment');
+  // 10 Oct, 30,724: 18,000 rent + 12,724 electricity
+  const a = run([L({ id: 301, txn_date: '2026-10-10', debit: 30724, bucket: 'Rent Payable', payee: 'lavkush', remarks: 'INF/INFT/046232548021/Lavkush' })], 18000);
+  assert.deepEqual(pay(a).lines.map(l => [l.account, l.debit, l.credit]), [['Rent Payable', 18000, 0], ['Electricity Expenses', 12724, 0], ['ICICI Bank', 0, 30724]]);
+  assert.equal(pay(a).debit, 30724); assert.equal(pay(a).balanced, true);
+  assert.match(a.notes.join(' '), /30,724\.00 paid to the landlord: 18,000\.00 is the month's rent/);
+  // a payment that is no more than the rent is all rent; no rent figure known leaves the line whole
+  const b = run([L({ id: 302, txn_date: '2026-10-10', debit: 18000, bucket: 'Rent Payable', payee: 'lavkush' })], 18000);
+  assert.deepEqual(pay(b).lines.map(l => [l.account, l.debit, l.credit]), [['Rent Payable', 18000, 0], ['ICICI Bank', 0, 18000]]);
+  const c = run([L({ id: 303, txn_date: '2026-10-10', debit: 30724, bucket: 'Rent Payable', payee: 'lavkush' })], null);
+  assert.deepEqual(pay(c).lines.map(l => [l.account, l.debit, l.credit]), [['Rent Payable', 30724, 0], ['ICICI Bank', 0, 30724]]);
+  // the director's residence rent and every other bucket are untouched
+  const d = run([L({ id: 304, txn_date: '2026-10-14', debit: 20000, bucket: 'Rent - Director Resident', payee: 'cherrycoun' })], 18000);
+  assert.deepEqual(pay(d).lines.map(l => [l.account, l.debit, l.credit]), [['Rent - Director Resident', 20000, 0], ['ICICI Bank', 0, 20000]]);
+});
