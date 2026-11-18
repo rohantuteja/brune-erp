@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { billSummary, changedEdits, expenseGroups, failedChecks, filterBills, findLedger, ledgerNote, ledgerOk, newVendorDraft, normLedger, outcomeText, similarLedgers } from './billsView.js';
+import { billMonths, billsOfMonth, pdfNames, indexCsv, billSummary, changedEdits, expenseGroups, failedChecks, filterBills, findLedger, ledgerNote, ledgerOk, newVendorDraft, normLedger, outcomeText, similarLedgers } from './billsView.js';
 
 const B = (id, status, o = {}) => ({ id, status, vendor: 'Meta', vendor_id: 1, invoice_no: `INV${id}`, supplier_gstin: '06AABCF5150G1ZZ', total: 100, subtotal: 85, tax: 15, opening: false, file_path: 'p', checks: [], ...o });
 
@@ -102,4 +102,31 @@ test('the expense ledgers are the ones Tally has, listed under their groups', ()
   assert.deepEqual(groups.flatMap(g => g.items.map(l => l.name)), ['Goodwill credits', 'Marketing Expenses', 'Payment Gateway Expenses', 'Software Expenses @ 18%']);
   assert.ok(!groups.flatMap(g => g.items).some(l => l.name === 'ICICI Bank'));
   assert.ok(expenseGroups(LEDGERS, 'ICICI Bank').flatMap(g => g.items).some(l => l.name === 'ICICI Bank'));   // one already chosen stays visible
+});
+
+test('the month filter: the months that have bills (newest first), the bills of one month, and the month inside the other filters', () => {
+  const bills = [B(1, 'accepted', { invoice_date: '2026-10-12', total: 100 }), B(2, 'review', { invoice_date: '2026-10-30', total: 50.5 }), B(3, 'accepted', { invoice_date: '2026-11-03' }), B(4, 'void', { invoice_date: '2026-10-05', total: 999 }), B(5, 'accepted', { invoice_date: null })];
+  assert.deepEqual(billMonths(bills), ['2026-11', '2026-10']);
+  assert.deepEqual(filterBills(bills, { status: 'all', month: '2026-10' }).map(b => b.id), [1, 2, 4]);
+  assert.deepEqual(filterBills(bills, { status: 'open', month: '2026-10' }).map(b => b.id), [1, 2]);
+  assert.deepEqual(filterBills(bills, { status: 'accepted', month: '2026-10' }).map(b => b.id), [1]);
+  assert.deepEqual(filterBills(bills, { status: 'all' }).map(b => b.id), [1, 2, 3, 4, 5]);               // no month: all of them
+  const m = billsOfMonth([...bills, B(6, 'accepted', { invoice_date: '2026-10-20', file_path: null, total: 10 })], '2026-10');
+  assert.deepEqual([m.count, m.withPdf, m.total], [3, 2, 160.5]);                                         // the voided bill is not counted
+});
+
+test('the PDF names in the zip: date, vendor and invoice number, unsafe characters replaced, never two alike', () => {
+  const n = pdfNames([B(1, 'accepted', { invoice_date: '2026-10-12', vendor: 'Shree Vinayak Fab', invoice_no: 'SVF/26-27/265' }), B(2, 'accepted', { invoice_date: '2026-10-12', vendor: 'Shree Vinayak Fab', invoice_no: 'SVF/26-27/265' }),
+    B(3, 'accepted', { invoice_date: '2026-10-01', vendor: 'A:B*C', invoice_no: 'X?1' })]);
+  assert.deepEqual([...n.values()], ['2026-10-12 Shree Vinayak Fab SVF-26-27-265.pdf', '2026-10-12 Shree Vinayak Fab SVF-26-27-265 (2).pdf', '2026-10-01 A-B-C X-1.pdf']);
+});
+
+test('index.csv lists every bill with its file, or why there is none; commas and quotes are escaped', () => {
+  const bills = [B(1, 'accepted', { invoice_date: '2026-10-12', vendor: 'Acme, Inc', invoice_no: 'A"1', subtotal: 85, tax: 15, total: 100 }), B(2, 'accepted', { invoice_date: '2026-10-13', file_path: null }), B(3, 'review', { invoice_date: '2026-10-14' })];
+  const names = pdfNames(bills);
+  const csv = indexCsv(bills, names, new Map([[3, 'not downloaded: boom']]));
+  const lines = csv.trim().split('\r\n');
+  assert.equal(lines[0], 'Invoice date,Vendor,Invoice number,Supplier GSTIN,Taxable value,GST,Total,Status,PDF in this zip');
+  assert.equal(lines[1], '2026-10-12,"Acme, Inc","A""1",06AABCF5150G1ZZ,85,15,100,Accepted,"2026-10-12 Acme, Inc A-1.pdf"');
+  assert.match(lines[2], /no PDF kept for this bill/); assert.match(lines[3], /not downloaded: boom/);
 });

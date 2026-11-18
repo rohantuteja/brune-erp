@@ -3,16 +3,18 @@ import { supabase } from '../lib/supabase';
 import { callFunction } from '../lib/edgeCall';
 import { clampPage, pageSizeOf } from '../lib/analyticsKit';
 import { toBase64 } from '../lib/financeView';
-import { STATUS_LABEL, BOOKING_LABEL, BOOKING_SHORT, billSummary, filterBills, failedChecks, outcomeText, newVendorDraft, changedEdits, ledgerNote, ledgerOk, expenseGroups } from '../lib/billsView';
+import { STATUS_LABEL, BOOKING_LABEL, BOOKING_SHORT, billSummary, filterBills, billMonths, billsOfMonth, failedChecks, outcomeText, newVendorDraft, changedEdits, ledgerNote, ledgerOk, expenseGroups } from '../lib/billsView';
 import { Pagination, Collapsible, StatCard, Pills, EmptyState, useUrlParams, wideScreen } from '../components/AnalyticsKit';
-import { RefreshCw, Upload, FileText, X, CheckCircle2, AlertCircle, Building2, Search, ExternalLink, Ban } from 'lucide-react';
+import { buildMonthZip, saveZip } from '../lib/billsDownload';
+import { monthLabel } from '../lib/gstReport';
+import { RefreshCw, Upload, FileText, X, CheckCircle2, AlertCircle, Building2, Search, ExternalLink, Ban, Download } from 'lucide-react';
 
 // Analytics → Bills (admin only). Upload a vendor's invoice PDF: it is read, checked and kept with its original. The first bill of each
 // vendor is confirmed once (and the vendor is told how it is booked); after that a bill that passes every check is accepted by itself.
 // Rules: docs/supplier-invoices.md. Nothing here posts to Tally.
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
-const URL_DEFAULTS = { lstatus: 'review', lvendor: '', lq: '', lpage: '1', lsize: '25' };
+const URL_DEFAULTS = { lstatus: 'review', lvendor: '', lq: '', lmonth: '', lpage: '1', lsize: '25' };
 const STATUS_FILTERS = [{ id: 'review', label: 'Needs review' }, { id: 'accepted', label: 'Accepted' }, { id: 'open', label: 'All bills' }, { id: 'void', label: 'Void' }];
 const STATUS_STYLE = { review: 'bg-amber-50 text-amber-900 border-amber-300', accepted: 'bg-emerald-50 text-emerald-800 border-emerald-200', void: 'bg-stone-100 text-stone-500 border-stone-200' };
 const TONE = { ok: 'bg-emerald-50 border-emerald-200 text-emerald-900', warn: 'bg-amber-50 border-amber-300 text-amber-950', info: 'bg-stone-50 border-stone-200 text-stone-700', bad: 'bg-red-50 border-red-200 text-red-800' };
@@ -504,6 +506,7 @@ export default function BillsSection({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openId, setOpenId] = useState(null);
+  const [zipping, setZipping] = useState(null);                 // { done, total } while the month's PDFs are being collected
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -529,12 +532,27 @@ export default function BillsSection({ showToast }) {
   const tieOutVendors = useMemo(() => new Set(vendors.filter(v => v.booking === 'tie_out').map(v => v.id)), [vendors]);
   const tieOutDue = (b) => tieOutVendors.has(b.vendor_id) && b.status === 'accepted' && !b.opening && !tiedOut.has(b.id);
   const summary = useMemo(() => billSummary(bills), [bills]);
-  const shown = useMemo(() => filterBills(bills, { status: p.lstatus, vendor: p.lvendor, q: p.lq }), [bills, p.lstatus, p.lvendor, p.lq]);
+  const shown = useMemo(() => filterBills(bills, { status: p.lstatus, vendor: p.lvendor, q: p.lq, month: p.lmonth }), [bills, p.lstatus, p.lvendor, p.lq, p.lmonth]);
+  const months = useMemo(() => billMonths(bills), [bills]);
+  const monthInfo = useMemo(() => p.lmonth ? billsOfMonth(bills, p.lmonth) : null, [bills, p.lmonth]);
+  const downloadMonth = async () => {
+    if (!monthInfo || !monthInfo.count || zipping) return;
+    setZipping({ done: 0, total: monthInfo.withPdf });
+    try {
+      const r = await buildMonthZip({ bills, month: p.lmonth, onProgress: (done, total) => setZipping({ done, total }),
+        getUrl: async (b) => { const { ok, json } = await callBills({ action: 'file_url', id: b.id }); return ok ? json.url : null; },
+        fetchBytes: async (url) => { const res = await fetch(url); if (!res.ok) throw new Error(`the PDF could not be fetched (${res.status})`); return new Uint8Array(await res.arrayBuffer()); } });
+      saveZip(r.bytes, r.name);
+      const bits = [`${r.counts.pdfs} PDF${r.counts.pdfs === 1 ? '' : 's'}`, r.counts.noPdf ? `${r.counts.noPdf} bill${r.counts.noPdf === 1 ? '' : 's'} with no PDF (listed in index.csv)` : null, r.counts.failed ? `${r.counts.failed} could not be downloaded (listed in index.csv)` : null].filter(Boolean);
+      showToast?.(`${monthLabel(p.lmonth)}: ${bits.join(', ')}`, r.counts.failed ? 'error' : 'success');
+    } catch (err) { showToast?.(`Could not make the download: ${err.message}`, 'error'); }
+    setZipping(null);
+  };
   const size = pageSizeOf(p.lsize);
   const page = clampPage(p.lpage, shown.length, size);
   const pageRows = shown.slice((page - 1) * size, page * size);
   const open = bills.find(b => b.id === openId);
-  const statusPills = useMemo(() => STATUS_FILTERS.map(f => ({ ...f, count: filterBills(bills, { status: f.id }).length })), [bills]);
+  const statusPills = useMemo(() => STATUS_FILTERS.map(f => ({ ...f, count: filterBills(bills, { status: f.id, month: p.lmonth }).length })), [bills, p.lmonth]);
 
   if (loading && !bills.length && !vendors.length) return <div className="text-sm text-stone-500 px-1 py-6">Loading the bills…</div>;
 
@@ -585,13 +603,23 @@ export default function BillsSection({ showToast }) {
               <option value="">All vendors</option>
               {vendors.map(v => <option key={v.id} value={String(v.id)}>{v.name}</option>)}
             </select>
+            <select value={p.lmonth} onChange={e => setP({ lmonth: e.target.value, ...(e.target.value && p.lstatus === 'review' ? { lstatus: 'open' } : {}) })} aria-label="Filter by month" className={`${field} w-40 max-w-full`}>
+              <option value="">All months</option>
+              {months.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+            </select>
+            <button type="button" onClick={downloadMonth} disabled={!monthInfo || !monthInfo.count || !!zipping} title={monthInfo ? 'The original PDF of every bill of the month, in one zip with an index' : 'Pick a month first'}
+              className="inline-flex items-center gap-1 h-8 px-2.5 text-xs rounded-md border border-stone-300 bg-white hover:border-stone-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              <Download className={`w-3.5 h-3.5 ${zipping ? 'animate-pulse' : ''}`} />
+              {zipping ? `Collecting ${zipping.done} of ${zipping.total}…` : monthInfo ? `Download all of ${monthLabel(p.lmonth)} (zip)` : 'Download a month (zip)'}
+            </button>
           </div>
+          {monthInfo && <div className="text-[11px] text-stone-500">{monthLabel(p.lmonth)}: {monthInfo.count} bill{monthInfo.count === 1 ? '' : 's'}, {inr(monthInfo.total)} in all (voided bills not counted). The zip holds {monthInfo.withPdf} PDF{monthInfo.withPdf === 1 ? '' : 's'}{monthInfo.count - monthInfo.withPdf ? ` and lists the ${monthInfo.count - monthInfo.withPdf} bill${monthInfo.count - monthInfo.withPdf === 1 ? '' : 's'} with no PDF kept` : ''}.</div>}
         </div>
         <div className="p-3 sm:p-4">
           {shown.length === 0 ? (
             bills.length === 0
               ? <EmptyState title="No bills yet" hint="Drop an invoice PDF above and it appears here." />
-              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor ? 'Nothing waits for you' : 'No bills match'} hint="Every bill that was read has been accepted or voided." action={p.lq || p.lvendor || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '' }) } : null} />
+              : <EmptyState title={p.lstatus === 'review' && !p.lq && !p.lvendor && !p.lmonth ? 'Nothing waits for you' : 'No bills match'} hint="Every bill that was read has been accepted or voided." action={p.lq || p.lvendor || p.lmonth || p.lstatus !== 'review' ? { label: 'Show what needs review', onClick: () => setP({ lstatus: 'review', lq: '', lvendor: '', lmonth: '' }) } : null} />
           ) : (
             <>
               <div className="hidden md:block overflow-x-auto -mx-1">

@@ -19,15 +19,47 @@ export function billSummary(bills) {
 }
 
 /** The status pills, the vendor filter and the search box. The search looks at the vendor, the invoice number, the GSTIN and the amount. */
-export function filterBills(bills, { status = 'review', vendor = '', q = '' } = {}) {
+export function filterBills(bills, { status = 'review', vendor = '', q = '', month = '' } = {}) {
   const needle = q.trim().toLowerCase();
   return bills.filter(b => {
+    if (month && String(b.invoice_date ?? '').slice(0, 7) !== month) return false;
     if (status === 'open') { if (b.status === 'void') return false; }
     else if (status !== 'all' && b.status !== status) return false;
     if (vendor && String(b.vendor_id ?? '') !== vendor) return false;
     if (needle && ![b.vendor, b.invoice_no, b.supplier_gstin, String(money(b.total))].some(v => v && String(v).toLowerCase().includes(needle))) return false;
     return true;
   });
+}
+
+/** The months that have bills (by invoice date), newest first: the month filter's choices. */
+export const billMonths = (bills) => [...new Set(bills.map(b => String(b.invoice_date ?? '').slice(0, 7)).filter(m => /^\d{4}-\d{2}$/.test(m)))].sort().reverse();
+
+/** The bills of a month that are in the books' records (voided ones are kept but are not bills any more), with their total. */
+export function billsOfMonth(bills, month) {
+  const list = bills.filter(b => b.status !== 'void' && String(b.invoice_date ?? '').slice(0, 7) === month);
+  return { list, count: list.length, withPdf: list.filter(b => b.file_path).length, total: money(list.reduce((s, b) => s + Number(b.total || 0), 0)) };
+}
+
+const cleanName = (s) => String(s ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80);
+/** The file name of each bill's PDF in the zip: "2026-10-12 Airtel HF2709I013498070.pdf", unique within the zip. */
+export function pdfNames(bills) {
+  const used = new Set(), out = new Map();
+  for (const b of bills) {
+    const base = `${String(b.invoice_date ?? '').slice(0, 10)} ${cleanName(b.vendor)} ${cleanName(b.invoice_no)}`.trim();
+    let name = `${base}.pdf`, k = 1;
+    while (used.has(name.toLowerCase())) name = `${base} (${++k}).pdf`;
+    used.add(name.toLowerCase()); out.set(b.id, name);
+  }
+  return out;
+}
+
+const csvCell = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+/** index.csv of the zip: every bill of the month, the file it is in, or why there is none. */
+export function indexCsv(bills, names, missing = new Map()) {
+  const head = ['Invoice date', 'Vendor', 'Invoice number', 'Supplier GSTIN', 'Taxable value', 'GST', 'Total', 'Status', 'PDF in this zip'];
+  const rows = bills.map(b => [String(b.invoice_date ?? '').slice(0, 10), b.vendor, b.invoice_no, b.supplier_gstin ?? '', money(b.subtotal), money(b.tax), money(b.total), STATUS_LABEL[b.status] ?? b.status,
+    b.file_path && !missing.has(b.id) ? names.get(b.id) : missing.get(b.id) ?? 'no PDF kept for this bill (booked from the GSTR-2B)']);
+  return [head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 
 export const failedChecks = (bill) => (bill.checks ?? []).filter(c => !c.ok);
