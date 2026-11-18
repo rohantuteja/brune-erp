@@ -12,7 +12,7 @@ import { Download, Info, CheckCircle2, AlertCircle, AlertTriangle, RotateCcw } f
 // a sale counts in the month the ORDER was placed, a return in the month its credit note is dated. State-wise and rate-wise,
 // Shopify and Myntra apart, with an Excel file of everything on the page. Rules and reasoning: docs/gst-view.md.
 
-const URL_DEFAULTS = { gmonth: '', gchan: 'shopify' };
+const URL_DEFAULTS = { gmonth: '', gchan: 'all' };
 const inr = (n, digits = 0) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const amt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace('-', '−');
 const fmtDate = (d) => {
@@ -22,7 +22,7 @@ const fmtDate = (d) => {
 };
 const tax = (b) => Math.round((b.igst + b.cgst + b.sgst) * 100) / 100;
 
-const CHANNEL_PILLS = [{ id: 'shopify', label: 'Shopify' }, { id: 'myntra', label: 'Myntra' }, { id: 'all', label: 'Both' }];
+const CHANNEL_PILLS = [{ id: 'all', label: 'Both channels (Table 7)' }, { id: 'myntra', label: 'Myntra (Table 14)' }, { id: 'shopify', label: 'Shopify only' }];
 const CHECK_STYLE = {
   ok:    { icon: CheckCircle2,  cls: 'text-emerald-700' },
   info:  { icon: Info,          cls: 'text-sky-700' },
@@ -121,7 +121,11 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
         <>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Pills options={CHANNEL_PILLS} value={channel} onChange={onChannel} />
-            {channel === 'myntra' && <div className="text-[11px] text-stone-500">Reported under the e-commerce operator, Myntra Designs (GSTIN {MYNTRA_GSTIN}).</div>}
+            <div className="text-[11px] text-stone-500 max-w-2xl sm:text-right">
+              {channel === 'all' && <>Shopify and Myntra together, by state and rate: the figures for GSTR-1 <b>Table 7</b> (B2C). Myntra's sales belong here too.</>}
+              {channel === 'myntra' && <>Myntra collects TCS under section 52, so GSTR-1 <b>Table 14(a)</b> also asks for a summary of these sales under its GSTIN {MYNTRA_GSTIN}. They are already in Table 7 (use "Both channels" for that); do not leave them out of it.</>}
+              {channel === 'shopify' && <>Shopify's sales on their own. This is not a GSTR-1 table: Table 7 needs Myntra's sales as well.</>}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
@@ -161,7 +165,7 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
                   <tbody>
                     {table.rows.map(r => (
                       <tr key={`${r.channel}|${r.stateCode}|${r.ratePct}`} className="border-b border-stone-100">
-                        <td className="py-1.5 px-3 whitespace-nowrap">{r.state}{r.stateCode && <span className="text-stone-400 ml-1">{r.stateCode}</span>}{channel === 'all' && <span className="ml-1.5 text-[10px] px-1 rounded bg-stone-100 text-stone-600">{CHANNEL_LABEL[r.channel]}</span>}</td>
+                        <td className="py-1.5 px-3 whitespace-nowrap">{r.state}{r.stateCode && <span className="text-stone-400 ml-1">{r.stateCode}</span>}</td>
                         <td className="py-1.5 px-2 text-right tabular-nums">{r.ratePct}%</td>
                         <td className="py-1.5 px-2 text-right tabular-nums">{amt(r.sales.taxable)}</td>
                         <td className="py-1.5 px-2 text-right tabular-nums text-stone-500">{r.fees.taxable ? amt(r.fees.taxable) : '–'}</td>

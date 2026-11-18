@@ -158,9 +158,27 @@ export function buildGstReport({ month, entries = [], orders = [], waiting = [] 
   };
 }
 
-/** The rows of the state-wise table for one channel ('shopify' | 'myntra') with a total line; 'all' merges states across both. */
+/**
+ * The rows of the state-wise table with a total line. 'shopify' and 'myntra' are one channel each; 'all' merges the two by state
+ * and rate: Shopify's and Myntra's consumer sales together, which is what GSTR-1 Table 7 (B2C, state and rate wise) holds.
+ * Myntra's sales are in Table 7 AND summarised again under Myntra's GSTIN in Table 14(a) (the GSTN advisory on Notification
+ * 26/2022: the Table 14(a) summary is of supplies "already reported in any table 4 to 10"), so 'myntra' is the Table 14(a) figure.
+ */
 export function stateTable(report, channel) {
-  const list = channel === 'all' ? report.states : report.states.filter(r => r.channel === channel);
+  let list;
+  if (channel === 'all') {
+    const merged = new Map();
+    for (const r of report.states) {
+      const k = `${r.stateCode}|${r.ratePct}`;
+      let x = merged.get(k);
+      if (!x) { x = { channel: 'all', stateCode: r.stateCode, state: r.state, ratePct: r.ratePct, sales: bucket(), fees: bucket(), returns: bucket() }; merged.set(k, x); }
+      for (const slot of ['sales', 'fees', 'returns']) {
+        for (const f of ['taxable', 'igst', 'cgst', 'sgst']) x[slot][f] = r2(x[slot][f] + r[slot][f]);
+        x[slot].docs += r[slot].docs;
+      }
+    }
+    list = [...merged.values()].map(r => ({ ...r, net: netOf(r.sales, r.fees, r.returns) })).sort((a, b) => b.net.taxable - a.net.taxable || a.state.localeCompare(b.state));
+  } else list = report.states.filter(r => r.channel === channel);
   const total = { sales: bucket(), fees: bucket(), returns: bucket() };
   for (const r of list) for (const slot of ['sales', 'fees', 'returns']) for (const k of ['taxable', 'igst', 'cgst', 'sgst']) total[slot][k] = r2(total[slot][k] + r[slot][k]);
   for (const r of list) for (const slot of ['sales', 'fees', 'returns']) total[slot].docs += r[slot].docs;
