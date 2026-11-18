@@ -68,7 +68,19 @@ export async function fetchAccounting(supabase, month, today) {
   const bankLines = bankIds.length ? await pages((a, b) => supabase.from('finance_lines').select('id, txn_date, debit, credit, status, bucket, remarks, payee, vendor_id, note').gte('txn_date', start).lt('txn_date', next).in('account_id', bankIds).order('id').range(a, b)) : [];
   const pl = await supabase.from('finance_payee_vendors').select('payee, vendor_id');
   if (pl.error && !missingTable(pl.error)) throw new Error(pl.error.message);
-  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [] });
+  // The founder's card (one journal per statement cycle, only for the days a statement covers), the confirmed gateway true-ups, every GSTR-2B loaded (to park the input GST of a bill the
+  // supplier has not filed) and the provisions the accountant booked at 30 Sep (the owner tells them; none by default).
+  const cardIds = accounts.filter(a => a.kind === 'card').map(a => a.id);
+  const cardLines = cardIds.length ? await pages((a, b) => supabase.from('finance_lines').select('id, txn_date, debit, credit, status, bucket, remarks, payee, vendor_id, note').gte('txn_date', start).lt('txn_date', next).in('account_id', cardIds).order('id').range(a, b)) : [];
+  const cardCoveredTo = accountRows.find(a => a.kind === 'card')?.periodTo ?? null;
+  const tu = await supabase.from('gateway_trueups').select('id, voucher_date, invoice, lines, confirmed_at, voided_at');
+  if (tu.error && !missingTable(tu.error)) throw new Error(tu.error.message);
+  const tb = await supabase.from('gstr2b_files').select('month, docs');
+  if (tb.error && !missingTable(tb.error)) throw new Error(tb.error.message);
+  const po = await supabase.from('app_settings').select('value').eq('key', 'provision_opening').maybeSingle();
+  let provisionOpening = {};
+  try { const v = po.data?.value; provisionOpening = typeof v === 'string' ? JSON.parse(v) : (v || {}); } catch { provisionOpening = {}; }
+  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening });
   const used = [
     ...entries.map(e => e.account),
     ...books.vouchers.flatMap(v => [...v.lines, ...(v.itemLines || [])].map(l => l.account)),
@@ -79,7 +91,8 @@ export async function fetchAccounting(supabase, month, today) {
     orders: { total: orderRows.length, waitingInvoice: orderRows.filter(o => o.status === 'waiting_invoice').length, open }, attentionAll,
     ledgerRun: run ? { finishedAt: run.finished_at, held: (run.summary?.held || []).length } : null,
     missing: missingLedgers({ used, tally }), exportedAt: null,
-    books: { unlinked: books.unlinked, problems: books.problems, notes: books.notes, advances: books.advances, unpaid: books.unpaid, tdsPending: books.tdsPending, purchases: books.summary.purchases.count, payments: books.summary.payments.count },
+    books: { unlinked: books.unlinked, problems: books.problems, notes: books.notes, advances: books.advances, unpaid: books.unpaid, tdsPending: books.tdsPending, purchases: books.summary.purchases.count, payments: books.summary.payments.count,
+      provisionsMissing: books.provisionsMissing, provisionNotes: books.provisionNotes, provisions: books.vouchers.filter(v => /provision/.test(v.source)).length, parked: books.parked, card: books.summary.card },
   };
   return { checklistInput, entries, orders, tally, books, vendors };
 }

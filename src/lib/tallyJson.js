@@ -13,6 +13,8 @@ export const TALLY = {
   // The owner (18 Nov 2026): SALES UP, Purchase UP and GST EXPENSES are voucher NAMES in his Tally, not types; the types are the standard ones.
   types: { sales: 'Sales', credit_note: 'Credit Note', receipt: 'Receipt', journal: 'Journal', payment: 'Payment', purchase: 'Purchase', expense: 'Purchase', stock_journal: 'Stock Journal' },
   customer: 'Customer (order control)', myntra: 'Myntra receivable (order control)', bank: 'ICICI Bank',
+  // The one stock item every sale and return of the ready garments is booked on (owner, 18 Nov 2026: one item for all styles); HSN as on the accountant's own sales vouchers.
+  item: 'BRUNE LADIES DRESSES', hsn: '6204', unit: 'Pcs',
 };
 // Receivable / payable ledgers that Tally tracks bill by bill, and what names their bills.
 const BY_SALE_DOC = new Set([TALLY.customer, TALLY.myntra]);           // the bill is the sale invoice
@@ -59,7 +61,10 @@ export function tallyVoucher(v, orders) {
   const saleDocOf = (o) => info(o).saleDoc || o;
   const number = numberOf(v);
   const entries = new Map();                                  // account → { amount (positive debit / negative credit), bills: Map ref → { amount, kind } }
+  // The goods of a sale or a return with their pieces are stock items (BRUNE LADIES DRESSES, quantity, rate); the COD charge, the return fee and the taxes stay ledger lines.
+  const itemised = (v.type === 'sales' || v.type === 'credit_note') ? v.lines.filter(l => l.part === 'goods' && Number(l.qty) > 0 && r2(l.debit - l.credit) !== 0) : [];
   for (const l of v.lines) {
+    if (itemised.includes(l)) continue;
     const net = r2(l.debit - l.credit);
     if (net === 0 && l.debit === 0 && l.credit === 0) continue;
     const e = entries.get(l.account) ?? { amount: 0, bills: new Map() };
@@ -87,6 +92,14 @@ export function tallyVoucher(v, orders) {
     return row;
   });
 
+  const inventory = itemised.map(l => {
+    const net = r2(l.debit - l.credit), debit = net > 0, amount = money(-net), qty = ` ${Math.round(Number(l.qty))} ${TALLY.unit}`;
+    return { stockitemname: TALLY.item, gstovrdntaxability: 'Taxable', gstsourcetype: 'Ledger', gstledgersource: l.account, hsnsourcetype: 'Ledger', hsnledgersource: l.account, gstovrdntypeofsupply: 'Goods',
+      gstrateinferapplicability: 'As per Masters/Company', gsthsnname: TALLY.hsn, gsthsninferapplicability: 'As per Masters/Company', ...(debit ? { isdeemedpositive: true, islastdeemedpositive: true } : {}),
+      rate: `${(Math.abs(net) / Number(l.qty)).toFixed(2)}/${TALLY.unit}`, amount, actualqty: qty, billedqty: qty,
+      batchallocations: [{ godownname: BOOKS.godown, batchname: BOOKS.batch, amount, actualqty: qty, billedqty: qty }],
+      accountingallocations: [{ ledgername: l.account, ...(debit ? { isdeemedpositive: true } : {}), amount }] };
+  });
   const typeName = TALLY.types[v.type];
   const id = `${v.type}|${v.id}`;
   const g = guid(`erp-2627|${id}`);
@@ -99,7 +112,7 @@ export function tallyVoucher(v, orders) {
   };
   if (needsState) {
     return { ...base, partyledgername: party, partyname: party, basicbuyername: party, placeofsupply: state, statename: state, gstregistrationtype: 'Unregistered/Consumer',
-      vchentrymode: 'Accounting Invoice', isinvoice: true, reference: number };
+      vchentrymode: inventory.length ? 'Item Invoice' : 'Accounting Invoice', isinvoice: true, reference: number, ...(inventory.length ? { allinventoryentries: inventory } : {}) };
   }
   if (v.type === 'receipt') return { ...base, partyledgername: [...entries.entries()].find(([, e]) => e.amount < 0)?.[0] };   // the receivable the money clears
   return base;
@@ -143,16 +156,18 @@ export function tallyBookVoucher(v) {
       countryofresidence: 'India', gstregistrationtype: v.partyGstin ? 'Regular' : 'Unregistered/Consumer', consigneegstin: TALLY.gstin, consigneestatename: TALLY.state, consigneecountryname: 'India',
       vchentrymode: v.mode, isinvoice: true, isgstoverridden: true, iseligibleforitc: true, ledgerentries: rows, ...(inventory.length ? { allinventoryentries: inventory } : {}) };
   }
-  // payment and receipt
+  // payment, receipt and the journals made from the bills and the bank (card journal, true-up, provisions, GST released)
+  const isJournal = v.type === 'journal';
   const counter = v.lines.find(l => l.account !== BOOKS.bank)?.account ?? '';
   const rows = v.lines.map(l => {
     const net = r2(l.debit - l.credit);
-    const row = { ledgername: l.account, isdeemedpositive: net > 0, ispartyledger: true, amount: money(-net) };
+    const row = { ledgername: l.account, isdeemedpositive: net > 0, amount: money(-net), ...(isJournal ? {} : { ispartyledger: true }) };
+    const refs = l.refs?.length ? l.refs : (!isJournal && l.account !== BOOKS.bank && v.billRefs?.length ? v.billRefs : null);
     if (l.account === BOOKS.bank) row.bankallocations = [bankAlloc(v.date, v.ref, -net, v.favouring || counter)];
-    else if (v.billRefs?.length) row.billallocations = v.billRefs.map(b => ({ name: b.name, billtype: b.kind, amount: money(net > 0 ? -b.amount : b.amount) }));
+    else if (refs) { row.ispartyledger = true; row.billallocations = refs.map(b => ({ name: b.name, billtype: b.kind, amount: money(net > 0 ? -b.amount : b.amount) })); }
     return row;
   });
-  return { ...head('Accounting Voucher View'), partyledgername: counter, allledgerentries: rows };
+  return { ...head('Accounting Voucher View'), ...(isJournal ? {} : { partyledgername: counter }), allledgerentries: rows };
 }
 
 /**
@@ -184,7 +199,7 @@ export function buildTallyFile({ vouchers, orders, books = [], limit = null }) {
     messages.push(t); counts[v.type] = (counts[v.type] ?? 0) + 1;
   }
   // A bill or a sale is opened before it is settled: on one day the vouchers that open a bill go first, so every Agst Ref finds its bill.
-  const RANK = { Sales: 0, Purchase: 0, 'Credit Note': 1, Journal: 2, Receipt: 3, Payment: 3 };
+  const RANK = { Sales: 0, Purchase: 0, 'Credit Note': 1, Journal: 2, Receipt: 3, Payment: 3 };   // a journal of the order ledger clears a bill, one of the bills / bank may open none
   messages.sort((a, b) => a.date.localeCompare(b.date) || (RANK[a.vouchertypename] ?? 2) - (RANK[b.vouchertypename] ?? 2));
   // The built-in checks: every voucher in the file balances in Tally's own signs, and the ledger totals of what was written equal the ERP ledger's.
   const unbalanced = messages.filter(m => Math.abs(entriesSum(m)) > 0.005);

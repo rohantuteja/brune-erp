@@ -79,7 +79,21 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
 - **Checked on the real October 2026 data (18 Nov):** 18 purchase vouchers (8 fabric item invoices, 10 expense bills) add up to the bills (₹8,45,020.16; Aggarwal's three wholesale bills and Easebuzz's tie-out
   left out); 52 payment vouchers (₹14,34,270.07) equal the 52 matched bank payments (the one the ERP first could not place, ₹960.82 to "adrija", is Airtel's: the word the payer typed on it,
   "AirtelOfficeBil", places it; it is an advance until its bill is uploaded); every voucher sums to zero (stock items included); advances ₹89,019 to Shree Vinayak (for the 3 Nov invoice) and bills unpaid at month end are listed.
-- Not in the file yet: the card journal, stock journals and the month-end stock correction, the Meta / Velocity provisions, stock items on sales and credit notes, the Easebuzz correction journal.
+- **Card journal** (founder's Kotak card, 18 Nov): one Journal per statement cycle (21st to 20th) dated the 20th, only for days the uploaded statement covers; Dr what was bought, Cr
+  `Rohan (Director Personal Credit Card)`. A supplier's charge goes to its ledger like a bank payment (an advance until its invoice, then settled against it: Google's ₹383.50 paid on 3 Oct, invoice
+  dated 31 Oct), the rest to their ledgers (Software Expenses, Subscription Charges, Car Fuel, Telephone & Internet Expenses); undecided lines go to `Suspense` for the accountant to clear (October:
+  YouTube ₹149 and a ₹40.71 GST charge). The founder's own card-bill payments and reversal pairs make no entry. October: 9 charges ₹12,341.56.
+- **Easebuzz correction:** a confirmed, unvoided `gateway_trueups` row becomes a Journal dated its `voucher_date` (October: Dr Payment Gateway Expenses ₹0.47 / Cr IGST Input UP ₹0.47).
+- **Input GST of a bill its supplier has not filed** (the GSTR-2B of the bill's month is loaded and does not list it) is booked to `INPUT NOT CLAIMED FOR INV NOT IN 2A`, and a journal moves it to the input
+  ledger in the month a later GSTR-2B shows it. October: Shree Vinayak SVF/26-27/265, ₹517.50. With no GSTR-2B loaded nothing is parked.
+- **Provisions** (Meta -> `Marketing Expenses Provision`, Velocity -> `Shipping Expenses Provision`, a ledger the file creates, migration 052; both against `Provision for Expenses`): at the month end a Journal
+  provides for the month's spend, taken from the invoice dated the 1st of the next month (before GST); on the 1st of the next month it is reversed, the day the invoice itself is booked in full. A
+  supplier with no such invoice yet is reported and BLOCKS the file (the month would miss its cost). October is the first month: its 1 Oct invoices (September's spend: Meta ₹5,04,308.30, Velocity
+  ₹49,572.84) are booked as October expense unless the accountant booked a 30 Sep provision; if he did, `app_settings.provision_opening` = `{"Meta": 504308.30, "Velocity": 49572.84}` makes the file reverse it on 1 Oct.
+- **Stock items on sales and credit notes:** the goods of a sale or a return with their pieces are `BRUNE LADIES DRESSES` (HSN 6204, godown `Main Location`, batch `Primary Batch`, rate = amount / pieces);
+  the COD charge, return fee and taxes stay ledger lines; the ERP's own fee invoices have no pieces and stay accounting invoices. October: 544 sales and 101 credit notes are item invoices, 571 and 105 pieces,
+  the same rupees as the ledger (₹7,72,538.08 and ₹1,40,474.66), 1,307 vouchers in all, every one balanced.
+- Not in the file yet: the stock journals and the month-end stock correction (they wait for the accountant's Stock Summary at 30 Sep), and the opening bills of the orders sold before October.
 
 ## The Tally file (`tallyVouchers.js`, `tallyJson.js`)
 First version, as the owner asked: a file, not a sync. The order ledger's entries are grouped into vouchers exactly as the ledger holds

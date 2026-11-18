@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BOOKS, unitOf, billsToBook, purchaseVoucher, allocateSupplier, classifyBankLines, vendorByPayeeName, bankRef, buildBooks, bookChecks } from './tallyBooks.js';
+import { BOOKS, unitOf, billsToBook, purchaseVoucher, allocateSupplier, classifyBankLines, vendorByPayeeName, bankRef, buildBooks, bookChecks, provisionJournals } from './tallyBooks.js';
 
 // A small October with the shapes of the real one: a fabric supplier paid for two bills in one payment, advances paid before an invoice dated next month, Meta's
 // opening bill paid on the 1st, a telephone bill part-paid before it arrived, wholesale left to the accountant.
@@ -199,4 +199,73 @@ test('a payment to a person\'s account is placed by the word the payer typed on 
   assert.equal(c.payments.find(p => p.line.id === 26).ledger, 'M/s Bharti Airtel Ltd  UP');
   assert.deepEqual(c.unlinked.map(l => l.id), [500]);                                                 // the unplaced line stays unplaced
   assert.equal(vendorByPayeeName('adrija', vendors), null);                                           // the person's own name is no supplier
+});
+
+// ── Card journal, gateway true-up, GST parking, provisions ──
+const C = (o) => L({ ...o, __card: undefined });
+test('the founder\'s card: one journal per statement cycle, Cr his card ledger, a supplier\'s charge as an advance on it, card payments and reversals left out', () => {
+  const googleVendor = { id: 8, name: 'Google', tally_ledger_name: 'Google India Pvt Ltd', gstin: '06AACCG0527D1Z8', booking: 'expense', expense_ledger: 'Software Expenses @ 18%' };
+  const cardBuckets = [...buckets, { name: 'Software Expenses @ 18%', kind: 'expense', needs_bill: true }, { name: 'Software Expenses', kind: 'expense', needs_bill: false }, { name: 'Car Fuel Expenses', kind: 'expense', needs_bill: false },
+    { name: 'Founder card payment (no company entry)', kind: 'ignore', needs_bill: false }];
+  const gBill = bill({ id: 30, vendor: 'Google', vendor_id: 8, invoice_no: '5732193357', invoice_date: '2026-10-31', kind: 'service', tax_rate: 18, subtotal: 325, tax: 58.5, total: 383.5, supplier_gstin: '06AACCG0527D1Z8' });
+  const card = [
+    C({ id: 248, txn_date: '2026-10-03', debit: 383.5, bucket: 'Software Expenses @ 18%', payee: 'googleworkspacecybsmumba', remarks: 'GOOGLE WORKSPACE CYBS MUMBAI IN' }),
+    C({ id: 250, txn_date: '2026-10-03', debit: 2353.2, bucket: 'Software Expenses', payee: 'anthropic', remarks: 'ANTHROPIC* CLAUDE SUB' }),
+    C({ id: 252, txn_date: '2026-10-04', debit: 2353.2, bucket: 'Software Expenses', payee: 'openai', remarks: 'OPENAI *CHATGPT' }),
+    C({ id: 256, txn_date: '2026-10-10', debit: 4651.63, bucket: 'Car Fuel Expenses', payee: 'elite', remarks: 'ELITE PETROLEUM NOIDA IN' }),
+    C({ id: 240, txn_date: '2026-10-08', credit: 12690.05, bucket: 'Founder card payment (no company entry)', status: 'ignored', remarks: 'PAYMENT RECEIVED-AUTODEBIT' }),
+    C({ id: 260, txn_date: '2026-10-25', debit: 500, bucket: 'Car Fuel Expenses', payee: 'fuel', remarks: 'FUEL AFTER THE STATEMENT' }),
+  ];
+  const r = buildBooks({ ...month, bills: [gBill], vendors: [googleVendor], handled: [], bankLines: [], buckets: cardBuckets, payeeLinks: [], cardLines: card, cardCoveredTo: '2026-10-20' });
+  const j = r.vouchers.find(v => v.source === 'card journal');
+  assert.equal(r.vouchers.filter(v => v.source === 'card journal').length, 1);
+  assert.deepEqual([j.date, j.number, j.credit, j.balanced], ['2026-10-20', 'ERP/CJ/2627/20261020', 9741.53, true]);
+  assert.deepEqual(j.lines.map(l => [l.account, l.debit, l.credit]), [['Google India Pvt Ltd', 383.5, 0], ['Software Expenses', 4706.4, 0], ['Car Fuel Expenses', 4651.63, 0], [BOOKS.card, 0, 9741.53]]);
+  assert.deepEqual(j.lines[0].refs, [{ name: 'ADV-L248', kind: 'Advance', amount: 383.5 }]);            // paid on 3 Oct, the invoice is dated 31 Oct
+  assert.equal(r.summary.card.lines, 4); assert.equal(r.vouchers.some(v => v.type === 'payment'), false);   // the 25 Oct charge is after the statement, nothing is paid from the bank
+  assert.deepEqual(r.vouchers.find(v => v.id === 'purchase|30').billRefs, [{ name: 'ADV-L248', kind: 'Agst Ref', amount: 383.5 }]);
+});
+
+test('a confirmed gateway true-up becomes a journal in its month; a voided or unconfirmed one does not', () => {
+  const tu = (o) => ({ id: 1, voucher_date: '2026-10-31', invoice: { no: 'N2627/000100369' }, lines: [{ account: 'Payment Gateway Expenses', debit: 0.47, credit: 0 }, { account: 'IGST Input  UP', debit: 0, credit: 0.47 }], confirmed_at: '2026-11-18T14:03:36Z', voided_at: null, ...o });
+  const r = (trueups) => buildBooks({ ...month, bills: [], vendors, handled: [], bankLines: [], buckets, payeeLinks: [], trueups });
+  const j = r([tu()]).vouchers.find(v => v.source === 'gateway true-up');
+  assert.deepEqual([j.number, j.date, j.debit, j.credit, j.balanced], ['ERP/GT/2627/00001', '2026-10-31', 0.47, 0.47, true]);
+  assert.equal(r([tu({ voided_at: '2026-11-19' })]).vouchers.some(v => v.source === 'gateway true-up'), false);
+  assert.equal(r([tu({ confirmed_at: null })]).vouchers.some(v => v.source === 'gateway true-up'), false);
+  assert.equal(r([tu({ voucher_date: '2026-11-30' })]).vouchers.some(v => v.source === 'gateway true-up'), false);
+});
+
+test('input GST of a bill the supplier has not filed waits on the parking ledger, and moves to the input ledger in the month its GSTR-2B shows it', () => {
+  const two = (month, docs) => ({ month, docs: docs.map(d => ({ kind: 'invoice', itc: 'Y', ...d })) });
+  const oct = two('2026-10', [{ ctin: '24AASFC4987G1ZY', no: 'CF/26962' }, { ctin: '24AASFC4987G1ZY', no: 'CF/27047' }, { ctin: '06AABCF5150G1ZZ', no: '2380933755' }, { ctin: '09AAACB2894G1ZM', no: 'HF2709I013498070' }]);      // Shree Vinayak 265 is missing from it
+  const r = buildBooks({ ...month, bills, vendors, handled, bankLines: [], buckets, payeeLinks: [], twoB: [oct] });
+  assert.deepEqual(r.parked, [{ vendor: 'Shree Vinayak Fab', no: 'SVF/26-27/265', tax: 517.5 }]);
+  const v = r.vouchers.find(x => x.id === 'purchase|3');
+  assert.deepEqual(v.lines.map(l => l.account), ['Shree Vinayak Fab', BOOKS.parking, BOOKS.roundOff]); assert.equal(v.parked, true); assert.equal(v.balanced, true);
+  assert.equal(r.vouchers.find(x => x.id === 'purchase|1').lines.some(l => l.account === BOOKS.igst), true);        // filed: straight to the input ledger
+  const noTwoB = buildBooks({ ...month, bills, vendors, handled, bankLines: [], buckets, payeeLinks: [], twoB: [] });
+  assert.equal(noTwoB.parked.length, 0);                                                                              // no GSTR-2B loaded: nothing is judged
+  const nov = buildBooks({ from: '2026-11-01', next: '2026-12-01', start: '2026-10-01', bills, vendors, handled, bankLines: [], buckets, payeeLinks: [], twoB: [oct, two('2026-11', [{ ctin: '07ALCPJ9544R1ZD', no: 'SVF/26-27/265' }])] });
+  const rel = nov.vouchers.find(x => x.source === 'input GST released');
+  assert.deepEqual([rel.date, rel.balanced, rel.lines.map(l => [l.account, l.debit, l.credit])], ['2026-11-30', true, [[BOOKS.igst, 517.5, 0], [BOOKS.parking, 0, 517.5]]]);
+});
+
+test('provisions: the month\'s spend is provided for from the invoice dated the 1st of the next month, reversed the day the next invoice is booked; without that invoice it is reported missing', () => {
+  const vel = { id: 7, name: 'Velocity', tally_ledger_name: 'Velocity Prepaid Recharge Account', booking: 'expense', expense_ledger: 'Shipping Expenses @ 18%' };
+  const vb = (id, date, sub) => bill({ id, vendor: 'Velocity', vendor_id: 7, invoice_no: `SF/${id}`, invoice_date: date, kind: 'service', subtotal: sub, tax: r(sub * 0.18), total: r(sub * 1.18) });
+  const r = (n) => Math.round(n * 100) / 100;
+  const all = [vb(20, '2026-10-01', 49572.84), vb(21, '2026-11-01', 26693.4), vb(22, '2026-12-01', 30000)];
+  const oct = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: [...all, bills[5]], vendors: [vel, vendors[2]], handled: [] });
+  const p = oct.journals.find(j => j.source === 'provision');
+  assert.deepEqual([p.date, p.number, p.lines.map(l => [l.account, l.debit, l.credit])], ['2026-10-31', 'ERP/PV/2627/VEL2610', [['Shipping Expenses Provision', 26693.4, 0], [BOOKS.provision, 0, 26693.4]]]);
+  assert.equal(oct.journals.some(j => j.source === 'provision reversal'), false);                                    // the first month: nothing of the ERP's to reverse
+  assert.match(oct.notes[0], /previous month's spend/);
+  assert.equal(oct.missing.length, 1); assert.match(oct.missing[0], /^Meta/);                                         // Meta has billed (the 1 Oct invoice in the fixture) and the Nov one is not there
+  const nov = provisionJournals({ from: '2026-11-01', next: '2026-12-01', bills: all, vendors: [vel], handled: [] });
+  const rev = nov.journals.find(j => j.source === 'provision reversal');
+  assert.deepEqual([rev.date, rev.number, rev.lines.map(l => [l.account, l.debit, l.credit])], ['2026-11-01', 'ERP/PR/2627/VEL2611', [[BOOKS.provision, 26693.4, 0], ['Shipping Expenses Provision', 0, 26693.4]]]);
+  assert.equal(nov.journals.filter(j => j.source === 'provision').length, 1);                                         // and December's spend is provided for from the 1 Dec invoice
+  const withOpening = provisionJournals({ from: '2026-10-01', next: '2026-11-01', bills: all, vendors: [vel], handled: [], openingProvisions: { Velocity: 49572.84 } });
+  assert.deepEqual(withOpening.journals.find(j => j.source === 'provision reversal').lines.map(l => [l.account, l.debit, l.credit]), [[BOOKS.provision, 49572.84, 0], ['Shipping Expenses Provision', 0, 49572.84]]);
 });
