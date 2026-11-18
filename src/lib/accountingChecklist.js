@@ -62,9 +62,13 @@ export function buildChecklist(d) {
     ? { id: 'card', title: 'Card statement covers the cycle ending on the 20th', status: 'done', detail: `${card.name}: statements run to ${dmy(card.periodTo)}.`, link: { label: 'Bank & card', tab: 'bank' } }
     : { id: 'card', title: `Upload the card statement for the cycle ending ${dmy(cardEnd)}`, status: 'todo', blocker: true, detail: card?.periodTo ? `${card.name}: statements stop at ${dmy(card.periodTo)}. The card expenses are booked from it.` : 'No card statement has been uploaded.', link: { label: 'Bank & card', tab: 'bank' } });
 
-  add('uploads', d.gokwikTxnTo && d.gokwikTxnTo >= end
-    ? { id: 'gokwik', title: 'GoKwik settlement report covers the whole month', status: 'done', detail: `Transactions to ${dmy(d.gokwikTxnTo)}.`, link: { label: 'Bank & card', tab: 'bank' } }
-    : { id: 'gokwik', title: 'Upload the GoKwik settlement report to the end of the month', status: 'todo', blocker: true, detail: d.gokwikTxnTo ? `The report stops at transactions of ${dmy(d.gokwikTxnTo)}: payouts after that cannot be matched to orders or booked.` : 'No GoKwik report has been uploaded.', link: { label: 'Bank & card', tab: 'bank' } });
+  // The test is the bank, not the date of the last transaction: a payment made on the last day of the month is paid out (and listed in the report) next month.
+  const gk = { link: { label: 'Bank & card', tab: 'bank' } };
+  add('uploads', !d.gokwikSettledTo
+    ? { id: 'gokwik', title: 'Upload the GoKwik settlement report', status: 'todo', blocker: true, detail: 'No GoKwik report has been uploaded.', ...gk }
+    : (d.gokwikUnproven || 0) > 0
+      ? { id: 'gokwik', title: `${plural(d.gokwikUnproven, 'Easebuzz credit')} in the bank not matched to a GoKwik payout`, status: 'todo', blocker: true, detail: `The report reaches payouts of ${dmy(d.gokwikSettledTo)}. Download the newer rawSettlementReport so these payouts can be matched to their orders and booked.`, ...gk }
+      : { id: 'gokwik', title: 'Every GoKwik payout of the month is in the report', status: 'done', detail: `${d.gokwikPayouts || 0} Easebuzz credit${d.gokwikPayouts === 1 ? '' : 's'} in the bank, all matched to the report (it reaches payouts of ${dmy(d.gokwikSettledTo)}). Payments of the last days of the month are paid out, and listed, next month.`, ...gk });
 
   add('uploads', d.velocityTo && d.velocityTo >= end
     ? { id: 'velocity', title: 'Velocity wallet ledger covers the whole month', status: 'done', detail: `Ledger runs to ${dmy(d.velocityTo)}.`, link: { label: 'Velocity wallet', tab: 'velocity' } }
