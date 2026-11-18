@@ -282,3 +282,30 @@ test('a supplier counts as already a vendor by name when the vendor has no GSTIN
   const byNo = Object.fromEntries(r.itc.lists.toUpload.map(x => [x.no, x.knownVendor]));
   assert.deepEqual(byNo, { 'HR/1': true, '1068': false });
 });
+
+test('an invoice marked as the accountant\'s stays on the list but is flagged, no longer counted as still to upload, and the credit is unchanged', () => {
+  const plain = buildGstr3b({ ...base, twoB: full2b() });
+  const marked = buildGstr3b({ ...base, twoB: full2b(), handled: [{ gstin: '07AAMCP7214N1ZW', invoice_key: 'S1' }] });
+  assert.equal(marked.itc.lists.toUpload.find(x => x.no === 'S/1').handled, true);
+  assert.equal(plain.itc.lists.toUpload.find(x => x.no === 'S/1').handled, false);
+  assert.match(plain.checks.find(c => c.id === 'toupload').text, /^2 invoices from 2 suppliers/);
+  assert.match(marked.checks.find(c => c.id === 'toupload').text, /^1 invoice from 1 supplier/);       // only Easebuzz's invoice is left to upload
+  assert.ok(marked.checks.find(c => c.id === 'handled'));
+  assert.deepEqual(marked.itc.claim, plain.itc.claim);                                                  // GSTR-2B decides the credit either way
+});
+
+test('when every open invoice is marked there is no upload warning; matching ignores case, punctuation and leading zeros', () => {
+  const r = buildGstr3b({ ...base, twoB: full2b(), handled: [{ gstin: '07aamcp7214n1zw', invoice_no: '0S/1' }, { gstin: '27AAVCS2699M1Z5', invoice_no: 'eb-1' }] });
+  assert.equal(r.checks.find(c => c.id === 'toupload'), undefined);
+  assert.equal(r.itc.lists.toUpload.every(x => x.handled), true);
+});
+
+test('bills booked from GSTR-2B with no invoice copy are listed, until the PDF is attached', () => {
+  const booked = { id: 90, vendor_id: 9, vendor: 'Google', invoice_no: 'G-1', invoice_date: '2026-10-31', subtotal: 325, tax: 58.5, total: 383.5, tax_type: 'IGST', status: 'accepted', opening: false, supplier_gstin: '06AACCG0527D1Z8', source: 'gstr2b', file_path: null };
+  let r = buildGstr3b({ ...base, bills: [...bills, booked] });
+  assert.deepEqual(r.itc.lists.noCopy.map(b => b.no), ['G-1']);
+  assert.ok(r.checks.find(c => c.id === 'nocopy'));
+  r = buildGstr3b({ ...base, bills: [...bills, { ...booked, file_path: 'vendor-bills/x.pdf' }] });
+  assert.deepEqual(r.itc.lists.noCopy, []);
+  assert.equal(r.checks.find(c => c.id === 'nocopy'), undefined);
+});

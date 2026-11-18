@@ -4,7 +4,7 @@ import { localToday } from '../lib/constants';
 import { accountingStart } from '../lib/gstData';
 import { buildGstReport, monthsBetween, monthLabel } from '../lib/gstReport';
 import { buildGstr3b, HEADS, HEAD_LABEL, MYNTRA_GSTIN } from '../lib/gstr3b';
-import { fetchGstr3bMonth, saveOpening, saveTwoB, deleteTwoB, markFiled, unmarkFiled } from '../lib/gstr3bData';
+import { fetchGstr3bMonth, saveOpening, saveTwoB, deleteTwoB, markFiled, unmarkFiled, bookFrom2b, markHandled, unmarkHandled } from '../lib/gstr3bData';
 import { resolveOpening, filedSnapshot, changedSinceFiled, nextMonth } from '../lib/gstr3bCredit';
 import { parseGstr2bFile, availableTotals } from '../lib/gstr2b';
 import { buildGstr3bSheets, buildUploadSheet, gstr3bFileName } from '../lib/gstr3bWorkbook';
@@ -223,6 +223,46 @@ function OpeningForm({ month, opening, storeMissing, onSave }) {
   );
 }
 
+// ── One invoice that is in GSTR-2B but has no bill: upload it, book it from the 2B details, or leave it to the accountant ─────────
+// A proper component: it holds the choice being made.
+function UploadLine({ x, ledgerChoices, canWrite, onBook, onHandled, onUnhandled }) {
+  const [mode, setMode] = useState(null);
+  const [ledger, setLedger] = useState('');
+  const [sLedger, setSLedger] = useState(() => String(x.vendor || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase()));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const run = async (fn) => { setBusy(true); setErr(''); try { await fn(); setMode(null); } catch (e) { setErr(e.message); } setBusy(false); };
+  const gateway = x.why === 'gateway';
+  return (
+    <tr className={`border-b border-stone-100 align-top ${x.handled ? 'bg-stone-50 text-stone-500' : ''}`}>
+      <td className="py-1.5 px-2">{x.vendor}{!x.knownVendor && <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-sky-100 text-sky-900">new vendor</span>}</td>
+      <td className="py-1.5 px-2 text-stone-500 whitespace-nowrap">{x.gstin}</td>
+      <td className="py-1.5 px-2 whitespace-nowrap">{x.no}</td>
+      <td className="py-1.5 px-2 whitespace-nowrap">{fmtDate(x.date)}</td>
+      <td className="py-1.5 px-2 text-right tabular-nums">{amt(x.taxable)}</td>
+      <td className="py-1.5 px-2 text-right tabular-nums">{amt(sum(x.twoB))}</td>
+      <td className="py-1.5 px-2 text-right tabular-nums">{amt(x.value)}</td>
+      <td className="py-1.5 px-2 min-w-[15rem]">
+        {gateway ? <span className="text-[11px] text-stone-500">upload it on the Bills page (gateway fee tie-out)</span>
+          : x.handled ? <span className="text-[11px]">The accountant books this one {canWrite && <button type="button" className="underline hover:text-stone-900 ml-1" disabled={busy} onClick={() => run(() => onUnhandled(x))}>undo</button>}</span>
+          : mode === 'book' ? (
+            <div className="space-y-1">
+              <select value={ledger} onChange={e => setLedger(e.target.value)} className={`${field} w-full`} aria-label="Expense ledger">
+                <option value="">Pick the expense ledger…</option>{ledgerChoices.map(l => <option key={l.name} value={l.name}>{l.name}</option>)}
+              </select>
+              {!x.knownVendor && <input value={sLedger} onChange={e => setSLedger(e.target.value)} className={`${field} w-full`} aria-label="Supplier's ledger in Tally" title="The supplier's own ledger in Tally: created by the Tally file" />}
+              {!x.knownVendor && <div className="text-[10px] text-stone-500">A new supplier ledger "{sLedger}" is created in Tally by the file.</div>}
+              <div className="flex gap-1"><button type="button" className={btnDark} disabled={!ledger || busy} onClick={() => run(() => onBook(x, ledger, x.knownVendor ? '' : sLedger))}>Book it</button><button type="button" className={btn} disabled={busy} onClick={() => setMode(null)}>Cancel</button></div>
+            </div>
+          ) : canWrite ? (
+            <div className="flex flex-wrap gap-1"><button type="button" className={btn} onClick={() => setMode('book')}>Book from GSTR-2B</button><button type="button" className={btn} disabled={busy} onClick={() => run(() => onHandled(x))}>The accountant books it</button></div>
+          ) : null}
+        {err && <div className="text-[11px] text-red-700 mt-1">{err}</div>}
+      </td>
+    </tr>
+  );
+}
+
 // ── The credit ledger the ERP keeps: opening, claimed, used, closing, and recording the return as filed ─────────────
 // A proper component: it holds the confirm step and the correction form.
 export function CreditLedgerPanel({ r, month, resolved, canWrite, storeMissing, onMarkFiled, onUnmarkFiled, onCorrect }) {
@@ -283,7 +323,7 @@ export function CreditLedgerPanel({ r, month, resolved, canWrite, storeMissing, 
 }
 
 // ── The report for one month (no data loading here: the container passes a built report) ──────────────────────────
-export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error, onReload, panel, creditPanel, onExportUploads }) {
+export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error, onReload, panel, creditPanel, onExportUploads, ledgerChoices = [], canWrite = false, onBook, onHandled, onUnhandled }) {
   const T = r?.itc.twoB;
   const L = r?.itc.lists;
   const itcRows = useMemo(() => {
@@ -380,23 +420,37 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
             <HeadTable first="Table 4(A)(5): all other ITC" rows={itcRows} />
             {T && (
               <>
-                <Collapsible id="g3-upload" title="Bills to upload" count={L.toUpload.length} tone={L.toUpload.length ? 'amber' : 'neutral'} defaultOpen={L.toUpload.length > 0}
-                  summary={L.toUpload.length ? 'in GSTR-2B, no bill in the ERP: upload each on the Bills page' : 'every invoice in GSTR-2B has its bill'}>
+                <Collapsible id="g3-upload" title="Bills to upload" count={L.toUpload.filter(x => !x.handled).length} tone={L.toUpload.some(x => !x.handled) ? 'amber' : 'neutral'} defaultOpen={L.toUpload.length > 0}
+                  summary={L.toUpload.some(x => !x.handled) ? 'in GSTR-2B, no bill in the ERP: upload each, book it from the 2B details, or leave it to the accountant' : 'every invoice in GSTR-2B has its bill (or is the accountant\'s)'}>
                   {L.toUpload.length === 0 ? <div className="text-xs text-stone-500">Every invoice in GSTR-2B has a bill in the ERP.</div> : (
                     <div className="space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-xs text-stone-600">{L.toUpload.length} invoice{L.toUpload.length === 1 ? '' : 's'} from {new Set(L.toUpload.map(x => x.gstin)).size} supplier{new Set(L.toUpload.map(x => x.gstin)).size === 1 ? '' : 's'}, {inr(sum(L.toUpload.reduce((a, x) => ({ igst: a.igst + x.twoB.igst, cgst: a.cgst + x.twoB.cgst, sgst: a.sgst + x.twoB.sgst }), { igst: 0, cgst: 0, sgst: 0 })), 2)} of tax. Their credit is already claimed.</div>
+                        <div className="text-xs text-stone-600">{L.toUpload.length} invoice{L.toUpload.length === 1 ? '' : 's'} from {new Set(L.toUpload.map(x => x.gstin)).size} supplier{new Set(L.toUpload.map(x => x.gstin)).size === 1 ? '' : 's'}, {inr(sum(L.toUpload.reduce((a, x) => ({ igst: a.igst + x.twoB.igst, cgst: a.cgst + x.twoB.cgst, sgst: a.sgst + x.twoB.sgst }), { igst: 0, cgst: 0, sgst: 0 })), 2)} of tax. Their credit is already claimed. <b>Upload</b> the invoice on the Bills page if you have it; if the supplier has not sent it, <b>book it from the GSTR-2B details</b> against an expense ledger, or mark it as one <b>the accountant books</b> (wholesale stock, say): neither needs the PDF, and neither changes your credit.</div>
                         <button type="button" className={btn} onClick={onExportUploads}><Download className="w-3.5 h-3.5" /> Download this list</button>
                       </div>
-                      <DocTable rows={[...L.toUpload].sort((a, b) => String(a.vendor).localeCompare(String(b.vendor)) || String(a.date).localeCompare(String(b.date)))} noun="invoices" columns={[
-                        { label: 'Supplier', cell: x => <>{x.vendor}{!x.knownVendor && <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-sky-100 text-sky-900">new vendor</span>}</> },
-                        { label: 'GSTIN', muted: true, cell: x => x.gstin }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) },
-                        { label: 'Taxable', right: true, cell: x => amt(x.taxable) }, { label: 'Tax', right: true, cell: x => amt(sum(x.twoB)) }, { label: 'Invoice value', right: true, cell: x => amt(x.value) },
-                        { label: '', muted: true, cell: x => x.why === 'gateway' ? 'for the gateway fee tie-out' : '' },
-                      ]} />
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead><tr className="text-left text-stone-500 border-b border-stone-200">
+                            <th className="py-1.5 px-2 font-medium">Supplier</th><th className="py-1.5 px-2 font-medium">GSTIN</th><th className="py-1.5 px-2 font-medium">Invoice</th><th className="py-1.5 px-2 font-medium">Date</th>
+                            <th className="py-1.5 px-2 font-medium text-right">Taxable</th><th className="py-1.5 px-2 font-medium text-right">Tax</th><th className="py-1.5 px-2 font-medium text-right">Invoice value</th><th className="py-1.5 px-2 font-medium">What to do</th>
+                          </tr></thead>
+                          <tbody>
+                            {[...L.toUpload].sort((a, b) => String(a.vendor).localeCompare(String(b.vendor)) || String(a.date).localeCompare(String(b.date))).map(x => (
+                              <UploadLine key={`${x.gstin}|${x.no}`} x={x} ledgerChoices={ledgerChoices} canWrite={canWrite} onBook={onBook} onHandled={onHandled} onUnhandled={onUnhandled} />
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )}
                 </Collapsible>
+                {L.noCopy.length > 0 && (
+                  <Collapsible id="g3-nocopy" title="Booked from GSTR-2B, no invoice copy yet" count={L.noCopy.length} tone="amber" summary="keep asking the supplier; attach the PDF on the Bills page when it arrives">
+                    <DocTable rows={L.noCopy} noun="bills" columns={[
+                      { label: 'Supplier', cell: x => x.vendor }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) }, { label: 'Tax', right: true, cell: x => amt(x.tax) },
+                    ]} />
+                  </Collapsible>
+                )}
                 <Collapsible id="g3-matched" title="Bills matched to GSTR-2B" count={L.matched.length + L.differs.length} tone={L.differs.length ? 'amber' : 'neutral'} summary={L.differs.length ? `${L.differs.length} differ` : 'all agree'}>
                   <DocTable rows={[...L.differs, ...L.matched]} noun="bills" columns={[
                     { label: 'Supplier', cell: x => x.vendor }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) },
@@ -523,7 +577,7 @@ export default function Gstr3bSection({ showToast }) {
 
   const r = useMemo(() => fresh ? buildGstr3b({
     month, gst: buildGstReport({ month, ...fresh.gst }), ownGstin: fresh.ownGstin, bills: fresh.bills, vendors: fresh.vendors,
-    ledgerInput: fresh.ledgerInput, trueups: fresh.trueups, tcsRows: fresh.tcsRows, twoB, opening, openingLabel: resolved.text,
+    ledgerInput: fresh.ledgerInput, trueups: fresh.trueups, tcsRows: fresh.tcsRows, twoB, opening, openingLabel: resolved.text, handled: fresh.handled,
   }) : null, [fresh, month, twoB, opening, resolved.text]);
 
   const exportXlsx = () => { try { downloadXlsx(gstr3bFileName(r), buildGstr3bSheets(r)); } catch (err) { showToast?.(`Could not make the Excel file: ${err.message}`, 'error'); } };
@@ -551,6 +605,10 @@ export default function Gstr3bSection({ showToast }) {
   if (!month) return <div className="text-sm text-stone-500 px-1 py-6">Loading…</div>;
   return (
     <Gstr3bView r={r} months={months} month={month} onMonth={(m) => setP({ g3month: m })} onExport={exportXlsx} loading={loading} error={error} onReload={load}
-      panel={panel} creditPanel={creditPanel} onExportUploads={exportUploads} />
+      panel={panel} creditPanel={creditPanel} onExportUploads={exportUploads}
+      ledgerChoices={fresh?.ledgerChoices || []} canWrite={!!fresh && !storeMissing}
+      onBook={async (x, ledger, sLedger) => { await bookFrom2b(supabase, x, ledger, sLedger); await load(); showToast?.(`${x.vendor} ${x.no} booked from GSTR-2B`, 'success'); }}
+      onHandled={async (x) => { await markHandled(supabase, x, month); await load(); showToast?.(`${x.vendor} ${x.no} left to the accountant`, 'success'); }}
+      onUnhandled={async (x) => { await unmarkHandled(supabase, x); await load(); }} />
   );
 }

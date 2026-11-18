@@ -27,7 +27,7 @@ export async function fetchAccounting(supabase, month, today) {
   const gokwikPayouts = easebuzz.filter(l => l.kind === 'gokwik_payout').length, gokwikUnproven = easebuzz.length - gokwikPayouts;
   const bankUnresolved = (await supabase.from('finance_lines').select('id', { count: 'exact', head: true }).gte('txn_date', from).lt('txn_date', next).not('status', 'in', '(matched,ignored)')).count ?? 0;
 
-  const bills = await pages((a, b) => supabase.from('vendor_invoices').select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, supplier_gstin, status, opening, kind').neq('status', 'void').order('id').range(a, b));
+  const bills = await pages((a, b) => supabase.from('vendor_invoices').select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, supplier_gstin, status, opening, kind, file_path, source').neq('status', 'void').order('id').range(a, b));
   const vendors = await pages((a, b) => supabase.from('vendors').select('id, name, gstin, booking, tally_ledger_name, expense_ledger').order('id').range(a, b));
   const billsReview = bills.filter(b => b.status === 'review' && !b.opening).length;
 
@@ -35,10 +35,14 @@ export async function fetchAccounting(supabase, month, today) {
   const f = await supabase.from('gstr2b_files').select('docs').eq('month', month).maybeSingle();
   if (f.error && !missingTable(f.error)) throw new Error(f.error.message);
   if (f.data) twoB = { docs: f.data.docs || [], warnings: [], checks: [], period: month, gstin: null };
-  let toUpload = [];
+  let toUpload = [], noCopy = [];
   if (twoB) {
     const stub = { states: [], totals: { all: { net: { taxable: 0, igst: 0, cgst: 0, sgst: 0 } } } };
-    toUpload = buildGstr3b({ month, gst: stub, ownGstin: '', bills, vendors, twoB }).itc.lists.toUpload.map(x => ({ vendor: x.vendor || x.gstin, no: x.no, date: x.date, tax: x.twoB.igst + x.twoB.cgst + x.twoB.sgst }));
+    const hd = await supabase.from('gstr2b_handled').select('gstin, invoice_key, invoice_no');
+    if (hd.error && !missingTable(hd.error)) throw new Error(hd.error.message);
+    const lists = buildGstr3b({ month, gst: stub, ownGstin: '', bills, vendors, twoB, handled: hd.data || [] }).itc.lists;
+    toUpload = lists.toUpload.filter(x => !x.handled).map(x => ({ vendor: x.vendor || x.gstin, no: x.no, date: x.date, tax: x.twoB.igst + x.twoB.cgst + x.twoB.sgst }));
+    noCopy = lists.noCopy.map(b => ({ vendor: b.vendor, no: b.no, date: b.date }));
   }
 
   const orderRows = await pages((a, b) => supabase.from('ledger_orders').select('order_name, status, exception_type').gte('sale_date', from).lt('sale_date', next).order('order_name').range(a, b));
@@ -67,15 +71,11 @@ export async function fetchAccounting(supabase, month, today) {
     ...monthBills.flatMap(b => { const v = vendorById.get(b.vendor_id); return v && v.booking !== 'tie_out' ? [v.tally_ledger_name, v.expense_ledger].filter(Boolean) : []; }),
   ];
 
-  let gstr3bFiled = false;
-  const g3 = await supabase.from('gstr3b_months').select('filed_at').eq('month', month).maybeSingle();
-  if (!g3.error && g3.data?.filed_at) gstr3bFiled = true;
-
   const checklistInput = {
-    month, today, accounts: accountRows, gokwikSettledTo, gokwikPayouts, gokwikUnproven, velocityTo, myntraSettledTo, billsReview, bills, toUpload, twoBLoaded: !!twoB, bankUnresolved,
+    month, today, accounts: accountRows, gokwikSettledTo, gokwikPayouts, gokwikUnproven, velocityTo, myntraSettledTo, billsReview, bills, toUpload, noCopy, twoBLoaded: !!twoB, bankUnresolved,
     orders: { total: orderRows.length, waitingInvoice: orderRows.filter(o => o.status === 'waiting_invoice').length, open }, attentionAll,
     ledgerRun: run ? { finishedAt: run.finished_at, held: (run.summary?.held || []).length } : null,
-    missing: missingLedgers({ used, tally }), gstr3bFiled, exportedAt: null,
+    missing: missingLedgers({ used, tally }), exportedAt: null,
   };
   return { checklistInput, entries, orders, tally };
 }

@@ -79,6 +79,18 @@ a **Note**. Records are kept in `gstr2b_followups` through `gstr2b_followup_add`
 or posted from this page: it only follows up. It only knows about the months whose 2B has been loaded, so each month's 2B has to be loaded
 on the GSTR-3B tab for a bill to be found.
 
+## An invoice the supplier filed but never sent (migration 047)
+The credit is claimed from GSTR-2B either way; this is about the **books**. Each line of "Bills to upload" has three ways out (the owner, 18 Nov 2026):
+1. **Upload** the invoice on the Bills page (normal; it then matches).
+2. **Book from GSTR-2B**: pick an expense ledger (the Tally ledgers with role expense) and the ERP creates the bill from the 2B details (supplier, number, date, taxable
+   value, IGST or CGST + SGST): `source = gstr2b`, accepted, no PDF (`gstr2b_book_bill`). It flows into the Tally file like any bill; a supplier not in the system is created
+   with its own ledger (an existing Tally ledger of the same name is reused; otherwise a new creditor ledger is added to `tally_ledgers` as to be created by the file). Bills
+   with no PDF are listed ("Booked from GSTR-2B, no invoice copy yet") and on the Accounting checklist as information, never a blocker; attaching the PDF on the Bills page
+   (the normal "attach" of a bill with no file) takes it off the list. A tie-out supplier (Easebuzz) is refused: its invoice is uploaded.
+3. **The accountant books this one** (wholesale stock, for example): no voucher from the ERP, no longer blocks the file, undoable (`gstr2b_mark_handled`, table `gstr2b_handled`
+   keyed by supplier GSTIN + invoice number without case, punctuation or leading zeros).
+Neither 2 nor 3 changes the credit. Whether an e-invoice shown in GSTR-2B is enough for the claim without the PDF is the accountant's to confirm; the PDF is kept as proof.
+
 ## Payment, Table 6.1
 
 Order of set-off (sections 49 and 49A, Rule 88A): IGST credit pays IGST first; own-head credit pays CGST and SGST; leftover IGST credit
