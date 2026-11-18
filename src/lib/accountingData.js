@@ -43,7 +43,7 @@ export async function fetchAccounting(supabase, month, today) {
   const attentionAll = (await supabase.from('ledger_orders').select('order_name', { count: 'exact', head: true }).eq('status', 'attention')).count ?? 0;
   const run = (must(await supabase.from('ledger_runs').select('id, status, finished_at, summary').eq('status', 'done').order('id', { ascending: false }).limit(1)))?.[0] ?? null;
 
-  const tally = await pages((a, b) => supabase.from('tally_ledgers').select('name, status').order('name').range(a, b));
+  const tally = await pages((a, b) => supabase.from('tally_ledgers').select('name, status, under, renamed_from').order('name').range(a, b));
   const entries = await pages((a, b) => supabase.from('ledger_entries').select('order_name, entry_date, voucher, account, debit, credit, doc, issued_by, memo, part, qty').gte('entry_date', from).lt('entry_date', next).order('id').range(a, b));
   const orderNames = [...new Set(entries.map(e => e.order_name))];
   const orders = [];
@@ -74,4 +74,11 @@ export async function fetchAccounting(supabase, month, today) {
     missing: missingLedgers({ used, tally }), gstr3bFiled, exportedAt: null,
   };
   return { checklistInput, entries, orders, tally };
+}
+
+/** The accountant created or renamed these ledgers in Tally: they stop blocking the file. Returns how many moved. */
+export async function markLedgers(supabase, names) {
+  const { data, error } = await supabase.rpc('tally_ledgers_mark', { p_names: names });
+  if (error) throw new Error(error.message);
+  return data;
 }

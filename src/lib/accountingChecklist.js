@@ -22,8 +22,8 @@ export function missingLedgers({ used = [], tally = [] }) {
   const out = [];
   for (const name of [...new Set(used)].sort()) {
     const s = have.get(name);
-    if (!s) out.push({ name, why: 'not in the list of Tally ledgers' });
-    else if (s !== 'in_tally') out.push({ name, why: s === 'will_rename' ? 'to be renamed in Tally' : 'to be created in Tally' });
+    if (!s) out.push({ name, why: 'not in the list of Tally ledgers', status: 'unknown' });
+    else if (s !== 'in_tally') out.push({ name, why: s === 'will_rename' ? 'to be renamed in Tally' : 'to be created in Tally', status: s });
   }
   return out;
 }
@@ -130,7 +130,9 @@ export function buildChecklist(d) {
 
   // ── 5. Tally ──
   add('tally', (d.missing || []).length
-    ? { id: 'ledgers', title: `${plural(d.missing.length, 'ledger')} the file uses are not ready in Tally`, status: 'todo', blocker: true, detail: 'The accountant has to create or rename these before the file can be imported.', items: d.missing.map(m => `${m.name}: ${m.why}`) }
+    ? { id: 'ledgers', title: `${plural(d.missing.length, 'ledger')} the file uses ${d.missing.length === 1 ? 'is' : 'are'} not ready in Tally`, status: 'todo', blocker: true,
+        detail: `${(d.missing.filter(m => m.status === 'will_create').length) ? `Import the ledgers file first (it creates ${d.missing.filter(m => m.status === 'will_create').length}). ` : ''}${(d.missing.filter(m => m.status === 'will_rename').length) ? `${d.missing.filter(m => m.status === 'will_rename').length} to be renamed by hand in Tally. ` : ''}${(d.missing.filter(m => m.status === 'unknown').length) ? `${d.missing.filter(m => m.status === 'unknown').length} not in the list of Tally ledgers at all. ` : ''}Then say so under "Tally file" below.`.trim(),
+        items: d.missing.map(m => `${m.name}: ${m.why}`) }
     : { id: 'ledgers', title: 'Every ledger the file uses exists in Tally', status: 'done', detail: 'Names checked against the list of Tally ledgers.' });
   add('tally', d.exportedAt
     ? { id: 'exported', title: 'A Tally file was already generated for this month', status: 'info', detail: `Generated ${dmy(d.exportedAt)}.` }

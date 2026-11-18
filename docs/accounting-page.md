@@ -48,6 +48,16 @@ is recognised, not duplicated). **Only the keys an import needs are written; the
 Built-in checks shown after generating: every voucher sums to zero in the file; every ledger's debit and credit total in the file equals the
 order ledger's own; no voucher was left out (an order with no state, or a set of entries that does not balance, is left out and named).
 
+## The ledgers file (`tallyLedgers.js`, migration 046)
+Tally imports ledgers from a file of the same kind as the vouchers, so the ledgers the file needs that are not in Tally yet are created by a **ledgers
+file imported first** (the owner's idea, 18 Nov 2026): built from `tally_ledgers` (status `will_create`, each under its group; the customer control ledgers
+bill by bill and Unregistered/Consumer), nothing typed. Seven today: Customer (order control), Myntra receivable (order control), Goodwill credits, Myntra
+Return Fees, Myntra Commission (added to the list by migration 046), Tax Deducted at source 26-27, Tax Collected at source 26-27. **Renames (3) are not in
+the file**: the accountant does them by hand (Alter Ledger), because an import cannot be trusted to rename rather than make a second ledger next to a year
+of vouchers. After importing / renaming, the owner presses "I imported it into Tally" / "I renamed them" (`tally_ledgers_mark`, admin only, logged in
+`tally_ledger_log`) and the checklist stops blocking. The master shape (`metadata.type` Ledger, `parent`, `isbillwiseon`) is Tally's own pattern but, like the
+vouchers, **has not been imported on a real Tally**: try it on a copy company.
+
 ## Not in the first version (listed on the page)
 Purchase vouchers from the bills (`Purchase UP`, expense bills as `GST EXPENSES`, the gateway true-up), payment and receipt vouchers for the other
 bank lines (salaries, rent, suppliers, Suspense), the card journal (`Rohan (Director Personal Credit Card)`), stock items on sales and the monthly stock

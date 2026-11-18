@@ -4,7 +4,8 @@ import { supabase } from '../lib/supabase';
 import { localToday } from '../lib/constants';
 import { accountingStart } from '../lib/gstData';
 import { monthsBetween, monthLabel } from '../lib/gstReport';
-import { fetchAccounting } from '../lib/accountingData';
+import { fetchAccounting, markLedgers } from '../lib/accountingData';
+import { buildLedgersFile, ledgersFileName } from '../lib/tallyLedgers';
 import { buildChecklist } from '../lib/accountingChecklist';
 import { groupOrderVouchers, voucherPlan, TYPE_LABEL } from '../lib/tallyVouchers';
 import { buildTallyFile, tallyFileName } from '../lib/tallyJson';
@@ -58,7 +59,7 @@ function StepRow({ step, onGo }) {
   );
 }
 
-export function AccountingView({ month, months, onMonth, checklist, plan, loading, error, onReload, onGo, onGenerate, built }) {
+export function AccountingView({ month, months, onMonth, checklist, plan, loading, error, onReload, onGo, onGenerate, built, ledgers, onLedgersFile, onMark }) {
   const c = checklist;
   const total = c ? c.steps.filter(s => s.status !== 'info').length : 0;
   const done = c ? c.steps.filter(s => s.status === 'done').length : 0;
@@ -113,6 +114,27 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
                   </table>
                 </div>
               )}
+              {ledgers && (ledgers.create.length > 0 || ledgers.rename.length > 0) && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 space-y-2">
+                  <div className="text-xs font-medium text-amber-900">Set up the ledgers in Tally first</div>
+                  {ledgers.create.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-xs text-stone-700">The ledgers file creates {ledgers.create.length} ledger{ledgers.create.length === 1 ? '' : 's'}: {ledgers.create.map(l => `${l.name} (${l.under})`).join(', ')}.</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button type="button" className={btn} onClick={onLedgersFile}><Download className="w-3.5 h-3.5" />Download the ledgers file</button>
+                        <button type="button" className={btn} onClick={() => onMark(ledgers.create.map(l => l.name))}>I imported it into Tally</button>
+                      </div>
+                    </div>
+                  )}
+                  {ledgers.rename.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-xs text-stone-700">To rename by hand in Tally (Alter Ledger; a file cannot be trusted to rename without making a second ledger): {ledgers.rename.map(l => `${l.renamed_from} → ${l.name}`).join('; ')}.</div>
+                      <button type="button" className={btn} onClick={() => onMark(ledgers.rename.map(l => l.name))}>I renamed them in Tally</button>
+                    </div>
+                  )}
+                  <div className="text-[11px] text-stone-600">Import in this order: the ledgers file, then the vouchers file.</div>
+                </div>
+              )}
               <div className="text-[11px] text-stone-500">Not in this first version yet: purchase vouchers (the bills), payment and receipt vouchers for the other bank lines, and the card journal. No stock items either: the sales are accounting invoices.</div>
               <div className="flex flex-wrap items-center gap-3">
                 <button type="button" className={btnDark} disabled={!c.ready} onClick={() => onGenerate(false)} title={c.ready ? '' : 'Finish the steps that block the file first'}>
@@ -162,21 +184,29 @@ export default function AccountingPage({ showToast }) {
   const checklist = useMemo(() => fresh ? buildChecklist(fresh.checklistInput) : null, [fresh]);
   const vouchers = useMemo(() => fresh ? groupOrderVouchers(fresh.entries) : [], [fresh]);
   const plan = useMemo(() => fresh ? voucherPlan(vouchers) : null, [fresh, vouchers]);
+  const ledgers = useMemo(() => fresh ? buildLedgersFile(fresh.tally) : null, [fresh]);
+  const downloadJson = (obj, name) => {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const onMark = async (names) => {
+    try { const n = await markLedgers(supabase, names); showToast?.(`${n} ledger${n === 1 ? '' : 's'} marked as ready in Tally`, 'success'); await load(); }
+    catch (err) { showToast?.(`Could not save: ${err.message}`, 'error'); }
+  };
   const [built, setBuilt] = useState(null);
   useEffect(() => { setBuilt(null); }, [month]);
   const onGenerate = (test) => {
     try {
       const orders = new Map((fresh?.orders || []).map(o => [o.order_name, { state: o.state, saleDoc: o.saleDoc, channel: o.channel }]));
       const r = buildTallyFile({ vouchers, orders, limit: test ? 3 : null });
-      const blob = new Blob([JSON.stringify(r.file, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = tallyFileName(month, test); document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadJson(r.file, tallyFileName(month, test));
       setBuilt({ test, counts: r.counts, checks: r.checks });
     } catch (err) { showToast?.(`Could not make the file: ${err.message}`, 'error'); }
   };
 
   if (!month) return <div className="text-sm text-stone-500 px-1 py-6">Loading…</div>;
-  return <AccountingView month={month} months={months} onMonth={(m) => setP({ acmonth: m })} checklist={checklist} plan={plan} loading={loading} error={error} onReload={load} onGenerate={onGenerate} built={built}
+  return <AccountingView month={month} months={months} onMonth={(m) => setP({ acmonth: m })} checklist={checklist} plan={plan} loading={loading} error={error} onReload={load} onGenerate={onGenerate} built={built} ledgers={ledgers} onMark={onMark} onLedgersFile={() => downloadJson(ledgers.file, ledgersFileName())}
     onGo={(tab) => navigate(`/analytics/${SLUG[tab] ?? tab}`)} />;
 }
