@@ -41,3 +41,16 @@ test('one file: the ledgers to create come first, then the vouchers, so a single
   assert.equal(out.tallymessage[0].name, 'Customer (order control)');
   assert.deepEqual(withLedgers(vouchers, []).tallymessage.map(m => m.metadata.type), ['Voucher', 'Voucher']);       // nothing missing: vouchers only
 });
+
+test('a supplier\'s own ledger is created with its GSTIN, PAN, state and registration type, never as a bare name', () => {
+  const ledgers = [{ name: 'VIPUL ENTERPRISES', under: 'Sundry Creditors', status: 'will_create' }, { name: 'Goodwill credits', under: 'Indirect Expenses', status: 'will_create' }];
+  const vendors = [{ name: 'VIPUL ENTERPRISES', tally_ledger_name: 'VIPUL ENTERPRISES', gstin: '07AFJPJ5098M1ZS', pan: 'AFJPJ5098M', state_code: '07', address: 'X/4070, Gali No. -17\nDelhi', pincode: '110031' }];
+  const m = buildLedgersFile(ledgers, vendors).file.tallymessage;
+  const v = m.find(x => x.name === 'VIPUL ENTERPRISES');
+  assert.deepEqual([v.parent, v.isbillwiseon, v.gstregistrationtype, v.partygstin, v.incometaxnumber, v.ledstatename, v.countryofresidence], ['Sundry Creditors', true, 'Regular', '07AFJPJ5098M1ZS', 'AFJPJ5098M', 'Delhi', 'India']);
+  assert.deepEqual(v.ledgstregdetails[0], { applicablefrom: '20260401', gstregistrationtype: 'Regular', placeofsupply: 'Delhi', gstin: '07AFJPJ5098M1ZS' });
+  assert.equal(v.ledmailingdetails[0].state, 'Delhi'); assert.deepEqual(v.ledmailingdetails[0].address, [{ metadata: true, type: 'String' }, 'X/4070, Gali No. -17', 'Delhi']); assert.equal(v.ledmailingdetails[0].pincode, '110031');
+  assert.equal(m.find(x => x.name === 'Goodwill credits').partygstin, undefined);                       // an expense ledger stays as it was
+  const noGstin = buildLedgersFile([{ name: 'Local Shop', under: 'Sundry Creditors', status: 'will_create' }], [{ name: 'Local', tally_ledger_name: 'Local Shop', gstin: null, pan: 'ABCDE1234F', state_code: '09' }]).file.tallymessage[0];
+  assert.deepEqual([noGstin.gstregistrationtype, noGstin.incometaxnumber, noGstin.ledstatename, noGstin.partygstin], ['Unregistered/Consumer', 'ABCDE1234F', 'Uttar Pradesh', undefined]);
+});

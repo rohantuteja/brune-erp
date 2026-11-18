@@ -148,3 +148,15 @@ test('bills booked from GSTR-2B with no invoice copy are information, never a bl
   assert.equal(c.ready, true);
   assert.equal(step(buildChecklist(good()), 'nocopy'), undefined);
 });
+
+test('purchase and payment steps: unlinked payments block the file, advances and unpaid bills are only information, TDS to confirm is a to-do that does not block', () => {
+  const none = buildChecklist({ ...good(), books: { unlinked: [], problems: [], notes: [], advances: [], unpaid: [], tdsPending: [], purchases: 5, payments: 52 } });
+  assert.equal(step(none, 'billbuild').status, 'done'); assert.equal(step(none, 'suppliers').status, 'done'); assert.equal(none.steps.some(x => x.id === 'advances' || x.id === 'unpaid' || x.id === 'tds'), false);
+  const c = buildChecklist({ ...good(), books: { unlinked: [{ id: 5, txn_date: '2026-10-18', debit: 777, payee: 'mystery' }], problems: [{ text: 'Meta X: no expense ledger' }], notes: [],
+    advances: [{ vendor: 'Shree Vinayak Fab', left: 89019, date: '2026-10-27' }], unpaid: [{ vendor: 'Chandra', name: 'CF/1', left: 29447 }], tdsPending: ['Meta'], purchases: 4, payments: 3 } });
+  assert.equal(step(c, 'suppliers').blocker, true); assert.equal(step(c, 'billbuild').blocker, true);
+  assert.equal(step(c, 'advances').status, 'info'); assert.equal(step(c, 'unpaid').status, 'info'); assert.match(step(c, 'unpaid').title, /29,447/);
+  assert.equal(step(c, 'tds').status, 'todo'); assert.equal(step(c, 'tds').blocker, false);
+  assert.equal(c.ready, false);
+  assert.equal(buildChecklist({ ...good(), books: { unlinked: [], problems: [], notes: [], advances: [], unpaid: [], tdsPending: ['Meta'], purchases: 1, payments: 1 } }).ready, true);   // the TDS to-do does not block
+});

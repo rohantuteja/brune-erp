@@ -45,6 +45,42 @@ marked **"the accountant books this one"** (`gstr2b_handled`): the bills stay in
 made from a bill whose supplier GSTIN + invoice number is in that list (`isHandledBill` in `gstr2b.js`; the purchase-voucher builder must use it). The GSTR-3B credit is
 unchanged (the invoices are in the UP GSTIN's 2B). A future Wakum India receipt arrives as an RTGS credit with no payee and is filed under the bucket by hand.
 
+## Purchase and Payment vouchers (`tallyBooks.js`, 18 Nov 2026; migration 050)
+Built after the owner's go ("build the purchase vouchers and the payments"; numbering "as per the standard", he does not mind). Rules:
+- **Purchase** (one per accepted bill dated in the month; opening bills, `tie_out` suppliers such as Easebuzz and bills marked "the accountant books this one" make none).
+  A fabric bill whose lines are all in kilos or metres (and add up to the invoice within ₹1) is an **Item Invoice**: `KNITTED FABRIC` (KGS) or `Shirting Fabric` (MTR), rate and
+  quantity as printed, godown `Main Location`, batch `Primary Batch`, accounting allocation `Purchase Raw Material`, HSN from the line (the accountant's own `Purchase UP`
+  sample, `Purchase UP_CF_17921.xml`). Every other bill is an **Accounting Invoice** against the supplier's expense ledger (his `GST EXPENSES` vouchers, which his Day Book
+  shows are invoice-view vouchers). Voucher number = reference = the supplier's invoice number; party GSTIN and state (from the GSTIN), place of supply Uttar Pradesh;
+  `IGST Input  UP`, or `CGST Input UP` + `SGST Input UP` halves; the paise of the invoice on `ROUND OFF`; the supplier's own bill (New Ref, or Agst Ref against an advance).
+  A line in another unit makes the whole bill an accounting invoice (stated on the page); a supplier with no expense ledger is a problem that blocks the file.
+- **Tax deducted at source:** `vendors.tds_rate` + `tds_ledger` (migration 050): the supplier is credited the invoice less TDS (rounded to the rupee, on the amount before GST) and the TDS ledger the TDS.
+  Meta is flagged `tds_to_confirm` and has no rate yet (the owner is to ask the accountant for the ledger): the page lists it as a to-do, not a blocker.
+- **Payment** (one per bank payment, ICICI only: the card is the card journal, not built). `ERP/PY/2627/<bank line id>`, dated by the bank, the reference in the narration is the long number inside it
+  (UPI / NEFT / IMPS), the bank's date marks it reconciled. A line in a bucket that needs a bill (and in the group `Purchase Accounts`) is a **supplier payment**: it is posted to the
+  supplier's ledger, never to the expense (the bill already booked it). Which supplier: a person's link (`finance_lines.vendor_id`), a bucket that is a supplier's ledger,
+  a remembered payee (`finance_payee_vendors`), the exact amount of one to three of a supplier's bills, a payee seen on another line, a name in the payee or in the word the payer typed (`Airtel`, `AirtelOfficeBil`). What none of these
+  places is asked on the page (a picker: remembering the payee is off by default, a person's own name must not become a supplier). Any other bucket is posted straight to its ledger.
+- **Settling bills:** one supplier at a time in date order, a bill opens (New Ref) before the payments of its day; a payment settles bills by the exact sum of up to three, else oldest first;
+  what no bill takes is an **Advance** (`ADV-<reference>`), which the supplier's next bill settles first (Agst Ref) before it opens its own New Ref for the rest. Earlier months' payments count, so
+  an October advance settles the November invoice. Opening bills (before 1 Oct) take payments but make no voucher (Meta's September invoice is paid by the 1 Oct payment).
+- **A prepaid account is not settled bill by bill** (a bucket of kind `asset` that is a supplier's own ledger: Velocity's wallet): each top-up and the monthly invoice is a New Ref of its own.
+- **Receipt** for a bank credit that is not an order payout. Left out: ignored lines (wholesale, returned pairs, the founder's card payments) and the payouts the order ledger already receipts.
+- **File order:** a voucher that opens a bill (Sales, Purchase) goes before the vouchers that settle it on the same day. The accountant's own export keeps an invoice voucher's entries under
+  `ledgerentries` and an accounting voucher's under `allledgerentries`: the file now does the same (it wrote `allledgerentries` for every voucher before), and the bank line carries
+  Tally's own keys (`transactiontype`, `bankersdate`, `paymentfavouring`, `instrumentnumber`).
+- **Supplier ledgers are created with their details** (owner's rule, 18 Nov): bill by bill, GST registration type, GSTIN, PAN, state, country, mailing name, from the supplier record (`partyDetails`).
+  Address and pincode are on the supplier since migration 051 (read from the invoices of Vipul and PicknPack; Mittal Hosiery and Nykaa have no invoice copy yet, so none). **What his own files prove**
+  (18 Nov): the accountant's exports hold vouchers (Day Book, XML samples) and the trial balance, no ledger MASTER export; the Day Book shows what Tally keeps on a supplier (mailing name, address
+  lines, pincode, state, country, GSTIN, PAN, registration type) and that a list of strings is written `[{ metadata: true, type: 'String' }, line, ...]`. The voucher keys used for purchases
+  (`partyledgername`, `partygstin`, `statename`, `placeofsupply`, `gstregistrationtype`, `vchentrymode` ...) are copied from them. The master keys (`ledmailingdetails`, `ledgstregdetails`,
+  `ledstatename`, `incometaxnumber`) are Tally's own TDL names, not in his files: the copy-company import of the test file confirms them.
+- **An Airtel connection with no GST invoice** (owner, 18 Nov): its payment (₹960.82 on 3 Oct, "AirtelOfficeBil") is filed under `Telephone & Internet Expenses` (no GST), straight to that ledger, and the payee rule `adrija` points there. The registered connection's invoice (₹1,060.82, GST) is a bill like any other.
+- **Checked on the real October 2026 data (18 Nov):** 18 purchase vouchers (8 fabric item invoices, 10 expense bills) add up to the bills (₹8,45,020.16; Aggarwal's three wholesale bills and Easebuzz's tie-out
+  left out); 52 payment vouchers (₹14,34,270.07) equal the 52 matched bank payments (the one the ERP first could not place, ₹960.82 to "adrija", is Airtel's: the word the payer typed on it,
+  "AirtelOfficeBil", places it; it is an advance until its bill is uploaded); every voucher sums to zero (stock items included); advances ₹89,019 to Shree Vinayak (for the 3 Nov invoice) and bills unpaid at month end are listed.
+- Not in the file yet: the card journal, stock journals and the month-end stock correction, the Meta / Velocity provisions, stock items on sales and credit notes, the Easebuzz correction journal.
+
 ## The Tally file (`tallyVouchers.js`, `tallyJson.js`)
 First version, as the owner asked: a file, not a sync. The order ledger's entries are grouped into vouchers exactly as the ledger holds
 them (the owner's rule: reproduce the ledger event by event, nothing lumped into monthly journals):
