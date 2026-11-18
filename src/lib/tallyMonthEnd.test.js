@@ -39,9 +39,12 @@ test('staff salary: what the bank paid in the first days of the next month, or t
   assert.equal(c.journals.some(j => j.id === 'salary|2026-10'), false); assert.match(c.missing.join(' '), /Salary for 2026-10: it is paid in the first days of 2026-11/);
 });
 
-test('rent: the monthly figure the owner gives; unset it is asked for', () => {
-  const a = monthEndJournals({ ...month, totals: {}, rentMonthly: 18000 });
-  assert.deepEqual(lines(a.journals.find(j => j.id === 'rent|2026-10')), [['Rent Sector 63 Noida', 18000, 0], ['Rent Payable', 0, 18000]]);
-  assert.equal(a.missing.some(m => /Rent for/.test(m)), false);
-  assert.match(monthEndJournals({ ...month, totals: {} }).missing.join(' '), /Rent for 2026-10: the monthly rent of Rent Sector 63 Noida is not set/);
+test('rent: ₹18,000 a month from his own September journal; the setting replaces it; it never blocks the file', () => {
+  const dflt = monthEndJournals({ ...month, totals: {} });
+  assert.deepEqual(lines(dflt.journals.find(j => j.id === 'rent|2026-10')), [['Rent Sector 63 Noida', 18000, 0], ['Rent Payable', 0, 18000]]);
+  assert.equal(dflt.missing.some(m => /Rent for/.test(m)), false);
+  assert.match(dflt.notes.join(' '), /Rent for 2026-10: 18,000 a month, the figure of the accountant's September rent journal/);
+  const set = monthEndJournals({ ...month, totals: {}, rentMonthly: 20000 });
+  assert.deepEqual(lines(set.journals.find(j => j.id === 'rent|2026-10')), [['Rent Sector 63 Noida', 20000, 0], ['Rent Payable', 0, 20000]]);
+  assert.equal(set.notes.some(m => /Rent for/.test(m)), false);
 });

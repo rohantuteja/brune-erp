@@ -101,8 +101,11 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
   (Dr `GST Credit Ledger UP`, Cr the three input ledgers: his #300931), both worked out from the month's own vouchers so the ledgers end at zero (the test reproduces his September journals to the paisa:
   ₹35,675 + 0.35 and ₹1,41,894 + 0.23); **directors' salary** (Dr `Director Salary` ₹1,00,000, Cr each payable ₹50,000: ₹3,00,000 each over the six months in his Trial Balance); **staff salary** (Dr `Salary Expenses`
   / Cr `Salary Payable`: a month's salary is paid in the first days of the NEXT month, September's ₹1,36,124 was paid on 3-10 October to the rupee, so the amount is what the bank statement shows paid to
-  `Salary Payable` in the first 15 days of the next month, or `app_settings.salary_expense` = `{"2026-10": amount}`); **rent** (Dr `Rent Sector 63 Noida` / Cr `Rent Payable`: `app_settings.rent_monthly`, his
-  September journal was ₹18,000, October's payment to the landlord ₹30,724). A salary or rent figure that is not known yet is asked for and BLOCKS the file. October: GST output ₹32,210 (the same ₹32,210.01 as the GST
+  `Salary Payable` in the first 15 days of the next month. October's is therefore in the NOVEMBER statement: until it is uploaded the file is blocked on this one item, and nothing is typed. `app_settings.salary_expense`
+  = `{"2026-10": amount}` exists only as an override); **rent** (Dr `Rent Sector 63 Noida` / Cr `Rent Payable`, ₹18,000 a month: the figure of his September journal #300927 and the Rent Payable he closed September
+  with; `app_settings.rent_monthly` replaces it if the lease changes; the Accounting page shows a note saying where the figure comes from). **The landlord's payment** (bank bucket `Rent Payable`) clears the month's
+  rent on Rent Payable and books everything above it to `Electricity Expenses`, as he split his 6 Sep payment ("RentnEB", ₹25,512 = ₹18,000 + ₹7,512): October's ₹30,724 on 10 Oct is ₹18,000 + ₹12,724
+  (`buildBooks`, `rentMonthly`; a note says so; the director's residence rent `Rent - Director Resident` is a direct expense and is not split). Rent Payable ends October at ₹18,000 Cr as in his books. October: GST output ₹32,210 (the same ₹32,210.01 as the GST
   view), GST input ₹1,17,196 (the ₹517.50 parked on the not-in-2A ledger is not claimed). Still the accountant's own (periodic, not monthly): depreciation, the audit fee, wholesale.
 - Not in the file yet: the stock journals and the month-end stock correction (they wait for the accountant's Stock Summary at 30 Sep), and the opening bills of the orders sold before October.
 

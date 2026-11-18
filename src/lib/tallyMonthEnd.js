@@ -6,7 +6,9 @@
 //   Directors    Dr Director Salary / Cr each director's payable: ₹50,000 each, every month of his year (his Trial Balance: ₹3,00,000 each over the six months).
 //   Staff salary Dr Salary Expenses / Cr Salary Payable: the month's salary is paid in the first days of the NEXT month (September's ₹1,36,124 was paid on 3-10 October, to the rupee),
 //                so the amount is what the bank statement shows paid to Salary Payable in the first 15 days of the next month, or a figure the owner gives.
-//   Rent         Dr Rent Sector 63 Noida / Cr Rent Payable: the monthly rent, which the owner gives (his September journal was ₹18,000; October's payment to the landlord was ₹30,724).
+//   Rent         Dr Rent Sector 63 Noida / Cr Rent Payable: ₹18,000 a month, the amount of his September journal #300927 and of the Rent Payable he closed September with (the
+//                landlord's payment of 6 Sep, ₹25,512, was ₹18,000 rent + ₹7,512 electricity; October's, ₹30,724, is read the same way by `buildBooks`). `app_settings.rent_monthly`
+//                replaces the figure if the lease changes.
 // The GST journals are worked out from the vouchers of the month themselves (`accountTotals`), so the ledgers they clear end the month at zero in Tally.
 // Pure functions, tested without a database.
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -18,7 +20,7 @@ export const MONTH_END = {
   inputs: ['IGST Input  UP', 'CGST Input UP', 'SGST Input UP'],
   directors: { expense: 'Director Salary', payables: [{ account: 'Director Salary Payable- Rohan Tuteja', amount: 50000 }, { account: 'Director Salary Payable- Adrija Halder', amount: 50000 }] },
   salary: { expense: 'Salary Expenses', payable: 'Salary Payable', bucket: 'Salary Payable', windowDays: 15 },
-  rent: { expense: 'Rent Sector 63 Noida', payable: 'Rent Payable' },
+  rent: { expense: 'Rent Sector 63 Noida', payable: 'Rent Payable', monthly: 18000 },
 };
 
 const journal = (id, source, date, number, memo, lines) => {
@@ -71,11 +73,11 @@ export function monthEndJournals({ from, next, totals = {}, salaryNext = [], sal
   const salary = over || paid;
   if (salary > 0) out.push(journal(`salary|${month}`, 'staff salary', last, `ERP/SL/2627/SAL${ym}`, over ? `Salary for ${month} (the amount the owner gave)` : `Salary for ${month}: ${salaryNext.length} payment${salaryNext.length === 1 ? '' : 's'} made in the first days of ${next.slice(0, 7)}`,
     [{ account: MONTH_END.salary.expense, debit: salary, credit: 0 }, { account: MONTH_END.salary.payable, debit: 0, credit: salary }]));
-  else missing.push(`Salary for ${month}: it is paid in the first days of ${next.slice(0, 7)} (September's was paid on 3-10 October). Upload the bank statement to the 15th of ${next.slice(0, 7)}, or give me the month's salary total.`);
+  else missing.push(`Salary for ${month}: it is paid in the first days of ${next.slice(0, 7)} (September's was paid on 3-10 October) and the bank statement uploaded ends before that. Upload the ${next.slice(0, 7)} bank statement and the ERP takes the payments from it.`);
 
-  // Rent: a figure the owner gives.
-  const rent = Number(rentMonthly) || 0;
-  if (rent > 0) out.push(journal(`rent|${month}`, 'rent', last, `ERP/RN/2627/RNT${ym}`, `Rent for ${month}`, [{ account: MONTH_END.rent.expense, debit: rent, credit: 0 }, { account: MONTH_END.rent.payable, debit: 0, credit: rent }]));
-  else missing.push(`Rent for ${month}: the monthly rent of Rent Sector 63 Noida is not set (his September journal was ₹18,000; October's payment to the landlord was ₹30,724).`);
+  // Rent: the monthly rent of his own September journal, unless the lease changed (`app_settings.rent_monthly`).
+  const rent = Number(rentMonthly) || MONTH_END.rent.monthly;
+  out.push(journal(`rent|${month}`, 'rent', last, `ERP/RN/2627/RNT${ym}`, `Rent for ${month}`, [{ account: MONTH_END.rent.expense, debit: rent, credit: 0 }, { account: MONTH_END.rent.payable, debit: 0, credit: rent }]));
+  if (!Number(rentMonthly)) notes.push(`Rent for ${month}: ${rent.toLocaleString('en-IN')} a month, the figure of the accountant's September rent journal (#300927).`);
   return { journals: out, missing, notes };
 }

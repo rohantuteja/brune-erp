@@ -28,6 +28,10 @@ export const BOOKS = {
   // Only Meta (owner, 18 Nov 2026): Velocity stays booked on its invoice date, as the accountant's books have always done. To provision another supplier add it here.
   provisions: [{ vendor: 'Meta', expense: 'Marketing Expenses Provision' }],
   firstProvisionMonth: '2026-10',                                                  // the ERP's own provisions begin with October 2026 (September is the accountant's)
+  // What the landlord is paid for. The rent is booked on the last day of the month (Dr rent expense / Cr Rent Payable) and paid in the first days of the next month together with
+  // the electricity bill. His own 6 Sep payment of ₹25,512 ("RentnEB") went ₹18,000 to Rent Payable and ₹7,512 to Electricity Expenses: a payment to this bucket clears the month's
+  // rent on Rent Payable and everything above it is electricity.
+  rent: { payable: 'Rent Payable', electricity: 'Electricity Expenses' },
 };
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -305,7 +309,7 @@ export function provisionJournals({ from, next, bills, vendors, handled, opening
  *        twoB [{ month, docs }] every GSTR-2B loaded, provisionOpening { supplier: amount } the provisions the accountant booked at 30 Sep
  * @returns { vouchers, problems, notes, unlinked, advances, unpaid, tdsPending, provisionsMissing, parked, summary }
  */
-export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {} }) {
+export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {}, rentMonthly = null }) {
   const { list, problems } = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) < next), vendors, handled });
   const notes = [];
   const allLines = [...(bankLines || []), ...(cardLines || []).map(l => ({ ...l, __card: true }))];
@@ -361,11 +365,15 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
     if (l.__card) { if (cardCoveredTo && day <= cardCoveredTo) cardPays.push(p); continue; }
     if (day < from) continue;
     const amount = r2(l.debit), number = `ERP/PY/2627/${pad(l.id)}`;
+    // The landlord: the month's rent clears Rent Payable, what is above it is the electricity bill paid with it (his 6 Sep payment, see BOOKS.rent).
+    const rent = Number(rentMonthly) || 0, toLandlord = !p.vendor && p.ledger === BOOKS.rent.payable && rent > 0 && amount > rent + 0.004;
+    const debits = toLandlord ? [{ account: p.ledger, debit: r2(rent), credit: 0 }, { account: BOOKS.rent.electricity, debit: r2(amount - rent), credit: 0 }] : [{ account: p.ledger, debit: amount, credit: 0 }];
+    if (toLandlord) notes.push(`${day}: ${amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })} paid to the landlord: ${r2(rent).toLocaleString('en-IN', { minimumFractionDigits: 2 })} is the month's rent (Rent Payable) and ${r2(amount - rent).toLocaleString('en-IN', { minimumFractionDigits: 2 })} the electricity bill (Electricity Expenses), the way the accountant split his 6 Sep payment of 25,512 into 18,000 + 7,512.`);
     vouchers.push({
       id: `payment|${l.id}`, type: 'payment', source: p.vendor ? (isPrepaid(p.vendor) ? 'wallet top-up' : 'supplier payment') : 'bank payment', date: day, number, memo: String(l.remarks ?? '').slice(0, 200),
       lineId: l.id, vendorId: p.vendor?.id ?? null, vendor: p.vendor?.name ?? null, party: p.ledger, ref: bankRef(l), favouring: p.ledger,
       billRefs: p.vendor ? (isPrepaid(p.vendor) ? [{ name: number, kind: 'New Ref', amount }] : (payRefs.get(l.id) ?? [])) : [],
-      lines: [{ account: p.ledger, debit: amount, credit: 0 }, { account: BOOKS.bank, debit: 0, credit: amount }], debit: amount, credit: amount, balanced: true,
+      lines: [...debits, { account: BOOKS.bank, debit: 0, credit: amount }], debit: amount, credit: amount, balanced: true,
     });
   }
   for (const rc of cls.receipts) {
