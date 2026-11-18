@@ -345,7 +345,7 @@ export function Gstr3bView({ r, months, month, onMonth, onExport, loading, error
                     { label: '', muted: true, cell: x => L.differs.includes(x) ? 'differs: the 2B figure is claimed' : '' },
                   ]} />
                 </Collapsible>
-                <Collapsible id="g3-no2b" title="Bills not in GSTR-2B" count={L.notIn2b.length} tone={L.notIn2b.length ? 'amber' : 'neutral'} summary="the supplier has not filed them yet: not claimed this month">
+                <Collapsible id="g3-no2b" title="Bills not in GSTR-2B" count={L.notIn2b.length} tone={L.notIn2b.length ? 'amber' : 'neutral'} summary="the supplier has not filed them yet: not claimed this month (followed up on the Supplier filing tab)">
                   <DocTable rows={L.notIn2b} noun="bills" columns={[
                     { label: 'Supplier', cell: x => x.vendor }, { label: 'Invoice', cell: x => x.no }, { label: 'Date', cell: x => fmtDate(x.date) }, { label: 'Tax', right: true, cell: x => amt(x.tax) },
                   ]} />

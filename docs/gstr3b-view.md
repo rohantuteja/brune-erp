@@ -55,6 +55,30 @@ filed and still be late sending the invoice. The bills only explain the credit, 
 
 **Without a 2B** the claim is simply the books, shown in amber as "not checked against GSTR-2B", with a warning.
 
+## Supplier filing (Analytics → Supplier filing, admin only)
+
+The owner's request (18 Nov 2026): a bill the ERP holds but the supplier has not filed cannot be claimed (it is not in GSTR-2B), yet it has to
+be tracked: does it turn up next month, or must the supplier be reminded? `src/lib/gstr2bFollowup.js` (tested), page
+`src/pages/SupplierFilingSection.jsx`. Every bill dated from the start of the books (not void, not "opening") is checked against **every
+GSTR-2B that has been loaded** (`gstr2b_files`), matched by supplier GSTIN and invoice number (or number and tax amount when the bill has
+no GSTIN). Status of a bill:
+
+| status | meaning |
+|---|---|
+| In GSTR-2B | found in a loaded 2B; the month is shown (a later month than the bill's own counts as "turned up later") |
+| In 2B, ITC not available | found, but marked "ITC not available" or reverse charge: look at it on the portal |
+| Supplier has not filed it | the 2B for the bill's month (or a later one) is loaded and the bill is not in it |
+| Load the 2B to check | the 2B for the bill's month should exist by now (made on the 14th of the next month) but has not been loaded |
+| Not due yet | that 2B is not made yet: the supplier has until the 11th (13th for a quarterly filer) to file |
+
+For a missing bill the page says whether the supplier filed other invoices of theirs in those months (so this one was left out) or has
+nothing in the 2B at all, the age in days, and the last day to claim (30 November after the financial year of the invoice, section 16(4);
+**confirm with the accountant**). Waiting bills are grouped by supplier with **Copy message** (a ready reminder for WhatsApp or email, naming
+the invoices, the 2B months and our GSTIN; the ERP sends nothing), **I reminded them** (records who reminded about which bills and when) and
+a **Note**. Records are kept in `gstr2b_followups` through `gstr2b_followup_add` (admin only, never edited or deleted). Nothing is claimed
+or posted from this page: it only follows up. It only knows about the months whose 2B has been loaded, so each month's 2B has to be loaded
+on the GSTR-3B tab for a bill to be found.
+
 ## Payment, Table 6.1
 
 Order of set-off (sections 49 and 49A, Rule 88A): IGST credit pays IGST first; own-head credit pays CGST and SGST; leftover IGST credit

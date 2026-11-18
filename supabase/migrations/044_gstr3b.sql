@@ -8,6 +8,8 @@
 --   gstr3b_months   the credit the owner carried into a month (IGST, CGST, SGST), from the portal's electronic credit ledger. Entered once
 --                   a month by hand: the ERP cannot see the portal.
 --   gstr3b_log      who loaded, replaced, removed or entered what, and when.
+--   gstr2b_followups  Analytics → Supplier filing: for a bill the supplier has not filed (it is not in GSTR-2B yet), who reminded the supplier
+--                   and when, and the notes made about it. Written through gstr2b_followup_add; never edited or deleted.
 --
 -- Nothing here touches the order ledger, the bills or any other table. Writes go through the three functions below (admin only,
 -- SECURITY DEFINER, validated here as well as on the page); no browser can write the tables directly.
@@ -113,3 +115,36 @@ REVOKE ALL ON FUNCTION public.gstr2b_delete(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.gstr3b_save_opening(text, numeric, numeric, numeric, text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.gstr2b_save(text, text, text, text, text, date, jsonb, jsonb) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.gstr2b_delete(text) TO authenticated;
+
+-- ── Supplier filing: reminders and notes against a bill that is not in GSTR-2B yet ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.gstr2b_followups (
+  id         bigserial   PRIMARY KEY,
+  invoice_id bigint      NOT NULL REFERENCES public.vendor_invoices(id) ON DELETE CASCADE,
+  action     text        NOT NULL CHECK (action IN ('reminded', 'note')),
+  note       text        CHECK (note IS NULL OR length(note) <= 500),
+  by_name    text,
+  at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS gstr2b_followups_invoice ON public.gstr2b_followups (invoice_id, at DESC);
+ALTER TABLE public.gstr2b_followups ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "admin read" ON public.gstr2b_followups;
+CREATE POLICY "admin read" ON public.gstr2b_followups FOR SELECT TO authenticated USING (public.finance_admin());
+
+CREATE OR REPLACE FUNCTION public.gstr2b_followup_add(p_invoice_ids bigint[], p_action text, p_note text DEFAULT NULL)
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_name text; v_note text; v_count integer;
+BEGIN
+  IF NOT public.finance_admin() THEN RAISE EXCEPTION 'not allowed'; END IF;
+  IF p_action NOT IN ('reminded', 'note') THEN RAISE EXCEPTION 'unknown action'; END IF;
+  IF coalesce(array_length(p_invoice_ids, 1), 0) NOT BETWEEN 1 AND 200 THEN RAISE EXCEPTION 'between 1 and 200 bills'; END IF;
+  v_note := NULLIF(btrim(coalesce(p_note, '')), '');
+  IF length(v_note) > 500 THEN RAISE EXCEPTION 'a note can be at most 500 characters'; END IF;
+  IF p_action = 'note' AND v_note IS NULL THEN RAISE EXCEPTION 'write the note'; END IF;
+  SELECT coalesce(NULLIF(username, ''), name, 'user') INTO v_name FROM user_profiles WHERE id = auth.uid();
+  INSERT INTO gstr2b_followups (invoice_id, action, note, by_name)
+  SELECT i.id, p_action, v_note, v_name FROM vendor_invoices i WHERE i.id = ANY (p_invoice_ids) AND i.status <> 'void';
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END $$;
+REVOKE ALL ON FUNCTION public.gstr2b_followup_add(bigint[], text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.gstr2b_followup_add(bigint[], text, text) TO authenticated;

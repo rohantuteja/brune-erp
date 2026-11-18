@@ -69,3 +69,27 @@ export async function deleteTwoB(supabase, month) {
   const { error } = await supabase.rpc('gstr2b_delete', { p_month: month });
   fail(error);
 }
+
+/** The reminder or note against bills the supplier has not filed (Analytics → Supplier filing). Returns the number of bills it was recorded for. */
+export async function addFollowup(supabase, invoiceIds, action, note) {
+  const { data, error } = await supabase.rpc('gstr2b_followup_add', { p_invoice_ids: invoiceIds, p_action: action, p_note: note || null });
+  fail(error);
+  return data;
+}
+
+/** Everything the supplier-filing page needs: the bills, every GSTR-2B that has been loaded, the vendors, and the reminders made. */
+export async function fetchFollowup(supabase, start) {
+  const bills = await pages((a, b) => supabase.from('vendor_invoices')
+    .select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, supplier_gstin, status, opening, kind')
+    .neq('status', 'void').gte('invoice_date', start).order('invoice_date').range(a, b));
+  const vendors = await pages((a, b) => supabase.from('vendors').select('id, name, gstin, booking').order('id').range(a, b));
+  let storeMissing = false;
+  const f = await supabase.from('gstr2b_files').select('month, docs, file_name, uploaded_at').order('month');
+  if (f.error) { if (missing(f.error)) storeMissing = true; else throw new Error(f.error.message); }
+  let followups = [];
+  const fu = await supabase.from('gstr2b_followups').select('invoice_id, action, note, by_name, at').order('at', { ascending: false });
+  if (fu.error) { if (missing(fu.error)) storeMissing = true; else throw new Error(fu.error.message); } else followups = fu.data || [];
+  const company = await supabase.from('app_settings').select('value').eq('key', 'company_gstin').maybeSingle();
+  const ownGstin = typeof company.data?.value === 'string' ? company.data.value.replace(/"/g, '') : null;
+  return { bills, vendors, files: f.data || [], followups, ownGstin, storeMissing };
+}
