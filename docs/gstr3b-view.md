@@ -71,6 +71,8 @@ no GSTIN). Status of a bill:
 | Load the 2B to check | the 2B for the bill's month should exist by now (made on the 14th of the next month) but has not been loaded |
 | Not due yet | that 2B is not made yet: the supplier has until the 11th (13th for a quarterly filer) to file |
 
+**The page lists only what needs chasing: bills that are in the Bills tab but not in the GSTR-2B for their month ("Supplier has not filed it").** A bill that is in a 2B is not listed as a problem; a bill that cannot be judged yet ("Load the 2B to check", "Not due yet") is counted and shown under "Cannot check yet", never as unfiled, and has no reminder buttons. With no 2B loaded at all the page lists nothing to chase and says so (the first version listed every bill as "waiting" until a 2B was loaded: 18 Nov 2026, fixed the same day).
+
 For a missing bill the page says whether the supplier filed other invoices of theirs in those months (so this one was left out) or has
 nothing in the 2B at all, the age in days, and the last day to claim (30 November after the financial year of the invoice, section 16(4);
 **confirm with the accountant**). Waiting bills are grouped by supplier with **Copy message** (a ready reminder for WhatsApp or email, naming

@@ -3,17 +3,18 @@ import { supabase } from '../lib/supabase';
 import { localToday } from '../lib/constants';
 import { accountingStart } from '../lib/gstData';
 import { fetchFollowup, addFollowup } from '../lib/gstr3bData';
-import { buildFollowup, bySupplier, reminderText, monthName, STATUS_LABEL, WAITING } from '../lib/gstr2bFollowup';
+import { buildFollowup, bySupplier, reminderText, monthName, STATUS_LABEL } from '../lib/gstr2bFollowup';
 import { Pills, StatCard, useUrlParams } from '../components/AnalyticsKit';
 import { DocTable } from './GstSection';
 import { RotateCcw, Copy, BellRing, StickyNote, Info, AlertTriangle } from 'lucide-react';
 
-// Analytics → Supplier filing. The bills the ERP holds that the supplier has not filed (they are not in GSTR-2B), kept track of across
-// months: each is checked against every GSTR-2B that has been loaded, so one that turns up in a later month shows as claimed there; the
-// ones that should have been filed are grouped by supplier with a message to send and a record of who reminded whom, and when.
+// Analytics → Supplier filing. ONLY the bills that are in the Bills tab but are not in the GSTR-2B for their month (the supplier has not
+// filed them): grouped by supplier with a message to send and a record of who reminded whom, and when. A bill is judged only against a
+// GSTR-2B that has been loaded: until the 2B for its month is loaded the page cannot say anything about it, so it is NOT listed as a
+// problem (it is counted, and offered under "Can't check yet"). A bill that turns up in a later month's 2B shows as in GSTR-2B there.
 // Rules and reasoning: docs/gstr3b-view.md.
 
-const URL_DEFAULTS = { sfview: 'waiting' };
+const URL_DEFAULTS = { sfview: 'missing' };
 const inr = (n, digits = 0) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 const amt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (d) => {
@@ -48,7 +49,7 @@ function detail(r) {
 // A proper component (it holds the selection and the note), not inlined in a .map().
 function SupplierCard({ group, ownGstin, canWrite, onAction, showToast }) {
   const ids = group.rows.map(r => r.id);
-  const [picked, setPicked] = useState(() => new Set(group.rows.filter(r => r.status === 'missing').map(r => r.id)));
+  const [picked, setPicked] = useState(() => new Set(group.rows.map(r => r.id)));
   const [note, setNote] = useState('');
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -72,7 +73,7 @@ function SupplierCard({ group, ownGstin, canWrite, onAction, showToast }) {
       <div className="px-3 sm:px-4 py-2.5 border-b border-stone-100 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-medium text-stone-900">{group.vendor}</div>
-          <div className="text-[11px] text-stone-500">{group.gstin || 'no GSTIN on file'} · {group.rows.length} bill{group.rows.length === 1 ? '' : 's'} · {inr(group.tax, 2)} of tax waiting</div>
+          <div className="text-[11px] text-stone-500">{group.gstin || 'no GSTIN on file'} · {group.rows.length} bill{group.rows.length === 1 ? '' : 's'} not in GSTR-2B · {inr(group.tax, 2)} of tax not claimable</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className={btn} onClick={copy} disabled={!group.rows.length}><Copy className="w-3.5 h-3.5" />Copy message</button>
@@ -123,25 +124,27 @@ export function SupplierFilingView({ f, view, onView, loading, error, onReload, 
   const S = f?.summary;
   const rows = useMemo(() => {
     if (!f) return [];
-    if (view === 'missing') return f.rows.filter(r => r.status === 'missing');
     if (view === 'claimed') return f.rows.filter(r => r.status === 'claimed' || r.status === 'not_available');
+    if (view === 'unchecked') return f.rows.filter(r => r.status === 'load' || r.status === 'not_due');
     if (view === 'all') return f.rows;
-    return f.rows.filter(r => WAITING.includes(r.status));
+    return f.rows.filter(r => r.status === 'missing');
   }, [f, view]);
-  const groups = useMemo(() => (view === 'waiting' || view === 'missing') ? bySupplier(rows) : [], [rows, view]);
+  const groups = useMemo(() => view === 'missing' ? bySupplier(rows) : [], [rows, view]);
+  const unchecked = S ? S.load.count + S.notDue.count : 0;
+  const uncheckedMonths = useMemo(() => f ? [...new Set(f.rows.filter(r => r.status === 'load').map(r => r.billMonth))].sort() : [], [f]);
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-stone-900">Supplier filing</h2>
-          <div className="text-[11px] text-stone-500">Bills you have that the supplier has not filed (not in GSTR-2B yet), and when they turn up.</div>
+          <div className="text-[11px] text-stone-500">Bills that are in the Bills tab but not in your GSTR-2B: the supplier has not filed them.</div>
         </div>
         <button type="button" onClick={onReload} disabled={loading} title="Read everything again" className={btn}><RotateCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Reload</button>
       </div>
 
       <div className="text-xs text-stone-700 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 leading-relaxed">
-        Credit is claimed only when the supplier files the invoice and it shows in your <b>GSTR-2B</b>. That can be a later month than the bill's own, so every bill is checked against <b>every GSTR-2B you have loaded</b> (load each month's on the GSTR-3B tab): one that turns up later shows as in GSTR-2B for that month, and the ones that should have been filed are here to chase. Suppliers have until the 11th of the next month to file; the credit can be claimed until 30 November after the financial year ends (section 16(4): confirm with your accountant).
+        Every bill in the Bills tab is checked against the GSTR-2B you have loaded (load each month's on the GSTR-3B tab). A bill that is <b>in</b> the GSTR-2B is fine and is not listed as a problem; it can also turn up in a later month's 2B. Only a bill that is <b>not in the GSTR-2B for its month</b> is listed here to chase. Suppliers have until the 11th of the next month to file; the credit can be claimed until 30 November after the financial year ends (section 16(4): confirm with your accountant).
       </div>
 
       {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
@@ -152,30 +155,37 @@ export function SupplierFilingView({ f, view, onView, loading, error, onReload, 
         <>
           <div className="flex items-start gap-2 text-xs text-stone-700">
             <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-sky-700" />
-            <span>{S.loadedMonths.length ? <>GSTR-2B loaded for <b>{S.loadedMonths.map(monthName).join(', ')}</b>.</> : <>No GSTR-2B has been loaded yet: load one on the GSTR-3B tab, and the bills that are not in it will be listed here.</>}</span>
+            <span>{S.loadedMonths.length ? <>GSTR-2B loaded for <b>{S.loadedMonths.map(monthName).join(', ')}</b>.</> : <><b>No GSTR-2B has been loaded yet.</b> Until one is loaded (GSTR-3B tab) nothing can be said about which bills the supplier has filed.</>}</span>
           </div>
+          {S.load.count > 0 && (
+            <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>{S.load.count} bill{S.load.count === 1 ? '' : 's'} cannot be checked yet because the GSTR-2B for <b>{uncheckedMonths.map(monthName).join(', ')}</b> has not been loaded. Load it on the GSTR-3B tab. Until then {S.load.count === 1 ? 'it is' : 'they are'} not treated as unfiled.</span>
+            </div>
+          )}
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
-            <StatCard label="Waiting for suppliers" value={S.waiting.count} sub={`${inr(S.waiting.tax, 2)} of tax not claimable yet`} onClick={() => onView('waiting')} active={view === 'waiting'} />
-            <StatCard label="Supplier should have filed" value={S.missing.count} tone={S.missing.count ? 'text-red-700' : 'text-stone-900'} sub={`${inr(S.missing.tax, 2)} · not in the 2B for their month · ${S.reminded} reminded`} onClick={() => onView('missing')} active={view === 'missing'} />
-            <StatCard label="Load a GSTR-2B to check" value={S.load.count} tone={S.load.count ? 'text-amber-800' : 'text-stone-900'} sub={`${inr(S.load.tax, 2)} · ${S.notDue.count} not due yet`} />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
+            <StatCard label="Supplier has not filed" value={S.missing.count} tone={S.missing.count ? 'text-red-700' : 'text-stone-900'} sub={`${inr(S.missing.tax, 2)} of tax not claimable · ${S.reminded} reminded`} onClick={() => onView('missing')} active={view === 'missing'} />
             <StatCard label="In GSTR-2B" value={S.claimed.count + S.notAvailable.count} tone="text-emerald-800" sub={`${S.claimedLater} turned up in a later month${S.notAvailable.count ? ` · ${S.notAvailable.count} ITC not available` : ''}`} onClick={() => onView('claimed')} active={view === 'claimed'} />
+            <StatCard label="Cannot check yet" value={unchecked} tone={unchecked ? 'text-amber-800' : 'text-stone-900'} sub={unchecked ? 'their month\'s GSTR-2B is not loaded or not made yet' : 'every bill has been checked'} onClick={() => onView('unchecked')} active={view === 'unchecked'} />
           </div>
 
           <Pills value={view} onChange={onView} options={[
-            { id: 'waiting', label: 'Waiting', count: S.waiting.count }, { id: 'missing', label: 'Should have filed', count: S.missing.count },
-            { id: 'claimed', label: 'In GSTR-2B', count: S.claimed.count + S.notAvailable.count }, { id: 'all', label: 'All', count: f.rows.length },
+            { id: 'missing', label: 'Not in GSTR-2B', count: S.missing.count }, { id: 'claimed', label: 'In GSTR-2B', count: S.claimed.count + S.notAvailable.count },
+            { id: 'unchecked', label: 'Cannot check yet', count: unchecked }, { id: 'all', label: 'All bills', count: f.rows.length },
           ]} />
 
           {rows.length === 0 && (
             <div className="bg-white rounded-lg border border-stone-200 px-4 py-8 text-center text-sm text-stone-600">
-              {view === 'waiting' || view === 'missing' ? 'No bill is waiting on a supplier: every bill is in a GSTR-2B you have loaded, or is not due yet.' : 'Nothing here yet.'}
+              {view === 'missing'
+                ? (S.loadedMonths.length ? 'Every bill that can be checked is in a GSTR-2B you have loaded: nothing to chase.' : 'Nothing to chase yet. Load a GSTR-2B on the GSTR-3B tab, and any bill that is in the Bills tab but not in it will be listed here.')
+                : 'Nothing here.'}
             </div>
           )}
 
           {groups.map(g => <SupplierCard key={g.key} group={g} ownGstin={ownGstin} canWrite={canWrite} onAction={onAction} showToast={showToast} />)}
 
-          {(view === 'claimed' || view === 'all') && rows.length > 0 && (
+          {view !== 'missing' && rows.length > 0 && (
             <section className="bg-white rounded-lg border border-stone-200 px-3 sm:px-4 py-3">
               <DocTable rows={rows} noun="bills" columns={[
                 { label: 'Supplier', cell: r => r.vendor }, { label: 'Invoice', cell: r => r.no }, { label: 'Date', cell: r => fmtDate(r.date) },
@@ -216,7 +226,7 @@ export default function SupplierFilingSection({ showToast }) {
     } catch (err) { showToast?.(`Could not save: ${err.message}`, 'error'); }
   };
 
-  const view = ['waiting', 'missing', 'claimed', 'all'].includes(p.sfview) ? p.sfview : 'waiting';
+  const view = ['missing', 'claimed', 'unchecked', 'all'].includes(p.sfview) ? p.sfview : 'missing';
   return <SupplierFilingView f={f} view={view} onView={(v) => setP({ sfview: v })} loading={loading} error={error} onReload={load} ownGstin={data?.ownGstin}
     canWrite={!!data && !data.storeMissing} onAction={onAction} showToast={showToast} storeMissing={!!data?.storeMissing} />;
 }
