@@ -58,7 +58,7 @@ const avail = (d) => d.itc === 'Y' && !d.rcm ? add(h3(), docHeads(d), signOf(d))
 
 const headOfAccount = (a) => /^igst/i.test(a) ? 'igst' : /^cgst/i.test(a) ? 'cgst' : /^sgst/i.test(a) ? 'sgst' : null;
 
-export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], ledgerInput = [], trueups = [], tcsRows = [], twoB = null, opening = null }) {
+export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], ledgerInput = [], trueups = [], tcsRows = [], twoB = null, opening = null, openingLabel = '' }) {
   const own = String(ownGstin ?? '').slice(0, 2);
   const checks = [];
   const note = (level, id, text) => checks.push({ id, level, text });
@@ -241,13 +241,13 @@ export function buildGstr3b({ month, gst, ownGstin, bills = [], vendors = [], le
   const creditTotal = add(open, claim);
   const so = setOff(liability, creditTotal);
   const payment = { liability, opening: open, claim, credit: creditTotal, ...so, cashTotal: total(so.cash), closingTotal: total(so.closing), itcUsedTotal: r2(HEADS.reduce((s, lh) => s + total(so.used[lh]), 0)) };
-  if (!openingSet) note('warn', 'opening', 'The credit you carried into this month (from the portal\'s electronic credit ledger) has not been entered, so the payment below counts it as nil. Enter it under "Payment".');
+  if (!openingSet) note('warn', 'opening', `${openingLabel || 'There is no opening credit'}: the payment below counts the credit carried in as nil.`);
 
   return {
     month, ownGstin: ownGstin ?? null, ownState: own,
     outward, interstate: { rows: interRows, ...inter }, intra, unknownState,
     itc: { basis, hasTwoB: !!twoB, books, twoB: twoBTotals, claim, lists },
-    tcs, payment, openingSet, notes: opening?.note ?? '',
+    tcs, payment, openingSet, openingLabel, notes: opening?.note ?? '',
     checks,
   };
 }

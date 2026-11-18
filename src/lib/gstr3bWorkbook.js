@@ -76,7 +76,7 @@ export function buildGstr3bSheets(r) {
       h('', 'Tax payable', 'Paid with integrated tax credit', 'Paid with central tax credit', 'Paid with state/UT tax credit', 'Paid in cash'),
       ...HEADS.map(k => [HEAD_LABEL[k], m(P.liability[k]), m(P.used[k].igst), m(P.used[k].cgst), m(P.used[k].sgst), m(P.cash[k])]),
       [tt('Total'), t(sum(P.liability)), t(HEADS.reduce((s, k) => s + P.used[k].igst, 0)), t(HEADS.reduce((s, k) => s + P.used[k].cgst, 0)), t(HEADS.reduce((s, k) => s + P.used[k].sgst, 0)), t(P.cashTotal)],
-      [`Credit carried in${r.openingSet ? '' : ' (NOT ENTERED: counted as nil)'}`, '', ...rows3(P.opening)],
+      [`Credit carried in${r.openingSet ? (r.openingLabel ? `: ${r.openingLabel}` : '') : ' (NOT AVAILABLE: counted as nil)'}`, '', ...rows3(P.opening)],
       ['Credit left after this return (carry to next month)', '', ...rows3(P.closing)],
       [],
       [b('Things to know')],
