@@ -117,7 +117,18 @@ test('orders not invoiced yet are listed apart, only for this month, and flagged
   assert.equal(report.waiting.length, 1);
   assert.equal(report.waiting[0].order, '38500');
   assert.equal(report.checks.find(c => c.id === 'waiting').level, 'warn');
-  assert.match(report.checks.find(c => c.id === 'unnumbered').text, /2 credit notes and 1 fee invoice were issued by the ERP/);
+  const un = report.checks.find(c => c.id === 'unnumbered');
+  assert.equal(un.level, 'warn');
+  assert.match(un.text, /3 documents issued by the ERP have no number yet/);
+});
+
+test('once the ERP\'s documents carry numbers the check is only information', () => {
+  const numbered = entries.map(x => x.issued_by === 'erp' && x.voucher === 'credit_note' ? { ...x, doc: `ERP/CN/2627/${x.order_name}` } : x.issued_by === 'erp' && x.voucher === 'invoice' ? { ...x, doc: 'ERP/IN/2627/0001' } : x);
+  const rep = buildGstReport({ month: '2026-10', entries: numbered, orders, waiting: [] });
+  const c = rep.checks.find(k => k.id === 'unnumbered');
+  assert.equal(c.level, 'info');
+  assert.match(c.text, /2 credit notes and 1 fee invoice were issued by the ERP, not Unicommerce\. They carry ERP\/CN and ERP\/IN numbers\./);
+  assert.deepEqual(rep.docs.returns.filter(d => d.issuedBy === 'erp').map(d => d.number).sort(), ['ERP/CN/2627/37100', 'ERP/CN/2627/37700']);
 });
 
 test('a document whose order has no state is grouped and warned about', () => {

@@ -135,8 +135,11 @@ export function buildGstReport({ month, entries = [], orders = [], waiting = [] 
     ? { id: 'waiting', level: 'warn', text: `${waitingIn.length} order${waitingIn.length === 1 ? '' : 's'} placed this month ${waitingIn.length === 1 ? 'has' : 'have'} no Unicommerce invoice yet, so ${waitingIn.length === 1 ? 'it is' : 'they are'} not in these figures. ${waitingIn.length === 1 ? 'It is' : 'They are'} added when the invoice is issued.` }
     : { id: 'waiting', level: 'ok', text: 'Every order placed this month has its Unicommerce invoice.' });
   const erpReturns = docs.filter(d => d.kind === 'return' && d.issuedBy === 'erp'), erpFees = docs.filter(d => d.kind === 'fee');
-  if (erpReturns.length || erpFees.length) {
-    checks.push({ id: 'unnumbered', level: 'info', text: `${erpReturns.length} credit note${erpReturns.length === 1 ? '' : 's'} and ${erpFees.length} fee invoice${erpFees.length === 1 ? '' : 's'} were issued by the ERP, not Unicommerce. They get their ERP/CN and ERP/IN numbers when they are exported to Tally.` });
+  const unnumbered = [...erpReturns, ...erpFees].filter(d => !d.number);
+  if (unnumbered.length) {
+    checks.push({ id: 'unnumbered', level: 'warn', text: `${unnumbered.length} document${unnumbered.length === 1 ? '' : 's'} issued by the ERP ${unnumbered.length === 1 ? 'has' : 'have'} no number yet (${unnumbered.slice(0, 4).map(d => d.order).join(', ')}${unnumbered.length > 4 ? '…' : ''}). ${unnumbered.length === 1 ? 'It is' : 'They are'} numbered the next time the ledger refreshes.` });
+  } else if (erpReturns.length || erpFees.length) {
+    checks.push({ id: 'unnumbered', level: 'info', text: `${erpReturns.length} credit note${erpReturns.length === 1 ? '' : 's'} and ${erpFees.length} fee invoice${erpFees.length === 1 ? '' : 's'} were issued by the ERP, not Unicommerce. They carry ERP/CN and ERP/IN numbers.` });
   }
   const earlier = orders.filter(o => (o.notes || []).some(n => /before the books started/i.test(String(n))) && docs.some(d => d.order === o.order_name && d.kind === 'sale'));
   if (earlier.length) {

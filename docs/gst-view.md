@@ -28,7 +28,7 @@ the arithmetic is in the browser (`src/lib/gstReport.js`, tested), so the figure
 - A month picker (from the accounting start date; the last finished month is the default), a Shopify / Myntra / Both switch.
 - Four cards: sales (sales invoices + fee invoices), credit notes, net taxable value, net GST (IGST, CGST, SGST).
 - Checks: every document has a state; no order waiting for an invoice; how many credit notes and invoices the ERP issued
-  itself (they get `ERP/CN/2627/NNNN` and `ERP/IN/2627/NNNN` numbers when exported to Tally, which is not built yet); the
+  itself (they carry `ERP/CN/2627/NNNN` and `ERP/IN/2627/NNNN` numbers from the ledger, `docs/document-numbers.md`; an unnumbered one is a warning); the
   Myntra orders booked from before the books started; and an error line if the state table ever stops adding up to the documents.
 - **By state and rate**: sales, fee invoices, credit notes, net taxable value, net IGST, CGST and SGST, with a total row. A
   state or rate is a row of its own. UP sales carry CGST + SGST, every other state IGST (this follows the invoice).
@@ -53,7 +53,7 @@ split the tax with it); if an order is missing, the rate the amounts imply is us
   amendments or nil-rated lines.
 - One rate per order. All October 2026 orders are 5%; an invoice with items at two rates would be shown at the first item's rate
   (the ledger itself splits tax with one rate per order).
-- ERP-issued credit notes and invoices carry no number until the Tally export assigns them.
+- (Numbers for the ERP's own credit notes and invoices were added the same day: `docs/document-numbers.md`.)
 - A net CGST or SGST of a paisa either way can appear on a state (Unicommerce splits an odd paisa of tax between CGST and SGST
   differently on a sale and on its credit note).
 

@@ -49,8 +49,20 @@ test('read back from the file: totals, state rows and documents are the report\'
   assert.equal(my.find(r => r[0] === 'Uttar Pradesh')[1], '09');
 
   assert.deepEqual(out.get('Sales invoices').slice(1).map(r => r[0]), ['INS0001', 'I1006']);
-  assert.match(out.get('Fee invoices (ERP)')[1][1], /^ERP\/IN/);
+  assert.equal(out.get('Fee invoices (ERP)')[1][1], 'not numbered yet');
   const cn = out.get('Credit notes')[1];
   assert.equal(cn[1], 'ISR0001'); assert.equal(cn[2], 'Unicommerce');
   assert.equal(out.get('Not invoiced yet')[1][0], '38500');
+});
+
+test('numbers the ledger has given the ERP\'s own documents are in the Excel file', async () => {
+  const numbered = entries.map(x => x.issued_by === 'erp' ? { ...x, doc: 'ERP/IN/2627/0001' } : x);
+  const erpNote = [e('INS1', '2026-10-21', 'credit_note', 'GST SALES RETURN', 100, 0, { issued_by: 'erp', doc: 'ERP/CN/2627/0007', memo: 'return 1 (customer): credit note for goods', part: 'goods', qty: 1 }),
+                   e('INS1', '2026-10-21', 'credit_note', 'IGST OUTPUT UP', 5, 0, { issued_by: 'erp', doc: 'ERP/CN/2627/0007', memo: 'return 1 (customer): credit note for goods' })];
+  const rep = buildGstReport({ month: '2026-10', entries: [...numbered, ...erpNote], orders, waiting: [] });
+  const out = await xlsxSheets(buildXlsx(buildGstSheets(rep)));
+  assert.equal(out.get('Fee invoices (ERP)')[1][1], 'ERP/IN/2627/0001');
+  const cn = out.get('Credit notes').find(r => r[1] === 'ERP/CN/2627/0007');
+  assert.equal(cn[2], 'ERP');
+  assert.equal(rep.checks.find(c => c.id === 'unnumbered').level, 'info');
 });
