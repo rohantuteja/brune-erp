@@ -14,13 +14,17 @@ export async function fetchAccounting(supabase, month, today) {
   const { from, next } = monthBounds(month);
   const first = async (table, col) => (must(await supabase.from(table).select(col).order(col, { ascending: false }).limit(1)))?.[0]?.[col] ?? null;
 
-  const [accounts, statements, gokwikTxnTo, velocityTo, myntraSettledTo] = await Promise.all([
+  const [accounts, statements, gokwikSettledTo, velocityTo, myntraSettledTo] = await Promise.all([
     supabase.from('finance_accounts').select('id, kind, name').then(must),
     supabase.from('finance_statements').select('account_id, period_to').order('period_to', { ascending: false }).then(must),
-    first('gokwik_payments', 'txn_date'), first('velocity_ledger_imports', 'period_to'), first('myntra_settlement_lines', 'settled_on'),
+    first('gokwik_payments', 'settlement_date'), first('velocity_ledger_imports', 'period_to'), first('myntra_settlement_lines', 'settled_on'),
   ]);
   const accountRows = accounts.map(a => ({ kind: a.kind, name: a.name, periodTo: statements.find(s => s.account_id === a.id)?.period_to ?? null }));
 
+  // Every Easebuzz credit in the bank in the month should be proven by a GoKwik payout line: that, not the date of the last transaction, says whether the report is complete
+  // (payments made in the last days of the month are paid out, and appear in the report, in the next month).
+  const easebuzz = await pages((a, b) => supabase.from('finance_lines').select('kind').gte('txn_date', from).lt('txn_date', next).gt('credit', 0).ilike('remarks', '%easebuzz%').order('id').range(a, b));
+  const gokwikPayouts = easebuzz.filter(l => l.kind === 'gokwik_payout').length, gokwikUnproven = easebuzz.length - gokwikPayouts;
   const bankUnresolved = (await supabase.from('finance_lines').select('id', { count: 'exact', head: true }).gte('txn_date', from).lt('txn_date', next).not('status', 'in', '(matched,ignored)')).count ?? 0;
 
   const bills = await pages((a, b) => supabase.from('vendor_invoices').select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, supplier_gstin, status, opening, kind').neq('status', 'void').order('id').range(a, b));
@@ -68,7 +72,7 @@ export async function fetchAccounting(supabase, month, today) {
   if (!g3.error && g3.data?.filed_at) gstr3bFiled = true;
 
   const checklistInput = {
-    month, today, accounts: accountRows, gokwikTxnTo, velocityTo, myntraSettledTo, billsReview, bills, toUpload, twoBLoaded: !!twoB, bankUnresolved,
+    month, today, accounts: accountRows, gokwikSettledTo, gokwikPayouts, gokwikUnproven, velocityTo, myntraSettledTo, billsReview, bills, toUpload, twoBLoaded: !!twoB, bankUnresolved,
     orders: { total: orderRows.length, waitingInvoice: orderRows.filter(o => o.status === 'waiting_invoice').length, open }, attentionAll,
     ledgerRun: run ? { finishedAt: run.finished_at, held: (run.summary?.held || []).length } : null,
     missing: missingLedgers({ used, tally }), gstr3bFiled, exportedAt: null,

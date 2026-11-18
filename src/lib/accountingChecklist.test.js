@@ -5,7 +5,7 @@ import { buildChecklist, missingLedgers, monthEnd } from './accountingChecklist.
 const good = () => ({
   month: '2026-10', today: '2026-11-18',
   accounts: [{ kind: 'bank', name: 'ICICI', periodTo: '2026-10-31' }, { kind: 'card', name: 'Kotak', periodTo: '2026-10-20' }],
-  gokwikTxnTo: '2026-10-31', velocityTo: '2026-10-31', myntraSettledTo: '2026-11-11', billsReview: 0,
+  gokwikSettledTo: '2026-10-31', gokwikPayouts: 29, gokwikUnproven: 0, velocityTo: '2026-10-31', myntraSettledTo: '2026-11-11', billsReview: 0,
   bills: ['Meta', 'Velocity', 'GoKwik', 'Easebuzz'].map((v, i) => ({ vendor: v, invoice_date: v === 'Easebuzz' ? '2026-10-31' : '2026-11-01' })),
   toUpload: [], twoBLoaded: true, bankUnresolved: 0, orders: { waitingInvoice: 0, open: { awaiting_payout: 3 } }, attentionAll: 0,
   ledgerRun: { finishedAt: '2026-11-18T10:40:00Z', held: 0 }, missing: [], gstr3bFiled: true, exportedAt: null,
@@ -27,15 +27,16 @@ test('a month that has not ended blocks the file', () => {
 });
 
 test('uploads that stop short of the month end are blockers, each saying where they stop', () => {
-  const c = buildChecklist({ ...good(), accounts: [{ kind: 'bank', name: 'ICICI', periodTo: '2026-10-28' }, { kind: 'card', name: 'Kotak', periodTo: '2026-09-20' }], gokwikTxnTo: '2026-10-11', velocityTo: '2026-09-30' });
+  const c = buildChecklist({ ...good(), accounts: [{ kind: 'bank', name: 'ICICI', periodTo: '2026-10-28' }, { kind: 'card', name: 'Kotak', periodTo: '2026-09-20' }], gokwikSettledTo: '2026-10-12', gokwikPayouts: 12, gokwikUnproven: 17, velocityTo: '2026-09-30' });
   for (const id of ['bank', 'card', 'gokwik', 'velocity']) { assert.equal(step(c, id).status, 'todo', id); assert.equal(step(c, id).blocker, true, id); }
   assert.match(step(c, 'bank').detail, /28\/10\/2026/);
-  assert.match(step(c, 'gokwik').detail, /11\/10\/2026/);
+  assert.match(step(c, 'gokwik').title, /17 Easebuzz credits in the bank not matched/);
+  assert.match(step(c, 'gokwik').detail, /12\/10\/2026/);
   assert.equal(c.blockers.length, 4);
 });
 
 test('with nothing uploaded the steps say so instead of failing', () => {
-  const c = buildChecklist({ ...good(), accounts: [], gokwikTxnTo: null, velocityTo: null, myntraSettledTo: null });
+  const c = buildChecklist({ ...good(), accounts: [], gokwikSettledTo: null, velocityTo: null, myntraSettledTo: null });
   assert.match(step(c, 'bank').detail, /No bank statement/);
   assert.match(step(c, 'gokwik').detail, /No GoKwik report/);
   assert.match(step(c, 'myntra').detail, /None loaded/);
@@ -107,4 +108,16 @@ test('ledgers the file creates itself do not block; renames and unknown names st
   assert.match(step(c, 'ledgers').detail, /1 to be renamed by hand/);
   assert.match(step(c, 'ledgers').detail, /1 not in the list/);
   assert.equal(step(c, 'ledgers').items.length, 2);
+});
+
+test('GoKwik: payments of the last day of the month paid out next month do not make the report incomplete (the bank decides, not the last transaction date)', () => {
+  const c = buildChecklist({ ...good(), gokwikSettledTo: '2026-10-31', gokwikPayouts: 29, gokwikUnproven: 0 });
+  assert.equal(step(c, 'gokwik').status, 'done');
+  assert.match(step(c, 'gokwik').detail, /29 Easebuzz credits in the bank, all matched/);
+  assert.match(step(c, 'gokwik').detail, /next month/);
+  // a report that stops early but with no Easebuzz credit left unmatched is fine too; one credit left unmatched is a blocker
+  assert.equal(step(buildChecklist({ ...good(), gokwikSettledTo: '2026-10-20', gokwikPayouts: 20, gokwikUnproven: 0 }), 'gokwik').status, 'done');
+  const bad = buildChecklist({ ...good(), gokwikUnproven: 1 });
+  assert.equal(step(bad, 'gokwik').blocker, true);
+  assert.match(step(bad, 'gokwik').title, /^1 Easebuzz credit in the bank/);
 });

@@ -12,7 +12,7 @@ Generate button disabled.
 | Uploads | the month has ended | yes |
 | | ICICI statement runs to the month end | yes |
 | | Kotak card statement covers the cycle ending on the 20th | yes |
-| | GoKwik rawSettlementReport reaches transactions of the month end | yes |
+| | every Easebuzz credit of the month in the bank is matched to a GoKwik payout line (the bank decides, not the date of the last transaction: payments made in the last days of the month are paid out, and listed in the report, next month; a first version compared the last transaction date and wrongly blocked October on 18 Nov) | yes |
 | | Velocity wallet ledger runs to the month end | yes |
 | | Myntra settlement reports (how far loaded) | information |
 | | GSTR-2B loaded for the month | no |
