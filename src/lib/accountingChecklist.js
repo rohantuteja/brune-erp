@@ -129,11 +129,15 @@ export function buildChecklist(d) {
     : { id: '3b', title: 'File GSTR-3B, then record it', status: 'todo', detail: 'GST tab for GSTR-1, GSTR-3B tab for the return; press "I filed" after filing.', link: { label: 'GSTR-3B', tab: 'gstr3b' } });
 
   // ── 5. Tally ──
-  add('tally', (d.missing || []).length
-    ? { id: 'ledgers', title: `${plural(d.missing.length, 'ledger')} the file uses ${d.missing.length === 1 ? 'is' : 'are'} not ready in Tally`, status: 'todo', blocker: true,
-        detail: `${(d.missing.filter(m => m.status === 'will_create').length) ? `Import the ledgers file first (it creates ${d.missing.filter(m => m.status === 'will_create').length}). ` : ''}${(d.missing.filter(m => m.status === 'will_rename').length) ? `${d.missing.filter(m => m.status === 'will_rename').length} to be renamed by hand in Tally. ` : ''}${(d.missing.filter(m => m.status === 'unknown').length) ? `${d.missing.filter(m => m.status === 'unknown').length} not in the list of Tally ledgers at all. ` : ''}Then say so under "Tally file" below.`.trim(),
-        items: d.missing.map(m => `${m.name}: ${m.why}`) }
-    : { id: 'ledgers', title: 'Every ledger the file uses exists in Tally', status: 'done', detail: 'Names checked against the list of Tally ledgers.' });
+  const creates = (d.missing || []).filter(m => m.status === 'will_create');
+  const blocking = (d.missing || []).filter(m => m.status !== 'will_create');
+  add('tally', !(d.missing || []).length
+    ? { id: 'ledgers', title: 'Every ledger the file uses exists in Tally', status: 'done', detail: 'Names checked against the list of Tally ledgers.' }
+    : !blocking.length
+      ? { id: 'ledgers', title: `${plural(creates.length, 'ledger')} will be created by the file itself`, status: 'info', detail: 'The Tally file begins with these ledgers, so one import creates them and then posts into them. After the first import, say so under "Tally file" so they are not created again.', items: creates.map(m => m.name) }
+      : { id: 'ledgers', title: `${plural(blocking.length, 'ledger')} the file uses ${blocking.length === 1 ? 'is' : 'are'} not ready in Tally`, status: 'todo', blocker: true,
+        detail: `${blocking.filter(m => m.status === 'will_rename').length ? `${blocking.filter(m => m.status === 'will_rename').length} to be renamed by hand in Tally before the import (the vouchers use the new names). ` : ''}${blocking.filter(m => m.status === 'unknown').length ? `${blocking.filter(m => m.status === 'unknown').length} not in the list of Tally ledgers at all: add them to the list. ` : ''}${creates.length ? `The other ${creates.length} are created by the file itself.` : ''}`.trim(),
+        items: blocking.map(m => `${m.name}: ${m.why}`) });
   add('tally', d.exportedAt
     ? { id: 'exported', title: 'A Tally file was already generated for this month', status: 'info', detail: `Generated ${dmy(d.exportedAt)}.` }
     : { id: 'exported', title: 'No Tally file generated for this month yet', status: 'info', detail: 'Generated at the end of this checklist.' });

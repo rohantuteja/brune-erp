@@ -34,7 +34,7 @@ export function groupOrderVouchers(entries) {
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.type.localeCompare(b.type) || String(a.doc ?? a.id).localeCompare(String(b.doc ?? b.id)) || a.id.localeCompare(b.id));
 }
 
-export const TYPE_LABEL = { sales: 'Sales', credit_note: 'Credit Note', receipt: 'Receipt', journal: 'Journal', payment: 'Payment', purchase: 'Purchase' };
+export const TYPE_LABEL = { ledger: 'Ledger', sales: 'Sales', credit_note: 'Credit Note', receipt: 'Receipt', journal: 'Journal', payment: 'Payment', purchase: 'Purchase' };
 
 /** How many vouchers of each kind, and how much, for the preview. */
 export function voucherPlan(vouchers) {

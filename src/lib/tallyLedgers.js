@@ -29,3 +29,13 @@ export function buildLedgersFile(ledgers) {
 }
 
 export const ledgersFileName = () => 'Tally-ledgers-to-create.json';
+
+/**
+ * One file for the whole import: the ledgers still missing in Tally come FIRST, then the vouchers, so a single import creates the ledgers and then posts
+ * into them (Tally reads the messages in order). `ledgers` are the tally_ledgers rows; `file` is buildTallyFile's. The renames are not in it and must
+ * already be done in Tally, because the vouchers use the new names.
+ */
+export function withLedgers(file, ledgers) {
+  const first = buildLedgersFile(ledgers || []).file.tallymessage;
+  return { tallymessage: [...first, ...file.tallymessage] };
+}

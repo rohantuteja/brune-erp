@@ -77,7 +77,7 @@ test('ledgers the file would use that are not in Tally are listed, with why', ()
   assert.deepEqual(m.map(x => [x.name, x.why]), [['Customer (order control)', 'to be created in Tally'], ['Myntra Commission', 'not in the list of Tally ledgers'], ['Old name', 'to be renamed in Tally']]);
   const c = buildChecklist({ ...good(), missing: m });
   assert.equal(step(c, 'ledgers').blocker, true);
-  assert.equal(step(c, 'ledgers').items.length, 3);
+  assert.equal(step(c, 'ledgers').items.length, 2);          // the rename and the unknown name; the ledger to create is made by the file itself
 });
 
 test('the checklist is grouped into the five sections, in order', () => {
@@ -93,4 +93,18 @@ test('GSTR-3B not recorded is advice, not a blocker', () => {
   assert.equal(step(c, '3b').status, 'todo');
   assert.equal(step(c, '3b').blocker, false);
   assert.equal(c.ready, true);
+});
+
+test('ledgers the file creates itself do not block; renames and unknown names still do', () => {
+  const tally = [{ name: 'Customer (order control)', status: 'will_create' }, { name: 'COD receivable (Velocity)', status: 'will_rename' }];
+  let c = buildChecklist({ ...good(), missing: missingLedgers({ used: ['Customer (order control)'], tally }) });
+  assert.equal(step(c, 'ledgers').status, 'info');
+  assert.equal(step(c, 'ledgers').blocker, false);
+  assert.equal(c.ready, true);
+  c = buildChecklist({ ...good(), missing: missingLedgers({ used: ['Customer (order control)', 'COD receivable (Velocity)', 'Brand new ledger'], tally }) });
+  assert.equal(step(c, 'ledgers').blocker, true);
+  assert.match(step(c, 'ledgers').title, /^2 ledgers/);
+  assert.match(step(c, 'ledgers').detail, /1 to be renamed by hand/);
+  assert.match(step(c, 'ledgers').detail, /1 not in the list/);
+  assert.equal(step(c, 'ledgers').items.length, 2);
 });

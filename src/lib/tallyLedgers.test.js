@@ -32,3 +32,12 @@ test('the customer control ledgers are bill by bill and unregistered/consumer; p
 test('nothing to create gives an empty file', () => {
   assert.deepEqual(buildLedgersFile([{ name: 'ICICI Bank', under: 'Bank Accounts', status: 'in_tally' }]).file.tallymessage, []);
 });
+
+test('one file: the ledgers to create come first, then the vouchers, so a single import creates and then posts', async () => {
+  const { withLedgers } = await import('./tallyLedgers.js');
+  const vouchers = { tallymessage: [{ metadata: { type: 'Voucher' }, vouchernumber: 'INS1' }, { metadata: { type: 'Voucher' }, vouchernumber: 'INS2' }] };
+  const out = withLedgers(vouchers, rows);
+  assert.deepEqual(out.tallymessage.map(m => m.metadata.type), ['Ledger', 'Ledger', 'Ledger', 'Ledger', 'Voucher', 'Voucher']);
+  assert.equal(out.tallymessage[0].name, 'Customer (order control)');
+  assert.deepEqual(withLedgers(vouchers, []).tallymessage.map(m => m.metadata.type), ['Voucher', 'Voucher']);       // nothing missing: vouchers only
+});
