@@ -328,9 +328,25 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
     const a = allocateSupplier(s.bills, s.payments);
     a.billRefs.forEach((v, k) => billRefs.set(k, v)); a.payRefs.forEach((v, k) => payRefs.set(k, v));
     const vendor = (vendors || []).find(v => v.id === vid);
-    for (const adv of a.advances) advances.push({ vendor: vendor?.name, ...adv });
+    for (const adv of a.advances) advances.push({ vendor: vendor?.name, vendorId: vid, ...adv });
     for (const o of a.open) if (!o.opening) unpaid.push({ vendor: vendor?.name, ...o });
   }
+  // One invoice is often paid in several parts, the first before the invoice is even dated. Say which uploaded invoice (dated after the month) each advance will settle,
+  // oldest advance against the oldest later invoice, so the page reads "two payments of one invoice", not "two advances waiting for invoices".
+  const later = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) >= next && !b.opening), vendors, handled }).list
+    .sort((x, y) => String(x.bill.invoice_date).localeCompare(String(y.bill.invoice_date)));
+  const needs = new Map(later.map(t => [t.bill.id, paise(t.net)]));
+  for (const adv of [...advances].sort((x, y) => String(x.date).localeCompare(String(y.date)))) {
+    let left = paise(adv.left);
+    for (const t of later) {
+      if (t.vendor.id !== adv.vendorId || left <= 0) continue;
+      const need = needs.get(t.bill.id);
+      if (need <= 0) continue;
+      adv.against = adv.against ?? { no: t.bill.invoice_no, date: String(t.bill.invoice_date).slice(0, 10), total: t.net };
+      const use = Math.min(need, left); needs.set(t.bill.id, need - use); left -= use;
+    }
+  }
+  for (const t of later) { const open = needs.get(t.bill.id); if (open > 0 && advances.some(a => a.vendorId === t.vendor.id && a.against?.no === t.bill.invoice_no)) for (const a of advances) if (a.vendorId === t.vendor.id && a.against?.no === t.bill.invoice_no) a.against.stillDue = rupees(open); }
 
   // Input GST of a bill the supplier has not filed (not in the GSTR-2B of its month, which is loaded) waits on the parking ledger until a later GSTR-2B shows it.
   const tb = twoBIndex(twoB);

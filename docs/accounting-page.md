@@ -159,3 +159,7 @@ the cutting and production data (next slice).
 Each date a step reads has a different meaning: a **bank statement** and a **Velocity ledger** end at their last transaction; a **card statement** ends at its billing date
 (the period in the PDF header, exact); **GoKwik's report** is judged by the bank (every Easebuzz credit of the month matched to a payout), never by the last transaction
 date, because payments made on the last days of a month are paid out in the next month and appear in the next month's report.
+- **Advances name the invoice they will settle (19 Nov 2026).** One invoice is often paid in several parts, the first before it is even dated (Shree Vinayak: ₹15,000 on 10 Oct + ₹74,019 on 27 Oct towards
+  invoice SVF/26-27/306 dated 3 Nov, ₹89,061). In October both are advances on the supplier (the invoice does not exist in October's books); in November the invoice's voucher settles BOTH (two `Agst Ref` lines) and the
+  ₹42 left is its own open `New Ref`. The Accounting page now groups the advances by supplier and invoice and says so, instead of listing "two advances paid before the invoice": `buildBooks` gives each advance
+  `against` { no, date, total, stillDue } from the supplier's uploaded invoices dated after the month.

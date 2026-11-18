@@ -298,3 +298,12 @@ test('a payment to the landlord clears the month\'s rent on Rent Payable and boo
   const d = run([L({ id: 304, txn_date: '2026-10-14', debit: 20000, bucket: 'Rent - Director Resident', payee: 'cherrycoun' })], 18000);
   assert.deepEqual(pay(d).lines.map(l => [l.account, l.debit, l.credit]), [['Rent - Director Resident', 20000, 0], ['ICICI Bank', 0, 20000]]);
 });
+
+test('two payments of one invoice dated next month: both advances name that invoice and what of it is still to pay', () => {
+  const r = run();
+  assert.deepEqual(r.advances.map(a => [a.left, a.against?.no, a.against?.date, a.against?.total, a.against?.stillDue]),
+    [[15000, 'SVF/26-27/306', '2026-11-03', 89061, 42], [74019, 'SVF/26-27/306', '2026-11-03', 89061, 42]]);
+  // an advance to a supplier with no later invoice uploaded names none
+  const none = buildBooks({ from: '2026-10-01', next: '2026-11-01', start: '2026-10-01', bills: bills.filter(b => b.id !== 4), vendors, handled, bankLines: lines, buckets, payeeLinks: [] });
+  assert.ok(none.advances.every(a => a.against === undefined));
+});

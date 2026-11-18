@@ -124,7 +124,18 @@ export function buildChecklist(d) {
     add('clear', (bb.unlinked || []).length
       ? { id: 'suppliers', title: `${plural(bb.unlinked.length, 'bank payment')} to a supplier not linked to the supplier`, status: 'todo', blocker: true, detail: 'A payment to a supplier is posted to the supplier\'s ledger against its bill, so it has to know which supplier. Pick the supplier for each below.', items: bb.unlinked.map(l => `${dmy(l.txn_date)} ${money(l.debit)} ${String(l.payee || l.remarks || '').slice(0, 40)}`) }
       : { id: 'suppliers', title: `${plural(bb.payments || 0, 'payment voucher')} made from the bank statement`, status: 'done', detail: 'Every payment to a supplier is placed against the supplier and its bill (or as an advance); the others go to their ledger.' });
-    if ((bb.advances || []).length) add('bills', { id: 'advances', title: `${plural(bb.advances.length, 'advance')} paid before the invoice`, status: 'info', detail: 'Booked as an advance on the supplier; the invoice, when it comes, is settled against it.', items: bb.advances.map(a => `${a.vendor}: ${money(a.left)} on ${dmy(a.date)}`) });
+    if ((bb.advances || []).length) {
+      // Group by supplier and the invoice they will settle: one invoice paid in two parts reads as one line, not as two advances waiting for two invoices.
+      const groups = new Map();
+      for (const a of bb.advances) { const k = `${a.vendor}|${a.against?.no ?? ''}`; (groups.get(k) ?? groups.set(k, []).get(k)).push(a); }
+      const items = [...groups.values()].map(g => {
+        const total = g.reduce((t, a) => t + a.left, 0), parts = g.map(a => `${money(a.left)} on ${dmy(a.date)}`).join(' + '), ag = g[0].against;
+        if (!ag) return `${g[0].vendor}: ${parts}${g.length > 1 ? ` = ${money(total)}` : ''}: no invoice for it is on the Bills page yet.`;
+        const rest = ag.stillDue > 0.004 ? ` ${money(ag.stillDue)} of it is still to pay.` : '';
+        return `${g[0].vendor}: ${parts}${g.length > 1 ? ` = ${money(total)}` : ''} paid towards invoice ${ag.no} dated ${dmy(ag.date)} (${money(ag.total)}); the invoice settles ${g.length > 1 ? 'them' : 'it'} when its month is booked.${rest}`;
+      });
+      add('bills', { id: 'advances', title: `${plural(groups.size, 'supplier')} paid before the invoice is dated (${plural(bb.advances.length, 'payment')})`, status: 'info', detail: 'One invoice can be paid in several parts. A part paid before the invoice is dated is booked as an advance on the supplier; when the invoice\'s month is booked it is settled against all of them. Nothing to do.', items });
+    }
     if ((bb.unpaid || []).length) add('bills', { id: 'unpaid', title: `${plural(bb.unpaid.length, 'bill')} still unpaid at the end of the month (${money(bb.unpaid.reduce((t, u) => t + u.left, 0))})`, status: 'info', detail: 'They stay open on the supplier in Tally until a payment settles them.', items: bb.unpaid.map(u => `${u.vendor} ${u.name}: ${money(u.left)}`) });
     if ((bb.provisionsMissing || []).length) add('bills', { id: 'provisions', title: 'Month-end provisions for Meta and Velocity cannot be made yet', status: 'todo', blocker: true, detail: 'October\'s own spend is billed on the 1st of the next month. Without that invoice the month is missing its Meta and Velocity cost (lakhs).', items: bb.provisionsMissing, link: { label: 'Bills', tab: 'bills' } });
     else if ((bb.provisions || 0) > 0) add('bills', { id: 'provisions', title: `${plural(bb.provisions, 'provision journal')} for Meta and Velocity made from the next invoices`, status: 'done', detail: (bb.provisionNotes || []).join(' ') || 'The month\'s own spend is provided for at the month end and reversed on the 1st.' });
