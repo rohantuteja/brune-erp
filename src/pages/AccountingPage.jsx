@@ -118,7 +118,16 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
             <div className={`text-sm font-medium ${c.ready ? 'text-emerald-900' : 'text-amber-900'}`}>
               {c.ready ? `${monthLabel(month)} is ready for the Tally file.` : `${c.blockers.length} step${c.blockers.length === 1 ? '' : 's'} to finish before the ${monthLabel(month)} Tally file can be generated.`}
             </div>
-            <div className="text-xs text-stone-600 mt-0.5">{done} of {total} steps done{c.todo.length - c.blockers.length > 0 ? ` · ${c.todo.length - c.blockers.length} more to do that do not block the file` : ''}.</div>
+            {(() => {
+              // One sentence that adds up: steps done + steps that stop the file + steps that are only a to-do = all the steps.
+              const stop = c.blockers.length, other = c.todo.length - stop;
+              return (
+                <div className="text-xs text-stone-600 mt-0.5">
+                  {done} of {total} steps done{stop > 0 ? `: ${stop} must be finished before the file` : ''}{other > 0 ? `${stop > 0 ? ', ' : ': '}${other} other ${other === 1 ? 'is a to-do that does' : 'are to-dos that do'} not stop it` : ''}.
+                </div>
+              );
+            })()}
+            {!c.ready && <ul className="mt-1.5 list-disc pl-5 text-xs text-amber-900 space-y-0.5">{c.blockers.map(b => <li key={b.id}>{b.title}</li>)}</ul>}
           </div>
 
           {c.sections.map(sec => (
