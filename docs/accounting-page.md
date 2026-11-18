@@ -96,6 +96,14 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
 - **Stock items on sales and credit notes:** the goods of a sale or a return with their pieces are `BRUNE LADIES DRESSES` (HSN 6204, godown `Main Location`, batch `Primary Batch`, rate = amount / pieces);
   the COD charge, return fee and taxes stay ledger lines; the ERP's own fee invoices have no pieces and stay accounting invoices. October: 544 sales and 101 credit notes are item invoices, 571 and 105 pieces,
   the same rupees as the ledger (₹7,72,538.08 and ₹1,40,474.66), 1,307 vouchers in all, every one balanced.
+- **Month-end journals the accountant booked by hand, now made by the ERP** (owner, 19 Nov 2026: "end to end accounting"; `tallyMonthEnd.js`, copied from his September Day Book): **GST output**
+  (Dr `IGST OUTPUT UP` / `CGST Output UP` / `SGST Output UP` for what the month's sales and returns left on them, Cr `GST Credit Ledger UP`, whole rupees, the paise on ROUND OFF: his #100) and **GST input**
+  (Dr `GST Credit Ledger UP`, Cr the three input ledgers: his #300931), both worked out from the month's own vouchers so the ledgers end at zero (the test reproduces his September journals to the paisa:
+  ₹35,675 + 0.35 and ₹1,41,894 + 0.23); **directors' salary** (Dr `Director Salary` ₹1,00,000, Cr each payable ₹50,000: ₹3,00,000 each over the six months in his Trial Balance); **staff salary** (Dr `Salary Expenses`
+  / Cr `Salary Payable`: a month's salary is paid in the first days of the NEXT month, September's ₹1,36,124 was paid on 3-10 October to the rupee, so the amount is what the bank statement shows paid to
+  `Salary Payable` in the first 15 days of the next month, or `app_settings.salary_expense` = `{"2026-10": amount}`); **rent** (Dr `Rent Sector 63 Noida` / Cr `Rent Payable`: `app_settings.rent_monthly`, his
+  September journal was ₹18,000, October's payment to the landlord ₹30,724). A salary or rent figure that is not known yet is asked for and BLOCKS the file. October: GST output ₹32,210 (the same ₹32,210.01 as the GST
+  view), GST input ₹1,17,196 (the ₹517.50 parked on the not-in-2A ledger is not claimed). Still the accountant's own (periodic, not monthly): depreciation, the audit fee, wholesale.
 - Not in the file yet: the stock journals and the month-end stock correction (they wait for the accountant's Stock Summary at 30 Sep), and the opening bills of the orders sold before October.
 
 ## The Tally file (`tallyVouchers.js`, `tallyJson.js`)
