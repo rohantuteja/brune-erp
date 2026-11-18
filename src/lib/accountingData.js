@@ -4,6 +4,7 @@ import { pages } from './gstData.js';
 import { monthBounds } from './gstReport.js';
 import { buildGstr3b } from './gstr3b.js';
 import { missingLedgers } from './accountingChecklist.js';
+import { isHandledBill } from './gstr2b.js';
 
 const missingTable = (error) => !!error && (error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache|Could not find the table/i.test(error.message || ''));
 const must = (r) => { if (r.error) throw new Error(r.error.message); return r.data; };
@@ -36,11 +37,13 @@ export async function fetchAccounting(supabase, month, today) {
   if (f.error && !missingTable(f.error)) throw new Error(f.error.message);
   if (f.data) twoB = { docs: f.data.docs || [], warnings: [], checks: [], period: month, gstin: null };
   let toUpload = [], noCopy = [];
+  // Invoices the owner said the accountant books (wholesale, or a supplier that never sent the bill): no voucher or stock entry is made from them here.
+  const hd = await supabase.from('gstr2b_handled').select('gstin, invoice_key, invoice_no');
+  if (hd.error && !missingTable(hd.error)) throw new Error(hd.error.message);
+  const handled = hd.data || [];
   if (twoB) {
     const stub = { states: [], totals: { all: { net: { taxable: 0, igst: 0, cgst: 0, sgst: 0 } } } };
-    const hd = await supabase.from('gstr2b_handled').select('gstin, invoice_key, invoice_no');
-    if (hd.error && !missingTable(hd.error)) throw new Error(hd.error.message);
-    const lists = buildGstr3b({ month, gst: stub, ownGstin: '', bills, vendors, twoB, handled: hd.data || [] }).itc.lists;
+    const lists = buildGstr3b({ month, gst: stub, ownGstin: '', bills, vendors, twoB, handled }).itc.lists;
     toUpload = lists.toUpload.filter(x => !x.handled).map(x => ({ vendor: x.vendor || x.gstin, no: x.no, date: x.date, tax: x.twoB.igst + x.twoB.cgst + x.twoB.sgst }));
     noCopy = lists.noCopy.map(b => ({ vendor: b.vendor, no: b.no, date: b.date }));
   }
@@ -63,7 +66,7 @@ export async function fetchAccounting(supabase, month, today) {
   const buckets = await pages((a, b) => supabase.from('finance_buckets').select('name, kind').order('name').range(a, b));
   const lines = await pages((a, b) => supabase.from('finance_lines').select('bucket').gte('txn_date', from).lt('txn_date', next).eq('status', 'matched').order('id').range(a, b));
   const ignore = new Set(buckets.filter(x => x.kind === 'ignore').map(x => x.name));
-  const monthBills = bills.filter(b => b.invoice_date >= from && b.invoice_date < next && !b.opening && b.status === 'accepted');
+  const monthBills = bills.filter(b => b.invoice_date >= from && b.invoice_date < next && !b.opening && b.status === 'accepted' && !isHandledBill(b, handled));
   const vendorById = new Map(vendors.map(v => [v.id, v]));
   const used = [
     ...entries.map(e => e.account),

@@ -37,6 +37,14 @@ file (VIPUL ENTERPRISES, Mittal Hosiery Private Limited (Delhi), PicknPack Solut
 `will_create` under Sundry Creditors and a trigger on `vendors` does the same for every vendor saved later, so the file's ledgers section and the
 "imported" marking both cover them. What still blocks is only a ledger waiting to be renamed by hand in Tally, or a name that is in no list at all.
 
+**Wholesale is the accountant's (owner, 18 Nov 2026).** Aggarwal Traders (fabric) and Wakum India (a customer) belong to the wholesale business, which the accountant
+books in his own books. In the ERP: a bucket **Wholesale (accountant books)** (kind `ignore`, migration 049; a line filed under it needs no bill and is left out of
+every voucher and the ledger check), the three Aggarwal payments / receipts of October filed under it (₹8,46,258 and ₹6,92,392 paid on 20 Oct, ₹15,00,282 received
+from Wakum India on 13 Oct), the payee rule `agarwaltraders` pointing at it, and the three Aggarwal invoices (1068, 1069, 1070, ₹15,38,607, uploaded the same day)
+marked **"the accountant books this one"** (`gstr2b_handled`): the bills stay in the ERP (PDF, GST check, 2B matching), but no purchase voucher and no stock entry is
+made from a bill whose supplier GSTIN + invoice number is in that list (`isHandledBill` in `gstr2b.js`; the purchase-voucher builder must use it). The GSTR-3B credit is
+unchanged (the invoices are in the UP GSTIN's 2B). A future Wakum India receipt arrives as an RTGS credit with no payee and is filed under the bucket by hand.
+
 ## The Tally file (`tallyVouchers.js`, `tallyJson.js`)
 First version, as the owner asked: a file, not a sync. The order ledger's entries are grouped into vouchers exactly as the ledger holds
 them (the owner's rule: reproduce the ledger event by event, nothing lumped into monthly journals):

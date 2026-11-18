@@ -101,6 +101,7 @@ export const BUCKETS: Bucket[] = [
   { name: RETURNED_BUCKET, kind: 'ignore', needs_bill: false, note: 'A payment the bank returned, or a card charge reversed: nets to zero' },
   { name: FOUNDER_CARD_BUCKET, kind: 'ignore', needs_bill: false, note: 'The founder paying his own card bill' },
   { name: 'CASH AT POS DELHI', kind: 'transfer', needs_bill: false, note: 'Cash deposited (your wholesale vertical): Dr ICICI Bank / Cr this ledger' },
+  { name: 'Wholesale (accountant books)', kind: 'ignore', needs_bill: false, note: 'Your wholesale business (Aggarwal Traders, Wakum India): the accountant books it in his own books, the ERP makes no entry' },
   { name: 'Sewing Machine GST', kind: 'asset', needs_bill: true, note: 'A machine is a fixed asset. Other machines need their own ledger: tell me which' },
   { name: SUSPENSE_BUCKET, kind: 'review', needs_bill: false, note: 'Parked until a person decides (Unsecured Loans From Directors when it is a director)' },
 ];

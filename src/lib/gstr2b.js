@@ -17,6 +17,10 @@ const str = (x) => String(x ?? '').trim();
 
 /** An invoice number reduced to what identifies it, so "SVF/26-27/265" and "svf 2627 265" are the same: no case, punctuation or leading zeros. */
 export const normInvoice = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^0+(?=.)/, '');
+
+/** A bill the owner said "the accountant books this one" (gstr2b_handled: supplier GSTIN + invoice number): the ERP makes no voucher and no stock entry from it. */
+export const isHandledBill = (bill, handled) => !!bill?.supplier_gstin
+  && (handled || []).some(h => String(h.gstin).toUpperCase() === String(bill.supplier_gstin).toUpperCase() && h.invoice_key === normInvoice(bill.invoice_no));
 export const signOf = (d) => d.kind === 'credit_note' ? -1 : 1;
 export const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
 
