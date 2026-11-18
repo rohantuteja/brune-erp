@@ -131,7 +131,7 @@ export function buildChecklist(d) {
       const items = [...groups.values()].map(g => {
         const total = g.reduce((t, a) => t + a.left, 0), parts = g.map(a => `${money(a.left)} on ${dmy(a.date)}`).join(' + '), ag = g[0].against;
         if (!ag) return `${g[0].vendor}: ${parts}${g.length > 1 ? ` = ${money(total)}` : ''}: no invoice for it is on the Bills page yet.`;
-        const rest = ag.stillDue > 0.004 ? ` ${money(ag.stillDue)} of it is still to pay.` : '';
+        const rest = ag.stillDue > 0.004 ? ` ${money(ag.stillDue)} of it is still to pay.` : (ag.discount > 0 ? ` The other ${money(ag.discount)} is a discount the supplier allowed: the invoice is paid in full.` : '');
         return `${g[0].vendor}: ${parts}${g.length > 1 ? ` = ${money(total)}` : ''} paid towards invoice ${ag.no} dated ${dmy(ag.date)} (${money(ag.total)}); the invoice settles ${g.length > 1 ? 'them' : 'it'} when its month is booked.${rest}`;
       });
       add('bills', { id: 'advances', title: `${plural(groups.size, 'supplier')} paid before the invoice is dated (${plural(bb.advances.length, 'payment')})`, status: 'info', detail: 'One invoice can be paid in several parts. A part paid before the invoice is dated is booked as an advance on the supplier; when the invoice\'s month is booked it is settled against all of them. Nothing to do.', items });

@@ -76,6 +76,8 @@ export async function fetchAccounting(supabase, month, today) {
   const cardCoveredTo = accountRows.find(a => a.kind === 'card')?.periodTo ?? null;
   const tu = await supabase.from('gateway_trueups').select('id, voucher_date, invoice, lines, confirmed_at, voided_at');
   if (tu.error && !missingTable(tu.error)) throw new Error(tu.error.message);
+  const dc = await supabase.from('vendor_invoice_discounts').select('invoice_id, amount, ledger, reason');
+  if (dc.error && !missingTable(dc.error)) throw new Error(dc.error.message);
   const tb = await supabase.from('gstr2b_files').select('month, docs');
   if (tb.error && !missingTable(tb.error)) throw new Error(tb.error.message);
   const po = await supabase.from('app_settings').select('value').eq('key', 'provision_opening').maybeSingle();
@@ -87,7 +89,7 @@ export async function fetchAccounting(supabase, month, today) {
   const setting = async (key) => { const r = await supabase.from('app_settings').select('value').eq('key', key).maybeSingle(); let v = r.data?.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch { /* keep the text */ } } return v ?? null; };
   const rentSetting = Number(await setting('rent_monthly')) || null;
   const monthEndInput = { salaryNext, rentMonthly: rentSetting, salaryOverride: (await setting('salary_expense')) || {} };
-  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening, rentMonthly: rentSetting || MONTH_END.rent.monthly });
+  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening, rentMonthly: rentSetting || MONTH_END.rent.monthly, discounts: dc.data || [] });
   const used = [
     ...entries.map(e => e.account),
     ...books.vouchers.flatMap(v => [...v.lines, ...(v.itemLines || [])].map(l => l.account)),

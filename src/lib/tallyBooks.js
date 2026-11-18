@@ -132,7 +132,7 @@ function exactSubset(bills, remaining, target) {
 /**
  * Tally tracks a supplier bill by bill: the Purchase voucher opens a bill (New Ref), a payment settles it (Agst Ref), a payment with no bill yet is an Advance that the
  * bill, when it comes, settles. One supplier at a time, oldest first, on the day's order: bills of the day first, then payments.
- *   bills     [{ id, name, date, net, opening }]      payments  [{ id, date, amount, ref }]
+ *   bills     [{ id, name, date, net, opening, discount }]      payments  [{ id, date, amount, ref }]
  * Returns { billRefs: Map id → [{ name, kind, amount }], payRefs: Map id → [...], advances: [{ name, left, date }], open: [{ id, name, left }] }  (amounts in rupees).
  */
 export function allocateSupplier(bills, payments) {
@@ -151,7 +151,7 @@ export function allocateSupplier(bills, payments) {
         }
         if (left > 0) refs.push({ name: b.name, kind: 'New Ref', amount: rupees(left) });
       }
-      remaining.set(b.id, left); billRefs.set(b.id, refs); arrived.push(b);
+      remaining.set(b.id, Math.max(0, left - paise(b.discount || 0))); billRefs.set(b.id, refs); arrived.push(b);   // a discount the supplier allowed closes what is left (its journal clears the New Ref)
     } else {
       const p = ev.p; let left = paise(p.amount); const refs = [];
       const combo = exactSubset(arrived, remaining, left);
@@ -309,9 +309,12 @@ export function provisionJournals({ from, next, bills, vendors, handled, opening
  *        twoB [{ month, docs }] every GSTR-2B loaded, provisionOpening { supplier: amount } the provisions the accountant booked at 30 Sep
  * @returns { vouchers, problems, notes, unlinked, advances, unpaid, tdsPending, provisionsMissing, parked, summary }
  */
-export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {}, rentMonthly = null }) {
+export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {}, rentMonthly = null, discounts = [] }) {
   const { list, problems } = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) < next), vendors, handled });
   const notes = [];
+  // A supplier that accepted less than its invoice (owner: "mark it as a discount"): the invoice is booked in full, a small journal closes what is left of it.
+  const discountOf = new Map((discounts || []).filter(d => Number(d.amount) > 0).map(d => [Number(d.invoice_id), { amount: r2(d.amount), ledger: d.ledger || 'DISCOUNT RECEIVED', reason: d.reason || '' }]));
+  for (const t of list) { const d = discountOf.get(Number(t.bill.id)); if (d && d.amount >= t.net) { problems.push({ kind: 'discount', text: `${t.vendor.name} ${t.bill.invoice_no}: the discount (${d.amount}) is not less than the invoice (${t.net})` }); discountOf.delete(Number(t.bill.id)); } }
   const allLines = [...(bankLines || []), ...(cardLines || []).map(l => ({ ...l, __card: true }))];
   const cls = classifyBankLines({ lines: allLines, buckets, vendors, payeeLinks, timeline: list, start: start || from, next });
 
@@ -321,7 +324,7 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
   // One allocation per supplier: its bills and the payments linked to it.
   const perVendor = new Map();
   const slot = (id) => perVendor.get(id) ?? (perVendor.set(id, { bills: [], payments: [] }), perVendor.get(id));
-  for (const t of list) if (!isPrepaid(t.vendor)) slot(t.vendor.id).bills.push({ id: t.bill.id, name: t.bill.invoice_no, date: String(t.bill.invoice_date).slice(0, 10), net: t.net, opening: !!t.bill.opening });
+  for (const t of list) if (!isPrepaid(t.vendor)) slot(t.vendor.id).bills.push({ id: t.bill.id, name: t.bill.invoice_no, date: String(t.bill.invoice_date).slice(0, 10), net: t.net, opening: !!t.bill.opening, discount: discountOf.get(Number(t.bill.id))?.amount ?? 0 });
   for (const p of cls.payments) if (p.vendor && !isPrepaid(p.vendor)) slot(p.vendor.id).payments.push({ id: p.line.id, date: String(p.line.txn_date).slice(0, 10), amount: Number(p.line.debit), ref: bankRef(p.line) });
   const billRefs = new Map(), payRefs = new Map(), advances = [], unpaid = [];
   for (const [vid, s] of perVendor) {
@@ -335,14 +338,15 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
   // oldest advance against the oldest later invoice, so the page reads "two payments of one invoice", not "two advances waiting for invoices".
   const later = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) >= next && !b.opening), vendors, handled }).list
     .sort((x, y) => String(x.bill.invoice_date).localeCompare(String(y.bill.invoice_date)));
-  const needs = new Map(later.map(t => [t.bill.id, paise(t.net)]));
+  const laterDiscount = (t) => Number(discounts.find(d => Number(d.invoice_id) === Number(t.bill.id))?.amount) || 0;
+  const needs = new Map(later.map(t => [t.bill.id, Math.max(0, paise(t.net) - paise(laterDiscount(t)))]));
   for (const adv of [...advances].sort((x, y) => String(x.date).localeCompare(String(y.date)))) {
     let left = paise(adv.left);
     for (const t of later) {
       if (t.vendor.id !== adv.vendorId || left <= 0) continue;
       const need = needs.get(t.bill.id);
       if (need <= 0) continue;
-      adv.against = adv.against ?? { no: t.bill.invoice_no, date: String(t.bill.invoice_date).slice(0, 10), total: t.net };
+      adv.against = adv.against ?? { no: t.bill.invoice_no, date: String(t.bill.invoice_date).slice(0, 10), total: t.net, discount: laterDiscount(t) };
       const use = Math.min(need, left); needs.set(t.bill.id, need - use); left -= use;
     }
   }
@@ -365,6 +369,15 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
     if (r.note) notes.push(r.note);
     if (isParked) parked.push({ vendor: t.vendor.name, no: t.bill.invoice_no, tax: r2(t.bill.tax) });
     vouchers.push(r.voucher);
+  }
+  // The discount journal of an invoice dated in the month: Dr the supplier against the invoice (clearing what the advances and payments left), Cr the discount ledger.
+  for (const t of list) {
+    const d = discountOf.get(Number(t.bill.id)), day = String(t.bill.invoice_date).slice(0, 10);
+    if (!d || t.bill.opening || day < from || day >= next) continue;
+    const supplier = t.vendor.tally_ledger_name;
+    vouchers.push({ id: `discount|${t.bill.id}`, type: 'journal', source: 'supplier discount', date: day, number: `ERP/DS/2627/${pad(t.bill.id)}`,
+      memo: `Discount allowed by ${t.vendor.name} on invoice ${t.bill.invoice_no}: the invoice is ${t.net}, the supplier accepted ${r2(t.net - d.amount)} as full settlement${d.reason ? ` (${d.reason})` : ''}`.slice(0, 480), billRefs: [],
+      lines: [{ account: supplier, debit: d.amount, credit: 0, refs: [{ name: t.bill.invoice_no, kind: 'Agst Ref', amount: d.amount }] }, { account: d.ledger, debit: 0, credit: d.amount }], debit: d.amount, credit: d.amount, balanced: true });
   }
   // When the supplier files it, the GST moves from the parking ledger to the input ledger, in the month its GSTR-2B shows it.
   for (const t of list) {

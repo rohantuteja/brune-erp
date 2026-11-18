@@ -171,3 +171,12 @@ test('advances are grouped by supplier and invoice: one invoice paid in two part
   assert.match(a.items[1], /Chandra: ₹500\.00 on 05\/10\/2026: no invoice for it is on the Bills page yet\./);
   assert.match(a.detail, /Nothing to do/);
 });
+
+test('an advance whose invoice carries a discount says the invoice is paid in full, not that something is still to pay', () => {
+  const adv = (left, date) => ({ vendor: 'Shree Vinayak Fab', left, date, against: { no: 'SVF/26-27/306', date: '2026-11-03', total: 89061, discount: 42 } });
+  const c = buildChecklist({ ...good(), books: { unlinked: [], problems: [], notes: [], advances: [adv(15000, '2026-10-10'), adv(74019, '2026-10-27')], unpaid: [], tdsPending: [], purchases: 1, payments: 1 } });
+  const a = step(c, 'advances');
+  assert.equal(a.items.length, 1);
+  assert.match(a.items[0], /= ₹89,019\.00 paid towards invoice SVF\/26-27\/306.*The other ₹42\.00 is a discount the supplier allowed: the invoice is paid in full\./);
+  assert.doesNotMatch(a.items[0], /still to pay/);
+});
