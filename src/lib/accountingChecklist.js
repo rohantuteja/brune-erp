@@ -5,7 +5,6 @@
 //   Uploads    bank statement, card statement, GoKwik report, Velocity wallet ledger, GSTR-2B
 //   Bills      none waiting for review, none still to upload (per GSTR-2B), the month's recurring supplier invoices
 //   Clear up   bank and card lines to decide, orders needing attention, orders not invoiced yet, a fresh ledger
-//   GST        GSTR-3B recorded as filed
 //   Tally      every ledger the file uses exists in Tally; the file not yet generated for this month
 import { monthBounds, monthLabel } from './gstReport.js';
 
@@ -39,7 +38,7 @@ const RECURRING = [['Meta', 'invoice for the month, dated the 1st of the next mo
  *   bankUnresolved, cardUnresolved?,
  *   orders: { total, attention, waitingInvoice, open: { awaiting_payout, awaiting_return, awaiting_settlement, rto_on_the_way, ... } }, attentionAll,
  *   ledgerRun: { finishedAt, held } | null,
- *   missing: [{ name, why }], gstr3bFiled, exportedAt }
+ *   missing: [{ name, why }], exportedAt }
  */
 export function buildChecklist(d) {
   const end = monthEnd(d.month);
@@ -142,12 +141,8 @@ export function buildChecklist(d) {
   const bits = [['awaiting_payout', 'waiting for a gateway payout'], ['awaiting_settlement', 'waiting for a Myntra settlement'], ['awaiting_return', 'waiting for a returned parcel'], ['rto_on_the_way', 'returning to origin']].filter(([k]) => open[k]);
   add('clear', { id: 'open', title: 'Open items (they close by themselves)', status: 'info', detail: bits.length ? bits.map(([k, w]) => `${open[k]} ${w}`).join(' · ') + '. Their later entries go into the month they happen in.' : 'None.', link: { label: 'Ledger', tab: 'ledger' } });
 
-  // ── 4. GST ──
-  add('gst', d.gstr3bFiled
-    ? { id: '3b', title: 'GSTR-3B recorded as filed', status: 'done', detail: 'Its closing credit carries into the next month.', link: { label: 'GSTR-3B', tab: 'gstr3b' } }
-    : { id: '3b', title: 'File GSTR-3B, then record it', status: 'todo', detail: 'GST tab for GSTR-1, GSTR-3B tab for the return; press "I filed" after filing.', link: { label: 'GSTR-3B', tab: 'gstr3b' } });
-
-  // ── 5. Tally ──
+  // ── 4. Tally ──
+  // GSTR-1 and GSTR-3B are not here: they are filed from Tally once the month's data is in it, so they cannot be a condition for making the file.
   const creates = (d.missing || []).filter(m => m.status === 'will_create');
   const blocking = (d.missing || []).filter(m => m.status !== 'will_create');
   add('tally', !(d.missing || []).length
@@ -170,5 +165,5 @@ export function buildChecklist(d) {
 export const QUIET_DAYS = 3;
 
 export const SECTIONS = [
-  { id: 'uploads', title: 'Uploads' }, { id: 'bills', title: 'Bills' }, { id: 'clear', title: 'Clear up' }, { id: 'gst', title: 'GST' }, { id: 'tally', title: 'Tally' },
+  { id: 'uploads', title: 'Uploads' }, { id: 'bills', title: 'Bills' }, { id: 'clear', title: 'Clear up' }, { id: 'tally', title: 'Tally' },
 ];

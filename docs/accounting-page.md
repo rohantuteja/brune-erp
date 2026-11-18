@@ -24,8 +24,18 @@ Generate button disabled.
 | | no order placed in the month is waiting for a Unicommerce invoice (sales are booked on the order date) | yes |
 | | no order held back by an outage; the ledger refreshed in the last 36 hours (stale = asked, not blocking) | held: yes |
 | | open items (awaiting payout / settlement / return, RTO on the way): they close by themselves | information |
-| GST | GSTR-3B recorded as filed | no |
 | Tally | every ledger the file uses (order-ledger accounts, bank buckets, the ledgers of the month's bill vendors) is in Tally (`tally_ledgers.status = in_tally`); the others are listed with "to be created / renamed / not in the list" | yes |
+
+**No GST step (owner's correction, 18 Nov 2026).** The checklist has no "file GSTR-3B" or "record it" step and no GST section: GSTR-1 and GSTR-3B are
+filed from Tally once the month's data has been imported, so they cannot be a condition for making the file. Only the GSTR-2B matters here (Uploads:
+loaded for the month; Bills: every invoice in it has its bill, is booked from it, or is one the accountant books), because it decides which supplier bills
+exist to be booked. The GSTR-3B screen under Analytics stays as a working sheet; its "I filed" button only carries the closing credit into the next month.
+
+**A supplier's own ledger that Tally lacks (migration 048, 18 Nov 2026).** A vendor saved with "it is not in my Tally yet" (`vendors.ledger_new`) is a
+ledger the file creates. Such ledgers were not in `tally_ledgers`, so the checklist reported them as "not in the list of Tally ledgers" and blocked the
+file (VIPUL ENTERPRISES, Mittal Hosiery Private Limited (Delhi), PicknPack Solutions India Pvt Ltd, 18 Nov). Migration 048 adds them to `tally_ledgers` as
+`will_create` under Sundry Creditors and a trigger on `vendors` does the same for every vendor saved later, so the file's ledgers section and the
+"imported" marking both cover them. What still blocks is only a ledger waiting to be renamed by hand in Tally, or a name that is in no list at all.
 
 ## The Tally file (`tallyVouchers.js`, `tallyJson.js`)
 First version, as the owner asked: a file, not a sync. The order ledger's entries are grouped into vouchers exactly as the ledger holds

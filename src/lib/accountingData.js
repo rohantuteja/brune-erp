@@ -71,15 +71,11 @@ export async function fetchAccounting(supabase, month, today) {
     ...monthBills.flatMap(b => { const v = vendorById.get(b.vendor_id); return v && v.booking !== 'tie_out' ? [v.tally_ledger_name, v.expense_ledger].filter(Boolean) : []; }),
   ];
 
-  let gstr3bFiled = false;
-  const g3 = await supabase.from('gstr3b_months').select('filed_at').eq('month', month).maybeSingle();
-  if (!g3.error && g3.data?.filed_at) gstr3bFiled = true;
-
   const checklistInput = {
     month, today, accounts: accountRows, gokwikSettledTo, gokwikPayouts, gokwikUnproven, velocityTo, myntraSettledTo, billsReview, bills, toUpload, noCopy, twoBLoaded: !!twoB, bankUnresolved,
     orders: { total: orderRows.length, waitingInvoice: orderRows.filter(o => o.status === 'waiting_invoice').length, open }, attentionAll,
     ledgerRun: run ? { finishedAt: run.finished_at, held: (run.summary?.held || []).length } : null,
-    missing: missingLedgers({ used, tally }), gstr3bFiled, exportedAt: null,
+    missing: missingLedgers({ used, tally }), exportedAt: null,
   };
   return { checklistInput, entries, orders, tally };
 }

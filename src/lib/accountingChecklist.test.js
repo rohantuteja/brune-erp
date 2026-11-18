@@ -8,7 +8,7 @@ const good = () => ({
   gokwikSettledTo: '2026-10-31', gokwikPayouts: 29, gokwikUnproven: 0, velocityTo: '2026-10-31', myntraSettledTo: '2026-11-11', billsReview: 0,
   bills: ['Meta', 'Velocity', 'GoKwik', 'Easebuzz'].map((v, i) => ({ vendor: v, invoice_date: v === 'Easebuzz' ? '2026-10-31' : '2026-11-01' })),
   toUpload: [], twoBLoaded: true, bankUnresolved: 0, orders: { waitingInvoice: 0, open: { awaiting_payout: 3 } }, attentionAll: 0,
-  ledgerRun: { finishedAt: '2026-11-18T10:40:00Z', held: 0 }, missing: [], gstr3bFiled: true, exportedAt: null,
+  ledgerRun: { finishedAt: '2026-11-18T10:40:00Z', held: 0 }, missing: [], exportedAt: null,
 });
 const step = (c, id) => c.steps.find(s => s.id === id);
 
@@ -81,18 +81,18 @@ test('ledgers the file would use that are not in Tally are listed, with why', ()
   assert.equal(step(c, 'ledgers').items.length, 2);          // the rename and the unknown name; the ledger to create is made by the file itself
 });
 
-test('the checklist is grouped into the five sections, in order', () => {
+test('the checklist is grouped into the four sections, in order', () => {
   const c = buildChecklist(good());
-  assert.deepEqual(c.sections.map(s => s.id), ['uploads', 'bills', 'clear', 'gst', 'tally']);
+  assert.deepEqual(c.sections.map(s => s.id), ['uploads', 'bills', 'clear', 'tally']);
   assert.ok(c.sections.every(s => s.steps.length > 0));
   assert.equal(monthEnd('2026-02'), '2026-02-28');
   assert.equal(monthEnd('2026-12'), '2026-12-31');
 });
 
-test('GSTR-3B not recorded is advice, not a blocker', () => {
-  const c = buildChecklist({ ...good(), gstr3bFiled: false });
-  assert.equal(step(c, '3b').status, 'todo');
-  assert.equal(step(c, '3b').blocker, false);
+test('GSTR-1 and GSTR-3B are not steps of the checklist: they are filed from Tally after the export', () => {
+  const c = buildChecklist(good());
+  assert.equal(c.steps.some(x => x.id === '3b' || x.section === 'gst'), false);
+  assert.equal(c.steps.some(x => /file gstr|gstr-3b recorded|gstr-1/i.test(x.title)), false);
   assert.equal(c.ready, true);
 });
 
