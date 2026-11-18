@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGstr2bJson, parseGstr2bSheets, parseGstr2bFile, normInvoice, parseDate, availableTotals, signOf } from './gstr2b.js';
+import { parseGstr2bJson, parseGstr2bSheets, parseGstr2bFile, normInvoice, parseDate, availableTotals, signOf, isHandledBill } from './gstr2b.js';
 import { buildXlsx } from './xlsxWrite.js';
 import { xlsxSheets } from './xlsxRead.js';
 
@@ -220,4 +220,14 @@ test('real layout: a sheet of reversals or IMS rejections with lines in it is na
   assert.equal(p.warnings.length, 2);
   assert.match(p.warnings.join(' '), /1 line of documents you rejected on the portal \(IMS\)/);
   assert.match(p.warnings.join(' '), /1 line of invoices whose credit has to be reversed \(Rule 37A\)/);
+});
+
+test('a bill the owner said the accountant books is recognised by supplier GSTIN and invoice number, however the number is written', () => {
+  const handled = [{ gstin: '07AKFPR5912D1Z9', invoice_key: '1068', invoice_no: '1068' }];
+  assert.equal(isHandledBill({ supplier_gstin: '07AKFPR5912D1Z9', invoice_no: '1068' }, handled), true);
+  assert.equal(isHandledBill({ supplier_gstin: '07akfpr5912d1z9', invoice_no: '01068' }, handled), true);       // case and a leading zero do not matter
+  assert.equal(isHandledBill({ supplier_gstin: '07AKFPR5912D1Z9', invoice_no: '1069' }, handled), false);       // another invoice of the same supplier is still booked
+  assert.equal(isHandledBill({ supplier_gstin: '09ABCDE1234F1Z5', invoice_no: '1068' }, handled), false);       // the same number from another supplier is still booked
+  assert.equal(isHandledBill({ supplier_gstin: null, invoice_no: '1068' }, handled), false);
+  assert.equal(isHandledBill({ supplier_gstin: '07AKFPR5912D1Z9', invoice_no: '1068' }, null), false);
 });
