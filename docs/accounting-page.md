@@ -159,3 +159,12 @@ the cutting and production data (next slice).
 Each date a step reads has a different meaning: a **bank statement** and a **Velocity ledger** end at their last transaction; a **card statement** ends at its billing date
 (the period in the PDF header, exact); **GoKwik's report** is judged by the bank (every Easebuzz credit of the month matched to a payout), never by the last transaction
 date, because payments made on the last days of a month are paid out in the next month and appear in the next month's report.
+- **Advances name the invoice they will settle (19 Nov 2026).** One invoice is often paid in several parts, the first before it is even dated (Shree Vinayak: ₹15,000 on 10 Oct + ₹74,019 on 27 Oct towards
+  invoice SVF/26-27/306 dated 3 Nov, ₹89,061). In October both are advances on the supplier (the invoice does not exist in October's books); in November the invoice's voucher settles BOTH (two `Agst Ref` lines) and the
+  ₹42 left is its own open `New Ref`. The Accounting page now groups the advances by supplier and invoice and says so, instead of listing "two advances paid before the invoice": `buildBooks` gives each advance
+  `against` { no, date, total, stillDue } from the supplier's uploaded invoices dated after the month.
+- **A supplier's discount (migration 054, `vendor_invoice_discounts`, 19 Nov 2026).** When a supplier accepts less than its invoice, the invoice is booked IN FULL as the supplier issued it (the input GST is the invoice's, a discount after the invoice does not
+  change it) and one small journal clears what is left: Dr the supplier (`Agst Ref` the invoice) / Cr `DISCOUNT RECEIVED` (`ERP/DS/2627/<invoice id>`, dated the invoice date). One row per invoice: `invoice_id`, `amount`, `ledger`,
+  `reason`; admin functions `vendor_invoice_discount_set` / `_clear` exist, a screen for them does not. First use: Shree Vinayak SVF/26-27/306 (dated 3 Nov, ₹89,061): the supplier quoted ₹89,019, was paid that in two
+  parts (10 and 27 Oct), then invoiced ₹89,061; the owner confirmed it is paid in full, so ₹42 is the discount. October shows the two payments as advances against it; November books the invoice (advances `Agst Ref` ₹15,000 + ₹74,019,
+  ₹42 `New Ref`) and the discount journal; the supplier ends at nil and is not listed as unpaid. A discount not less than the invoice is a problem, not a journal.

@@ -160,3 +160,23 @@ test('purchase and payment steps: unlinked payments block the file, advances and
   assert.equal(c.ready, false);
   assert.equal(buildChecklist({ ...good(), books: { unlinked: [], problems: [], notes: [], advances: [], unpaid: [], tdsPending: ['Meta'], purchases: 1, payments: 1 } }).ready, true);   // the TDS to-do does not block
 });
+
+test('advances are grouped by supplier and invoice: one invoice paid in two parts reads as one line that names the invoice and what is still to pay', () => {
+  const adv = (left, date) => ({ vendor: 'Shree Vinayak Fab', left, date, against: { no: 'SVF/26-27/306', date: '2026-11-03', total: 89061, stillDue: 42 } });
+  const c = buildChecklist({ ...good(), books: { unlinked: [], problems: [], notes: [], advances: [adv(15000, '2026-10-10'), adv(74019, '2026-10-27'), { vendor: 'Chandra', left: 500, date: '2026-10-05' }], unpaid: [], tdsPending: [], purchases: 1, payments: 1 } });
+  const a = step(c, 'advances');
+  assert.equal(a.status, 'info'); assert.match(a.title, /2 suppliers paid before the invoice is dated \(3 payments\)/);
+  assert.equal(a.items.length, 2);
+  assert.match(a.items[0], /Shree Vinayak Fab: ₹15,000\.00 on 10\/10\/2026 \+ ₹74,019\.00 on 27\/10\/2026 = ₹89,019\.00 paid towards invoice SVF\/26-27\/306 dated 03\/11\/2026 \(₹89,061\.00\); the invoice settles them when its month is booked\. ₹42\.00 of it is still to pay\./);
+  assert.match(a.items[1], /Chandra: ₹500\.00 on 05\/10\/2026: no invoice for it is on the Bills page yet\./);
+  assert.match(a.detail, /Nothing to do/);
+});
+
+test('an advance whose invoice carries a discount says the invoice is paid in full, not that something is still to pay', () => {
+  const adv = (left, date) => ({ vendor: 'Shree Vinayak Fab', left, date, against: { no: 'SVF/26-27/306', date: '2026-11-03', total: 89061, discount: 42 } });
+  const c = buildChecklist({ ...good(), books: { unlinked: [], problems: [], notes: [], advances: [adv(15000, '2026-10-10'), adv(74019, '2026-10-27')], unpaid: [], tdsPending: [], purchases: 1, payments: 1 } });
+  const a = step(c, 'advances');
+  assert.equal(a.items.length, 1);
+  assert.match(a.items[0], /= ₹89,019\.00 paid towards invoice SVF\/26-27\/306.*The other ₹42\.00 is a discount the supplier allowed: the invoice is paid in full\./);
+  assert.doesNotMatch(a.items[0], /still to pay/);
+});

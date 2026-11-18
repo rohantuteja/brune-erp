@@ -298,3 +298,36 @@ test('a payment to the landlord clears the month\'s rent on Rent Payable and boo
   const d = run([L({ id: 304, txn_date: '2026-10-14', debit: 20000, bucket: 'Rent - Director Resident', payee: 'cherrycoun' })], 18000);
   assert.deepEqual(pay(d).lines.map(l => [l.account, l.debit, l.credit]), [['Rent - Director Resident', 20000, 0], ['ICICI Bank', 0, 20000]]);
 });
+
+test('two payments of one invoice dated next month: both advances name that invoice and what of it is still to pay', () => {
+  const r = run();
+  assert.deepEqual(r.advances.map(a => [a.left, a.against?.no, a.against?.date, a.against?.total, a.against?.stillDue]),
+    [[15000, 'SVF/26-27/306', '2026-11-03', 89061, 42], [74019, 'SVF/26-27/306', '2026-11-03', 89061, 42]]);
+  // an advance to a supplier with no later invoice uploaded names none
+  const none = buildBooks({ from: '2026-10-01', next: '2026-11-01', start: '2026-10-01', bills: bills.filter(b => b.id !== 4), vendors, handled, bankLines: lines, buckets, payeeLinks: [] });
+  assert.ok(none.advances.every(a => a.against === undefined));
+});
+
+test('a discount the supplier allowed closes the invoice: booked in full, one small journal clears the ₹42 against it, nothing is left unpaid', () => {
+  const discounts = [{ invoice_id: 4, amount: 42, ledger: 'DISCOUNT RECEIVED', reason: 'quoted 89,019, invoiced 89,061' }];
+  const nov = buildBooks({ from: '2026-11-01', next: '2026-12-01', start: '2026-10-01', bills, vendors, handled, bankLines: lines, buckets, payeeLinks: [], discounts });
+  assert.deepEqual(nov.vouchers.map(v => v.id), ['purchase|4', 'discount|4']);
+  // the invoice is in full, as the supplier issued it: the advances settle it and the ₹42 is its own bill
+  assert.deepEqual(byId(nov, 'purchase|4').billRefs, [{ name: 'ADV-110886242994', kind: 'Agst Ref', amount: 15000 }, { name: 'ADV-111016612294', kind: 'Agst Ref', amount: 74019 }, { name: 'SVF/26-27/306', kind: 'New Ref', amount: 42 }]);
+  const d = byId(nov, 'discount|4');
+  assert.equal(d.type, 'journal'); assert.equal(d.date, '2026-11-03'); assert.equal(d.number, 'ERP/DS/2627/00004'); assert.equal(d.balanced, true);
+  assert.deepEqual(d.lines.map(l => [l.account, l.debit, l.credit]), [['Shree Vinayak Fab', 42, 0], ['DISCOUNT RECEIVED', 0, 42]]);
+  assert.deepEqual(d.lines[0].refs, [{ name: 'SVF/26-27/306', kind: 'Agst Ref', amount: 42 }]);
+  assert.match(d.memo, /Discount allowed by Shree Vinayak Fab on invoice SVF\/26-27\/306/);
+  assert.deepEqual(nov.unpaid.filter(u => u.vendor === 'Shree Vinayak Fab'), []);
+  // without it the ₹42 stays unpaid
+  const without = buildBooks({ from: '2026-11-01', next: '2026-12-01', start: '2026-10-01', bills, vendors, handled, bankLines: lines, buckets, payeeLinks: [] });
+  assert.deepEqual(without.unpaid.filter(u => u.vendor === 'Shree Vinayak Fab').map(u => u.left), [42]);
+  // October: the invoice is not dated yet, so no journal; the advances say the discount is what the invoice leaves over
+  const oct = run({ discounts });
+  assert.equal(oct.vouchers.some(v => v.id === 'discount|4'), false);
+  assert.deepEqual(oct.advances.filter(a => a.vendor === 'Shree Vinayak Fab').map(a => [a.left, a.against.no, a.against.discount, a.against.stillDue]), [[15000, 'SVF/26-27/306', 42, undefined], [74019, 'SVF/26-27/306', 42, undefined]]);
+  // a discount that is not less than the invoice is refused, not booked
+  const silly = buildBooks({ from: '2026-11-01', next: '2026-12-01', start: '2026-10-01', bills, vendors, handled, bankLines: lines, buckets, payeeLinks: [], discounts: [{ invoice_id: 4, amount: 89061 }] });
+  assert.equal(silly.vouchers.some(v => v.id === 'discount|4'), false); assert.match(silly.problems.map(p => p.text).join(' '), /the discount \(89061\) is not less than the invoice/);
+});
