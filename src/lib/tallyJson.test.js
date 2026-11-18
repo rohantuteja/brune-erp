@@ -156,3 +156,40 @@ test('invoice vouchers keep their entries under ledgerentries and accounting vou
     else { assert.ok(m.allledgerentries, m.vouchernumber); assert.equal(m.ledgerentries, undefined); }
   }
 });
+
+// ── Stock items on sales and credit notes ──
+test('a sale with pieces is an item invoice: BRUNE LADIES DRESSES with quantity and rate; the COD charge and the tax stay ledger lines; the voucher still sums to zero', () => {
+  const ents = [
+    e('B', '2026-10-04', 'sale', 'Customer (order control)', 3294.76, 0, { doc: 'INS9' }),
+    e('B', '2026-10-04', 'sale', 'GST SALES', 0, 2809.52, { doc: 'INS9', part: 'goods', qty: 2 }),
+    e('B', '2026-10-04', 'sale', 'GST SALES', 0, 95.24, { doc: 'INS9', part: 'cod_charge' }),
+    e('B', '2026-10-04', 'sale', 'IGST OUTPUT UP', 0, 145.2 + 244.8 - 0, { doc: 'INS9' }),
+  ];
+  const ord = new Map([['B', { state: 'Delhi', saleDoc: 'INS9', channel: 'shopify' }]]);
+  const t = buildTallyFile({ vouchers: groupOrderVouchers(ents), orders: ord, books: [] });
+  const s = find(t.file, 'Sales');
+  assert.equal(s.vchentrymode, 'Item Invoice');
+  const it = s.allinventoryentries[0];
+  assert.deepEqual([it.stockitemname, it.rate, it.amount, it.actualqty, it.gsthsnname, it.batchallocations[0].godownname, it.accountingallocations[0].ledgername], ['BRUNE LADIES DRESSES', '1404.76/Pcs', '2809.52', ' 2 Pcs', '6204', 'Main Location', 'GST SALES']);
+  assert.deepEqual(s.ledgerentries.filter(x => x.ledgername === 'GST SALES').map(x => x.amount), ['95.24']);      // the COD charge only: the goods are in the item
+  assert.deepEqual(t.checks.find(c => c.id === 'balanced').ok, true);
+});
+
+test('a return with pieces puts them back: the item is a debit with a negative amount, the credit note clears the sale\'s bill', () => {
+  const ents = [
+    e('B', '2026-10-09', 'credit_note', 'GST SALES RETURN', 1284.76, 0, { doc: 'ISR9', part: 'goods', qty: 1 }),
+    e('B', '2026-10-09', 'credit_note', 'IGST OUTPUT UP', 64.24, 0, { doc: 'ISR9' }),
+    e('B', '2026-10-09', 'credit_note', 'Customer (order control)', 0, 1349, { doc: 'ISR9' }),
+  ];
+  const ord = new Map([['B', { state: 'Delhi', saleDoc: 'INS9', channel: 'shopify' }]]);
+  const t = buildTallyFile({ vouchers: groupOrderVouchers(ents), orders: ord, books: [] });
+  const c = find(t.file, 'Credit Note'), it = c.allinventoryentries[0];
+  assert.deepEqual([c.vchentrymode, it.amount, it.isdeemedpositive, it.actualqty, it.accountingallocations[0].ledgername, it.accountingallocations[0].isdeemedpositive], ['Item Invoice', '-1284.76', true, ' 1 Pcs', 'GST SALES RETURN', true]);
+  assert.equal(c.ledgerentries.some(x => x.ledgername === 'GST SALES RETURN'), false);
+  assert.equal(t.checks.find(x => x.id === 'balanced').ok, true); assert.equal(t.checks.find(x => x.id === 'totals').ok, true);
+});
+
+test('goods with no pieces recorded stay an accounting invoice', () => {
+  const t = buildTallyFile({ vouchers: groupOrderVouchers(entries), orders, books: [] });
+  assert.equal(find(t.file, 'Sales').vchentrymode, 'Accounting Invoice'); assert.equal(find(t.file, 'Sales').allinventoryentries, undefined);
+});

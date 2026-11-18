@@ -9,7 +9,7 @@
 //
 // Wholesale (bills the owner marked "the accountant books this one", the bucket "Wholesale (accountant books)"), returned pairs and the founder's own card
 // payments make no entry. Pure functions of the rows, tested without a database. Rules and reasoning: docs/accounting-page.md.
-import { isHandledBill } from './gstr2b.js';
+import { isHandledBill, normInvoice } from './gstr2b.js';
 import { stateOfGstin, stateByCode } from './gstStates.js';
 
 export const BOOKS = {
@@ -21,6 +21,12 @@ export const BOOKS = {
   // Receivables the order ledger already posts the bank credits of (one Receipt per UTR): these bank credits make no second voucher.
   orderLedgers: new Set(['Easebuzz Private Limited', 'COD receivable (Velocity)', 'Razorpay Payment Private Limited', 'Myntra receivable (order control)']),
   ourState: 'Uttar Pradesh',
+  card: 'Rohan (Director Personal Credit Card)',                                   // the founder's card: the ledger the card journal credits
+  parking: 'INPUT NOT CLAIMED FOR INV NOT IN 2A',                                  // input GST of a bill its supplier has not filed (not in GSTR-2B) waits here
+  provision: 'Provision for Expenses',
+  // Suppliers provisioned at the month end for the spend whose invoice comes on the 1st of the next month, and the ledger that takes the provision's expense.
+  provisions: [{ vendor: 'Meta', expense: 'Marketing Expenses Provision' }, { vendor: 'Velocity', expense: 'Shipping Expenses Provision' }],
+  firstProvisionMonth: '2026-10',                                                  // the ERP's own provisions begin with October 2026 (September is the accountant's)
 };
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -56,7 +62,7 @@ export function billsToBook({ bills, vendors, handled }) {
 }
 
 /** One bill → one Purchase voucher (without its bill references: the allocation fills those in), or { problem }. */
-export function purchaseVoucher({ bill: b, vendor: v, tds, net }) {
+export function purchaseVoucher({ bill: b, vendor: v, tds, net, parked = false }) {
   const subtotal = Number(b.subtotal) || 0, tax = Number(b.tax) || 0, total = Number(b.total) || 0;
   const cgstSgst = /CGST/i.test(b.tax_type || '') && !/IGST/i.test(b.tax_type || '');
   const lines = Array.isArray(b.lines) ? b.lines : [];
@@ -72,7 +78,8 @@ export function purchaseVoucher({ bill: b, vendor: v, tds, net }) {
   rows.push({ account: v.tally_ledger_name, debit: 0, credit: net, party: true });
   if (tds) rows.push({ account: v.tds_ledger, debit: 0, credit: tds });
   if (!asItems) rows.push({ account: ledger, debit: goods, credit: 0, expense: true });
-  if (cgstSgst) {
+  if (parked && tax) rows.push({ account: BOOKS.parking, debit: r2(tax), credit: 0 });                // the supplier has not filed it: the GST waits until it shows in GSTR-2B
+  else if (cgstSgst) {
     const c = r2(tax / 2); rows.push({ account: BOOKS.cgst, debit: c, credit: 0 }, { account: BOOKS.sgst, debit: r2(tax - c), credit: 0 });
   } else if (tax) rows.push({ account: BOOKS.igst, debit: r2(tax), credit: 0 });
   const credit = r2(net + tds);
@@ -88,7 +95,7 @@ export function purchaseVoucher({ bill: b, vendor: v, tds, net }) {
       date: String(b.invoice_date).slice(0, 10), number: b.invoice_no, reference: b.invoice_no, memo: `${v.name} invoice ${b.invoice_no}`,
       vendorId: v.id, vendor: v.name, party: v.tally_ledger_name, partyGstin: b.supplier_gstin || v.gstin || '', partyState: state,
       mode: asItems ? 'Item Invoice' : 'Accounting Invoice', items: asItems ? items : [], expense: asItems ? BOOKS.purchaseLedger : ledger,
-      taxRate: Number(b.tax_rate) || null, cgstSgst, sac: items[0]?.hsn || '', services: b.kind === 'service', net, tds, billId: b.id, billRefs: [],
+      taxRate: Number(b.tax_rate) || null, cgstSgst, parked: !!(parked && tax), sac: items[0]?.hsn || '', services: b.kind === 'service', net, tds, billId: b.id, billRefs: [],
       lines: rows.map(({ account, debit: d, credit: c }) => ({ account, debit: d, credit: c })), itemLines: asItems ? items.map(i => ({ account: BOOKS.purchaseLedger, debit: r2(i.amount), credit: 0 })) : [],
       debit, credit: credits, balanced: Math.abs(debit - credits) < 0.005,
     },
@@ -214,6 +221,7 @@ export function classifyBankLines({ lines, buckets, vendors, payeeLinks, timelin
     if (l.status !== 'matched') { out.skipped.push({ line: l, why: 'undecided' }); continue; }
     const b = bucket.get(l.bucket);
     if (Number(l.credit) > 0) {
+      if (l.__card) { out.skipped.push({ line: l, why: 'card credit' }); continue; }
       if (BOOKS.orderLedgers.has(l.bucket)) { out.skipped.push({ line: l, why: 'order ledger receipt' }); continue; }
       out.receipts.push({ line: l, ledger: l.bucket }); continue;
     }
@@ -246,14 +254,61 @@ function shift(day, n) { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.
 
 // ───────────────────────── Everything for one month ─────────────────────────
 
+const lastDayOf = (next) => shift(next, -1);
+const cycleEndOf = (day) => { let [y, m, d] = day.split('-').map(Number); if (d > 20) { m++; if (m > 12) { m = 1; y++; } } return `${y}-${String(m).padStart(2, '0')}-20`; };
+
+/** GSTR-2B of every month the owner has loaded → the first month each invoice (supplier GSTIN + number) appears with input credit available. */
+function twoBIndex(twoB) {
+  const first = new Map(), loaded = new Set();
+  for (const f of twoB || []) {
+    loaded.add(f.month);
+    for (const d of f.docs || []) {
+      if (d.kind && d.kind !== 'invoice') continue;
+      if (!(d.itc === 'Y' || d.itc === true)) continue;
+      const key = `${String(d.ctin || '').toUpperCase()}|${normInvoice(d.no)}`;
+      if (!first.has(key) || f.month < first.get(key)) first.set(key, f.month);
+    }
+  }
+  return { first, loaded };
+}
+
+/** Month-end provisions for Meta and Velocity (their invoice for the month's spend is dated the 1st of the next month) and the reversal of last month's on the 1st. */
+export function provisionJournals({ from, next, bills, vendors, handled, openingProvisions = {} }) {
+  const out = [], missing = [], notes = [];
+  const month = from.slice(0, 7);
+  const lastDay = lastDayOf(next);
+  for (const cfg of BOOKS.provisions) {
+    const v = (vendors || []).find(x => x.name === cfg.vendor);
+    if (!v) continue;
+    const mine = (bills || []).filter(b => b.vendor_id === v.id && b.status === 'accepted' && !isHandledBill(b, handled));
+    const dated = (a, b) => mine.find(x => { const d = String(x.invoice_date).slice(0, 10); return d >= a && d < b; });
+    const code = String(v.name).replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
+    const mk = (id, type, date, amount, dr, cr, memo) => ({ id, type: 'journal', source: type, date, number: `ERP/${type === 'provision' ? 'PV' : 'PR'}/2627/${code}${date.slice(2, 4)}${date.slice(5, 7)}`, memo, billRefs: [],
+      lines: [{ account: dr, debit: r2(amount), credit: 0 }, { account: cr, debit: 0, credit: r2(amount) }], debit: r2(amount), credit: r2(amount), balanced: true });
+    const forThisMonth = dated(next, shift(next, 5));
+    if (forThisMonth) out.push(mk(`provision|${v.name}${month}`, 'provision', lastDay, Number(forThisMonth.subtotal), cfg.expense, BOOKS.provision, `Provision for ${v.name}: ${month} spend, invoice ${forThisMonth.invoice_no} dated ${String(forThisMonth.invoice_date).slice(0, 10)} (before GST)`));
+    else if (mine.some(b => String(b.invoice_date).slice(0, 10) < next)) missing.push(`${v.name}: upload the invoice dated the 1st of the next month (it gives the amount to provide for ${month})`);
+    // The reversal: last month's provision comes back on the 1st, the day the invoice itself is booked in full.
+    const thisInvoice = dated(from, shift(from, 5));
+    const opening = Number(openingProvisions?.[v.name]) || 0;
+    if (opening > 0 && month === BOOKS.firstProvisionMonth) out.push(mk(`provisionrev|${v.name}${month}`, 'provision reversal', from, opening, BOOKS.provision, cfg.expense, `Reversal of the 30 Sep provision for ${v.name} (booked by the accountant)`));
+    else if (thisInvoice && month > BOOKS.firstProvisionMonth) out.push(mk(`provisionrev|${v.name}${month}`, 'provision reversal', from, Number(thisInvoice.subtotal), BOOKS.provision, cfg.expense, `Reversal of the provision for ${v.name}: invoice ${thisInvoice.invoice_no} is booked in full today`));
+    else if (thisInvoice && month === BOOKS.firstProvisionMonth && !opening) notes.push(`${v.name}: the invoice dated ${String(thisInvoice.invoice_date).slice(0, 10)} (${Number(thisInvoice.subtotal).toLocaleString('en-IN', { minimumFractionDigits: 2 })} before GST) is the previous month's spend and is booked in ${month} as an expense, as no provision was made for it at 30 Sep.`);
+  }
+  return { journals: out, missing, notes };
+}
+
 /**
  * @param { from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks }  (all bills and bank lines from the books' start to the end of the month)
- * @returns { vouchers, problems, notes, unlinked, advances, unpaid, tdsPending, summary }
+ * @param cardLines the founder's card lines (same rows), cardCoveredTo the date the card statements reach, trueups the confirmed gateway true-ups,
+ *        twoB [{ month, docs }] every GSTR-2B loaded, provisionOpening { supplier: amount } the provisions the accountant booked at 30 Sep
+ * @returns { vouchers, problems, notes, unlinked, advances, unpaid, tdsPending, provisionsMissing, parked, summary }
  */
-export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks }) {
+export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {} }) {
   const { list, problems } = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) < next), vendors, handled });
   const notes = [];
-  const cls = classifyBankLines({ lines: bankLines, buckets, vendors, payeeLinks, timeline: list, start: start || from, next });
+  const allLines = [...(bankLines || []), ...(cardLines || []).map(l => ({ ...l, __card: true }))];
+  const cls = classifyBankLines({ lines: allLines, buckets, vendors, payeeLinks, timeline: list, start: start || from, next });
 
   // A prepaid account (Velocity's wallet) is not a supplier to settle bill by bill: a top-up adds to the wallet, the monthly invoice uses it up, each is its own reference.
   const prepaidLedgers = new Set((buckets || []).filter(b => b.kind === 'asset').map(b => b.name));
@@ -272,18 +327,37 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
     for (const o of a.open) if (!o.opening) unpaid.push({ vendor: vendor?.name, ...o });
   }
 
+  // Input GST of a bill the supplier has not filed (not in the GSTR-2B of its month, which is loaded) waits on the parking ledger until a later GSTR-2B shows it.
+  const tb = twoBIndex(twoB);
+  const keyOf = (t) => `${String(t.bill.supplier_gstin || t.vendor.gstin || '').toUpperCase()}|${normInvoice(t.bill.invoice_no)}`;
+  const parkedAtBooking = (t) => { const bm = String(t.bill.invoice_date).slice(0, 7), f = tb.first.get(keyOf(t)); return tb.loaded.has(bm) && !(f && f <= bm) && Number(t.bill.tax) > 0; };
+
   const vouchers = [];
+  const parked = [];
   for (const t of list) {
     const d = String(t.bill.invoice_date).slice(0, 10);
     if (t.bill.opening || d < from || d >= next) continue;
-    const r = purchaseVoucher(t);
+    const isParked = parkedAtBooking(t);
+    const r = purchaseVoucher({ ...t, parked: isParked });
     if (r.problem) { problems.push({ kind: 'bill', text: r.problem }); continue; }
     r.voucher.billRefs = isPrepaid(t.vendor) ? [{ name: t.bill.invoice_no, kind: 'New Ref', amount: t.net }] : (billRefs.get(t.bill.id) ?? []);
     if (r.note) notes.push(r.note);
+    if (isParked) parked.push({ vendor: t.vendor.name, no: t.bill.invoice_no, tax: r2(t.bill.tax) });
     vouchers.push(r.voucher);
   }
+  // When the supplier files it, the GST moves from the parking ledger to the input ledger, in the month its GSTR-2B shows it.
+  for (const t of list) {
+    const bm = String(t.bill.invoice_date).slice(0, 7), f = tb.first.get(keyOf(t));
+    if (t.bill.opening || !f || f <= bm || f !== from.slice(0, 7) || !parkedAtBooking(t)) continue;
+    const tax = r2(t.bill.tax), split = /CGST/i.test(t.bill.tax_type || '') && !/IGST/i.test(t.bill.tax_type || ''), c = r2(tax / 2);
+    const drs = split ? [{ account: BOOKS.cgst, debit: c, credit: 0 }, { account: BOOKS.sgst, debit: r2(tax - c), credit: 0 }] : [{ account: BOOKS.igst, debit: tax, credit: 0 }];
+    vouchers.push({ id: `release|${t.bill.id}`, type: 'journal', source: 'input GST released', date: lastDayOf(next), number: `ERP/IT/2627/${pad(t.bill.id)}`, memo: `Input GST of ${t.vendor.name} invoice ${t.bill.invoice_no}: the supplier has filed it (GSTR-2B of ${f})`, billRefs: [],
+      lines: [...drs, { account: BOOKS.parking, debit: 0, credit: tax }], debit: tax, credit: tax, balanced: true });
+  }
+  const cardPays = [];
   for (const p of cls.payments) {
     const l = p.line, day = String(l.txn_date).slice(0, 10);
+    if (l.__card) { if (cardCoveredTo && day <= cardCoveredTo) cardPays.push(p); continue; }
     if (day < from) continue;
     const amount = r2(l.debit), number = `ERP/PY/2627/${pad(l.id)}`;
     vouchers.push({
@@ -303,7 +377,40 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
       lines: [{ account: BOOKS.bank, debit: amount, credit: 0 }, { account: rc.ledger, debit: 0, credit: amount }], debit: amount, credit: amount, balanced: true,
     });
   }
-  const rank = { purchase: 0, payment: 1, receipt: 1 };
+
+  // The founder's card: one Journal per statement cycle (the 21st to the 20th): Dr what was bought (a supplier's ledger against its bill, or an advance), Cr his card ledger.
+  const cycles = new Map();
+  for (const p of cardPays) { const c = cycleEndOf(String(p.line.txn_date).slice(0, 10)); (cycles.get(c) ?? cycles.set(c, []).get(c)).push(p); }
+  let cardTotal = 0, cardCount = 0;
+  for (const [end, pays] of [...cycles].sort()) {
+    if (end < from || end >= next) continue;
+    const rows = new Map();
+    for (const p of pays) {
+      const amount = r2(p.line.debit), row = rows.get(p.ledger) ?? rows.set(p.ledger, { account: p.ledger, debit: 0, credit: 0, refs: [] }).get(p.ledger);
+      row.debit = r2(row.debit + amount);
+      if (p.vendor) row.refs.push(...(isPrepaid(p.vendor) ? [{ name: `CARD-${bankRef(p.line)}`, kind: 'New Ref', amount }] : (payRefs.get(p.line.id) ?? [])));
+    }
+    const total = r2(pays.reduce((t, p) => t + Number(p.line.debit), 0));
+    cardTotal = r2(cardTotal + total); cardCount += pays.length;
+    vouchers.push({ id: `cardjournal|${end}`, type: 'journal', source: 'card journal', date: end, number: `ERP/CJ/2627/${end.replace(/-/g, '')}`, memo: `Founder's card, statement to ${end}: ${pays.length} charge${pays.length === 1 ? '' : 's'}`, billRefs: [],
+      lines: [...rows.values(), { account: BOOKS.card, debit: 0, credit: total }], debit: total, credit: total, balanced: true });
+  }
+
+  // The gateway true-up the owner confirmed (the Easebuzz invoice against what the payouts booked).
+  for (const t of trueups || []) {
+    if (!t.confirmed_at || t.voided_at) continue;
+    const d = String(t.voucher_date).slice(0, 10);
+    if (d < from || d >= next) continue;
+    const ls = (t.lines || []).map(l => ({ account: l.account, debit: r2(l.debit), credit: r2(l.credit) }));
+    const debit = r2(ls.reduce((x, l) => x + l.debit, 0)), credit = r2(ls.reduce((x, l) => x + l.credit, 0));
+    vouchers.push({ id: `trueup|${t.id}`, type: 'journal', source: 'gateway true-up', date: d, number: `ERP/GT/2627/${pad(t.id)}`, memo: `Easebuzz invoice ${t.invoice?.no ?? ''}: booked to the invoice`, billRefs: [], lines: ls, debit, credit, balanced: Math.abs(debit - credit) < 0.005 });
+  }
+
+  // Month-end provisions and the reversal of the last.
+  const prov = provisionJournals({ from, next, bills, vendors, handled, openingProvisions: provisionOpening });
+  vouchers.push(...prov.journals);
+
+  const rank = { purchase: 0, journal: 1, payment: 1, receipt: 1 };
   vouchers.sort((a, b) => a.date.localeCompare(b.date) || rank[a.type] - rank[b.type] || String(a.number).localeCompare(String(b.number), undefined, { numeric: true }));
 
   const monthBills = list.filter(t => !t.bill.opening && String(t.bill.invoice_date).slice(0, 10) >= from);
@@ -312,12 +419,13 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
   const purchases = vouchers.filter(v => v.type === 'purchase'), payments = vouchers.filter(v => v.type === 'payment'), receipts = vouchers.filter(v => v.type === 'receipt');
   const inMonth = (l) => String(l.txn_date).slice(0, 10) >= from;
   return {
-    vouchers, problems, notes, tdsPending,
+    vouchers, problems, notes, tdsPending, provisionsMissing: prov.missing, provisionNotes: prov.notes, parked,
     unlinked: cls.unlinked.filter(inMonth), advances: advances.filter(a => a.date < next), unpaid,
     summary: {
       purchases: { count: purchases.length, party: sum(purchases, v => v.net), tds: sum(purchases, v => v.tds), expected: sum(monthBills, t => t.net) , expectedCount: monthBills.length },
-      payments: { count: payments.length, amount: sum(payments, v => v.debit), expected: sum(cls.payments.filter(p => String(p.line.txn_date).slice(0, 10) >= from), p => Number(p.line.debit)) },
+      payments: { count: payments.length, amount: sum(payments, v => v.debit), expected: sum(cls.payments.filter(p => !p.line.__card && String(p.line.txn_date).slice(0, 10) >= from), p => Number(p.line.debit)) },
       receipts: { count: receipts.length, amount: sum(receipts, v => v.debit) },
+      card: { lines: cardCount, amount: cardTotal, expected: sum(cardPays.filter(p => cycleEndOf(String(p.line.txn_date).slice(0, 10)) >= from && cycleEndOf(String(p.line.txn_date).slice(0, 10)) < next), p => Number(p.line.debit)) },
       skipped: cls.skipped.filter(s => inMonth(s.line)).reduce((m, s) => { m[s.why] = (m[s.why] ?? 0) + 1; return m; }, {}),
     },
   };
@@ -330,6 +438,7 @@ export function bookChecks(books) {
   const okB = Math.abs(s.payments.amount - s.payments.expected) < 0.01;
   return [
     { id: 'purchases', ok: okP && books.problems.length === 0, detail: okP && books.problems.length === 0 ? `${s.purchases.count} purchase voucher${s.purchases.count === 1 ? '' : 's'}: the amounts payable to suppliers add up to the bills (${s.purchases.party.toLocaleString('en-IN', { minimumFractionDigits: 2 })}).` : `Purchase vouchers: ${books.problems.length ? books.problems.slice(0, 3).map(p => p.text).join('; ') : 'the totals differ from the bills'}.` },
+    { id: 'card', ok: Math.abs(s.card.amount - s.card.expected) < 0.01, detail: s.card.lines ? `Card journal: ${s.card.lines} charge${s.card.lines === 1 ? '' : 's'} (${s.card.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}) credited to the founder's card ledger.` : 'No card charges in this month.' },
     { id: 'payments', ok: okB && books.unlinked.length === 0, detail: okB && books.unlinked.length === 0 ? `${s.payments.count} payment voucher${s.payments.count === 1 ? '' : 's'} add up to the bank payments (${s.payments.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}).` : `${books.unlinked.length} bank payment(s) are not linked to a supplier.` },
   ];
 }

@@ -132,7 +132,7 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
           <section className="bg-white rounded-lg border border-stone-200">
             <div className="px-3 sm:px-4 py-2 border-b border-stone-100 text-sm font-medium text-stone-900">Tally file for {monthLabel(month)}</div>
             <div className="px-3 sm:px-4 py-3 space-y-3">
-              <div className="text-xs text-stone-600 leading-relaxed">A JSON file of vouchers for TallyPrime to import: sales and credit notes by invoice, bank receipts by UTR and the clearing of each customer's bill order by order (all from the order ledger), the supplier bills as purchase vouchers, and the bank payments as payment vouchers settled against those bills. Nothing is sent to Tally: the accountant imports the file.</div>
+              <div className="text-xs text-stone-600 leading-relaxed">A JSON file of vouchers for TallyPrime to import: sales and credit notes by invoice (with the pieces on BRUNE LADIES DRESSES), bank receipts by UTR and the clearing of each customer's bill order by order (all from the order ledger), the supplier bills as purchase vouchers, the bank payments as payment vouchers settled against those bills, the founder's card as one journal per statement, the Easebuzz correction and the month-end provisions. Nothing is sent to Tally: the accountant imports the file.</div>
               {plan && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -167,7 +167,7 @@ export function AccountingView({ month, months, onMonth, checklist, plan, loadin
                 </div>
               )}
               {books && (books.summary.skipped.ignored || books.summary.skipped['order ledger receipt']) ? <div className="text-[11px] text-stone-500">Left out on purpose: {books.summary.skipped.ignored || 0} bank lines that make no entry (wholesale, returned payments, your own card payments) and {books.summary['skipped']?.['order ledger receipt'] || 0} payouts the order ledger already has a receipt for.</div> : null}
-              <div className="text-[11px] text-stone-500">Not in the file yet: the card journal, the stock journals and the month-end stock correction, and the Meta and Velocity provisions. Sales and credit notes still carry no stock items.</div>
+              <div className="text-[11px] text-stone-500">Not in the file yet: the stock journals and the month-end stock correction (they wait for the accountant's Stock Summary at 30 Sep), and the opening bills of the orders sold before October. Sales and credit notes carry the dress item and its pieces.</div>
               <div className="flex flex-wrap items-center gap-3">
                 <button type="button" className={btnDark} disabled={!c.ready} onClick={() => onGenerate(false)} title={c.ready ? '' : 'Finish the steps that block the file first'}>
                   {c.ready ? <Download className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}Generate Tally file
