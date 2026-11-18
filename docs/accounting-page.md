@@ -59,7 +59,7 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
 - **Payment** (one per bank payment, ICICI only: the card is the card journal, not built). `ERP/PY/2627/<bank line id>`, dated by the bank, the reference in the narration is the long number inside it
   (UPI / NEFT / IMPS), the bank's date marks it reconciled. A line in a bucket that needs a bill (and in the group `Purchase Accounts`) is a **supplier payment**: it is posted to the
   supplier's ledger, never to the expense (the bill already booked it). Which supplier: a person's link (`finance_lines.vendor_id`), a bucket that is a supplier's ledger,
-  a remembered payee (`finance_payee_vendors`), the exact amount of one to three of a supplier's bills, a payee seen on another line, a name in the payee (`Airtel`). What none of these
+  a remembered payee (`finance_payee_vendors`), the exact amount of one to three of a supplier's bills, a payee seen on another line, a name in the payee or in the word the payer typed (`Airtel`, `AirtelOfficeBil`). What none of these
   places is asked on the page (a picker: remembering the payee is off by default, a person's own name must not become a supplier). Any other bucket is posted straight to its ledger.
 - **Settling bills:** one supplier at a time in date order, a bill opens (New Ref) before the payments of its day; a payment settles bills by the exact sum of up to three, else oldest first;
   what no bill takes is an **Advance** (`ADV-<reference>`), which the supplier's next bill settles first (Agst Ref) before it opens its own New Ref for the rest. Earlier months' payments count, so
@@ -72,8 +72,8 @@ Built after the owner's go ("build the purchase vouchers and the payments"; numb
 - **Supplier ledgers are created with their details** (owner's rule, 18 Nov): bill by bill, GST registration type, GSTIN, PAN, state, country, mailing name, from the supplier record (`partyDetails`).
   The key names are Tally's TDL names from memory: verify them against an exported party ledger on a copy company.
 - **Checked on the real October 2026 data (18 Nov):** 18 purchase vouchers (8 fabric item invoices, 10 expense bills) add up to the bills (₹8,45,020.16; Aggarwal's three wholesale bills and Easebuzz's tie-out
-  left out); 51 payment vouchers (₹14,33,309.25) plus one payment the ERP could not place (₹960.82 to "adrija", filed under Telephone and Internet Expenses GST, an Airtel bill is ₹1,060.82) equal the 52
-  matched bank payments (₹14,34,270.07); every voucher sums to zero (stock items included); advances ₹89,019 to Shree Vinayak (for the 3 Nov invoice) and bills unpaid at month end are listed.
+  left out); 52 payment vouchers (₹14,34,270.07) equal the 52 matched bank payments (the one the ERP first could not place, ₹960.82 to "adrija", is Airtel's: the word the payer typed on it,
+  "AirtelOfficeBil", places it; it is an advance until its bill is uploaded); every voucher sums to zero (stock items included); advances ₹89,019 to Shree Vinayak (for the 3 Nov invoice) and bills unpaid at month end are listed.
 - Not in the file yet: the card journal, stock journals and the month-end stock correction, the Meta / Velocity provisions, stock items on sales and credit notes, the Easebuzz correction journal.
 
 ## The Tally file (`tallyVouchers.js`, `tallyJson.js`)

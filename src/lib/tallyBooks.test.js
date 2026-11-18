@@ -191,3 +191,12 @@ test('a prepaid wallet is not settled bill by bill: a top-up and the monthly inv
   assert.deepEqual(pay.billRefs, [{ name: 'ERP/PY/2627/00183', kind: 'New Ref', amount: 10000 }]);
   assert.equal(pay.source, 'wallet top-up'); assert.deepEqual(r.advances, []); assert.deepEqual(r.unpaid, []);
 });
+
+test('a payment to a person\'s account is placed by the word the payer typed on it ("AirtelOfficeBil"), not asked about', () => {
+  const list = billsToBook({ bills, vendors, handled }).list;
+  const personal = [...lines, L({ id: 26, txn_date: '2026-10-03', debit: 960.82, bucket: 'Telephone and Internet Expenses GST', payee: 'adrija', note: 'airtelofficebil', remarks: 'INF/INFT/046121883681/AirtelOfficeBil/Adrija' })];
+  const c = classifyBankLines({ lines: personal, buckets, vendors, payeeLinks: [], timeline: list, start: month.start, next: month.next });
+  assert.equal(c.payments.find(p => p.line.id === 26).ledger, 'M/s Bharti Airtel Ltd  UP');
+  assert.deepEqual(c.unlinked.map(l => l.id), [500]);                                                 // the unplaced line stays unplaced
+  assert.equal(vendorByPayeeName('adrija', vendors), null);                                           // the person's own name is no supplier
+});

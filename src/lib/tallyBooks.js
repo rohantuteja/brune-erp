@@ -233,7 +233,8 @@ export function classifyBankLines({ lines, buckets, vendors, payeeLinks, timelin
   }
   // Second look at the lines no exact amount placed: the payee was matched to a supplier on another line this run, or its name says which supplier it is.
   for (const l of pending) {
-    const vendor = learned.get(l.payee) || vendorByPayeeName(l.payee || l.remarks, vendors);
+    // The payee's name, then the word the payer typed on the payment ("AirtelOfficeBil"), and the whole narration only when both are empty.
+    const vendor = learned.get(l.payee) || vendorByPayeeName(l.payee, vendors) || vendorByPayeeName(l.note, vendors) || (!l.payee && !l.note ? vendorByPayeeName(l.remarks, vendors) : null);
     if (vendor) out.payments.push({ line: l, vendor, ledger: vendor.tally_ledger_name });
     else out.unlinked.push(l);
   }
