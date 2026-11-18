@@ -101,8 +101,12 @@ export function buildChecklist(d) {
   if (d.twoBLoaded) {
     const n = (d.toUpload || []).length;
     add('bills', n
-      ? { id: 'toupload', title: `${plural(n, 'bill')} to upload that suppliers have filed`, status: 'todo', blocker: true, detail: 'In GSTR-2B but not in the ERP, so missing from the books.', items: d.toUpload.map(x => `${x.vendor} ${x.no} (${dmy(x.date)}): tax ${Number(x.tax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`), link: { label: 'GSTR-3B (Bills to upload)', tab: 'gstr3b' } }
+      ? { id: 'toupload', title: `${plural(n, 'bill')} to upload that suppliers have filed`, status: 'todo', blocker: true, detail: 'In GSTR-2B but not in the ERP, so missing from the books. Upload the invoice, book it from the 2B details, or mark it as one the accountant books.', items: d.toUpload.map(x => `${x.vendor} ${x.no} (${dmy(x.date)}): tax ${Number(x.tax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`), link: { label: 'GSTR-3B (Bills to upload)', tab: 'gstr3b' } }
       : { id: 'toupload', title: 'Every invoice in GSTR-2B has its bill', status: 'done', detail: 'Nothing to upload.', link: { label: 'GSTR-3B', tab: 'gstr3b' } });
+  }
+
+  if ((d.noCopy || []).length) {
+    add('bills', { id: 'nocopy', title: `${plural(d.noCopy.length, 'bill')} booked from GSTR-2B ${d.noCopy.length === 1 ? 'has' : 'have'} no invoice copy yet`, status: 'info', detail: 'They are in the books and in the Tally file; the invoice copies are still to be had from the suppliers. Attach each PDF on the Bills page when it arrives.', items: d.noCopy.map(b => `${b.vendor} ${b.no} (${dmy(b.date)})`), link: { label: 'Bills', tab: 'bills' } });
   }
 
   const next5 = addDays(monthBounds(d.month).next, 4);

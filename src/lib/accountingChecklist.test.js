@@ -140,3 +140,11 @@ test('GoKwik: a month with no Easebuzz credit at all is fine; the detail says so
   assert.equal(step(c, 'gokwik').status, 'done');
   assert.match(step(c, 'gokwik').detail, /No Easebuzz credit in the bank this month/);
 });
+
+test('bills booked from GSTR-2B with no invoice copy are information, never a blocker', () => {
+  const c = buildChecklist({ ...good(), noCopy: [{ vendor: 'Google', no: '5732193357', date: '2026-10-31' }] });
+  assert.equal(step(c, 'nocopy').status, 'info');
+  assert.notEqual(step(c, 'nocopy').blocker, true);
+  assert.equal(c.ready, true);
+  assert.equal(step(buildChecklist(good()), 'nocopy'), undefined);
+});

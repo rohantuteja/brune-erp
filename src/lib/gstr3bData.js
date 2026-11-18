@@ -15,7 +15,7 @@ export async function fetchGstr3bMonth(supabase, month) {
   const gst = await fetchGstMonth(supabase, month);
 
   const bills = await pages((a, b) => supabase.from('vendor_invoices')
-    .select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, supplier_gstin, status, opening, kind, file_name')
+    .select('id, vendor, vendor_id, invoice_no, invoice_date, subtotal, tax, total, tax_type, supplier_gstin, status, opening, kind, file_name, file_path, source')
     .neq('status', 'void').order('id').range(a, b));
   const vendors = await pages((a, b) => supabase.from('vendors').select('id, name, gstin, booking').order('id').range(a, b));
   const ledgerInput = await pages((a, b) => supabase.from('ledger_entries')
@@ -44,10 +44,14 @@ export async function fetchGstr3bMonth(supabase, month) {
   if (credit.error) { if (missing(credit.error)) storeMissing = true; else throw new Error(credit.error.message); }
   const rows = credit.data || [];
 
+  const hd = await supabase.from('gstr2b_handled').select('gstin, invoice_key, invoice_no, note, by_name, at');
+  if (hd.error && !missing(hd.error)) throw new Error(hd.error.message);
+  const handled = hd.data || [];
+  const lc = await pages((a, b) => supabase.from('tally_ledgers').select('name, under, role').eq('role', 'expense').order('name').range(a, b));
   const f = file.data;
   const twoB = f ? { source: f.source, fileName: f.file_name, gstin: f.gstin, period: f.period, generatedOn: f.generated_on, docs: f.docs || [], warnings: f.warnings || [], checks: [], uploadedBy: f.uploaded_by_name, uploadedAt: f.uploaded_at } : null;
   const monthRow = readRow(rows.find(x => x.month === month)), prevRow = readRow(rows.find(x => x.month === prevMonth(month)));
-  return { gst, bills, vendors, ledgerInput, tcsRows, trueups, ownGstin, twoB, monthRow, prevRow, storeMissing };
+  return { gst, bills, vendors, ledgerInput, tcsRows, trueups, ownGstin, twoB, monthRow, prevRow, storeMissing, handled, ledgerChoices: lc };
 }
 
 const fail = (error) => { if (error) throw new Error(error.message); };
@@ -109,4 +113,24 @@ export async function fetchFollowup(supabase, start) {
   const company = await supabase.from('app_settings').select('value').eq('key', 'company_gstin').maybeSingle();
   const ownGstin = typeof company.data?.value === 'string' ? company.data.value.replace(/"/g, '') : null;
   return { bills, vendors, files: f.data || [], followups, ownGstin, storeMissing };
+}
+
+/** Book an invoice that is in GSTR-2B but has no bill from the 2B details, against an expense ledger. Returns the new bill's id. */
+export async function bookFrom2b(supabase, d, ledger, supplierLedger) {
+  const { data, error } = await supabase.rpc('gstr2b_book_bill', {
+    p_gstin: d.gstin, p_supplier: d.vendor, p_no: d.no, p_date: d.date, p_taxable: d.taxable, p_igst: d.twoB.igst, p_cgst: d.twoB.cgst, p_sgst: d.twoB.sgst,
+    p_expense_ledger: ledger, p_supplier_ledger: supplierLedger || null,
+  });
+  fail(error);
+  return data;
+}
+
+/** "The accountant books this one": no voucher from the ERP and it stops blocking the file. */
+export async function markHandled(supabase, d, month, note) {
+  const { error } = await supabase.rpc('gstr2b_mark_handled', { p_gstin: d.gstin, p_no: d.no, p_supplier: d.vendor, p_month: month, p_note: note || null });
+  fail(error);
+}
+export async function unmarkHandled(supabase, d) {
+  const { error } = await supabase.rpc('gstr2b_unmark_handled', { p_gstin: d.gstin, p_no: d.no });
+  fail(error);
 }
