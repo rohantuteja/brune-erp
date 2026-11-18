@@ -4,7 +4,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BACK_STATUSES, CLAIM_STALE_MS, MAX_ATTEMPTS, decide, isReceivedReturn, kindOf, readReturns, receivedIn, remarksFor, retryAt, returnInvoiceOf,
+  BACK_STATUSES, CLAIM_STALE_MS, MAX_ATTEMPTS, decide, detailRequest, isReceivedReturn, istToIso, kindOf, needsDetail, openReturnsOf, openRow,
+  parseDetail, readReturns, receivedIn, remarksFor, retryAt, returnInvoiceOf, staleCodes,
 } from './myntra-returns.ts';
 
 const item = (code: string, sku = 'TOBY-BLACK-DRESS-49-M', statusCode = 'DELIVERED') => ({ code, itemSku: sku, statusCode });
@@ -176,4 +177,99 @@ test('the back-off grows: 30 min, 2 h, 6 h, 24 h, and stays at 24 h', () => {
   const mins = (n: number) => (Date.parse(retryAt(n, NOW)) - NOW) / 60_000;
   assert.deepEqual([1, 2, 3, 4, 5, 9].map(mins), [30, 120, 360, 1440, 1440, 1440]);
   assert.equal(mins(0), 30);
+});
+
+// ── The list of returns still on their way ────────────────────────────────────────────────────
+// Shapes are the real oms/return/get answers read on 17 Nov 2026 (customer return RP0036, RTO BRUN00052).
+
+const detailCustomer = {
+  successful: true,
+  returnSaleOrderItems: [{ skuCode: 'MONA-WHITE-DRESS-58-M', marketplaceReturnReason: 'Product image was better than the actual product', trackingStatus: 'CIR_COURIER_ASSIGNED' }],
+  returnSaleOrderValue: { returnStatus: 'COURIER_ALLOCATED', returnCreatedDate: '2026-10-23 18:01:34', channelReturnCreatedDate: '2026-10-23 17:54:18', rtoReason: null },
+};
+const detailRto = {
+  successful: true,
+  returnSaleOrderItems: [{ skuCode: 'MONA-WHITE-DRESS-58-L', marketplaceReturnReason: null, trackingStatus: 'RTO_INITIATED' }],
+  returnSaleOrderValue: { returnStatus: 'RETURN_EXPECTED', returnCreatedDate: '2026-10-10 03:30:49', channelReturnCreatedDate: '2026-10-10 03:23:22', rtoReason: null },
+};
+
+test('a customer return is asked for by its reverse pickup code, an RTO by its shipment code', () => {
+  assert.deepEqual(detailRequest({ code: 'RP0036', kind: 'customer' }), { reversePickupCode: 'RP0036' });
+  assert.deepEqual(detailRequest({ code: 'BRUN00052', kind: 'rto' }), { shipmentCode: 'BRUN00052' });
+});
+
+test('Unicommerce dates are Indian time: 23 Oct 17:54:18 IST is 12:24:18 UTC', () => {
+  assert.equal(istToIso('2026-10-23 17:54:18'), '2026-10-23T12:24:18.000Z');
+  assert.equal(istToIso('2026-10-10 03:23:22'), '2026-10-09T21:53:22.000Z');   // before 05:30 IST is the day before in UTC
+  assert.equal(istToIso(null), null);
+  assert.equal(istToIso('not a date'), null);
+});
+
+test('the detail gives when Myntra opened the return (not Unicommerce) and the customer reason', () => {
+  assert.deepEqual(parseDetail(detailCustomer), { openedAt: '2026-10-23T12:24:18.000Z', reason: 'Product image was better than the actual product' });
+  assert.deepEqual(parseDetail(detailRto), { openedAt: '2026-10-09T21:53:22.000Z', reason: null });
+});
+
+test('the detail falls back to Unicommerce\'s own date, to the RTO reason, and ignores a failed answer', () => {
+  const d = parseDetail({ successful: true, returnSaleOrderItems: [], returnSaleOrderValue: { returnCreatedDate: '2026-10-23 18:01:34', channelReturnCreatedDate: null, rtoReason: 'Customer not available' } });
+  assert.deepEqual(d, { openedAt: '2026-10-23T12:31:34.000Z', reason: 'Customer not available' });
+  assert.equal(parseDetail({ successful: false, errors: [{ description: 'no such return' }] }), null);
+  assert.equal(parseDetail(undefined), null);
+  // two pieces with the same reason say it once
+  const two = parseDetail({ successful: true, returnSaleOrderItems: [{ marketplaceReturnReason: 'Size too big' }, { marketplaceReturnReason: 'Size too big' }], returnSaleOrderValue: {} });
+  assert.equal(two?.reason, 'Size too big');
+});
+
+const waitingCir = () => readReturns(order({ returns: [cir('RP0036', '11415172345', { trackingStatus: 'CIR_COURIER_ASSIGNED' })] })).waiting[0];
+
+test('an open return becomes one row with the parcel, the pieces and what Myntra says', () => {
+  const row = openRow('so-1', waitingCir(), undefined, parseDetail(detailCustomer), '2026-11-17T12:00:00.000Z');
+  assert.deepEqual(row, {
+    return_code: 'RP0036', order_code: 'so-1', kind: 'customer', skus: ['TOBY-BLACK-DRESS-49-M'],
+    tracking_status: 'CIR_COURIER_ASSIGNED', awb: 'MYSR1255487120', courier: 'ML', uc_status: 'COURIER_ALLOCATED',
+    opened_at: '2026-10-23T12:24:18.000Z', reason: 'Product image was better than the actual product',
+    detail_fetched_at: '2026-11-17T12:00:00.000Z', seen_at: '2026-11-17T12:00:00.000Z',
+  });
+});
+
+test('a later run keeps what is already known and only moves the tracking on', () => {
+  const before = { opened_at: '2026-10-23T12:24:18.000Z', reason: 'Size too big', detail_fetched_at: '2026-11-01T00:00:00.000Z' };
+  const ret = { ...waitingCir(), tracking: 'CIR_DELIVERED_TO_SELLER' };
+  const row = openRow('so-1', ret, before, null, '2026-11-17T13:00:00.000Z');
+  assert.equal(row.tracking_status, 'CIR_DELIVERED_TO_SELLER');
+  assert.equal(row.opened_at, before.opened_at);
+  assert.equal(row.reason, 'Size too big');
+  assert.equal(row.detail_fetched_at, before.detail_fetched_at);
+  assert.equal(row.seen_at, '2026-11-17T13:00:00.000Z');
+});
+
+test('the detail is asked for once: when never fetched, not when it already was (even with no reason)', () => {
+  assert.equal(needsDetail(undefined), true);
+  assert.equal(needsDetail({ opened_at: null, reason: null, detail_fetched_at: null }), true);
+  assert.equal(needsDetail({ opened_at: '2026-10-23T12:24:18.000Z', reason: null, detail_fetched_at: '2026-11-01T00:00:00.000Z' }), false);
+});
+
+test('the list holds every open return: on its way, back and about to be received, and one a person must look at', () => {
+  const so = order({
+    saleOrderItems: [item('A'), item('B'), item('C'), item('D')],
+    returns: [
+      cir('R1', 'A', { trackingStatus: 'CIR_COURIER_ASSIGNED' }),
+      rto('R2', 'B'),                                        // back, will be received
+      cir('R3', 'C', { statusCode: 'WEIRD' }),               // back but odd: attention
+      rto('R4', 'D', { inventoryReceivedDate: 1 }),          // already received: not on the list
+    ],
+  });
+  assert.deepEqual(openReturnsOf(readReturns(so)).map(r => r.code).sort(), ['R1', 'R2', 'R3']);
+});
+
+test('rows go when the order has no open piece, or was read this run and the return is no longer open on it', () => {
+  const existing = [
+    { return_code: 'R1', order_code: 'so-1' },   // still open
+    { return_code: 'R2', order_code: 'so-1' },   // order read, R2 not seen any more: received
+    { return_code: 'R3', order_code: 'so-2' },   // order not read this run: kept
+    { return_code: 'R4', order_code: 'so-3' },   // order has no open piece any more
+  ];
+  const stale = staleCodes(existing, new Set(['so-1', 'so-2']), new Set(['so-1']), new Set(['R1']));
+  assert.deepEqual(stale.sort(), ['R2', 'R4']);
+  assert.deepEqual(staleCodes([], new Set(), new Set(), new Set()), []);
 });

@@ -1,4 +1,4 @@
-// myntra-returns v1
+// myntra-returns v2 (v1 received the returns; v2 also keeps the list of returns still on their way, migration 041)
 // Receives Myntra returns (Unicommerce channel MYNTRAPPMP) in Unicommerce once Myntra's tracking says the parcel has been
 // delivered back to us, so the piece goes back into stock and Unicommerce issues its return invoice (credit note), which the
 // accounting ledger then reads. Docs: docs/myntra-returns.md. Rules: _shared/myntra-returns.ts (tested).
@@ -16,6 +16,9 @@
 //      a second receive could add the piece twice). Anything odd about the return → 'attention'.
 //   4. myntra_order_lines is refreshed for the order, so Pipeline Health's Myntra velocity sees the return at once; the accounting
 //      ledger reads Unicommerce's return invoice at its next run (every open Myntra order is re-read each hour).
+//   5. (v2) every return still open is kept in myntra_open_returns (the list on the Myntra returns panel): tracking, parcel, pieces,
+//      and, asked once per return through oms/return/get, the day Myntra opened it and the customer's reason. A run asks for at most
+//      DETAIL_MAX of these, so the first runs fill the list in while later ones only move the tracking on.
 //
 // Every Unicommerce call goes through public.uc_post (ucPost), never straight from here. Nothing but Unicommerce's own
 // receive call changes anything there, and the ERP never adds stock itself (Unicommerce puts the piece back).
@@ -41,8 +44,9 @@ import { CORS, cronKeyValid, json, requireAdmin, setting } from '../_shared/shop
 import { completeReturn, ucErrorText, ucPost } from '../_shared/unicommerce.ts';
 import { linesFromOrder } from '../_shared/channel-velocity.ts';
 import {
-  MAX_ATTEMPTS, decide, readReturns, receivedIn, remarksFor, retryAt, returnInvoiceOf,
-  type Known, type OpenReturn,
+  MAX_ATTEMPTS, decide, detailRequest, needsDetail, openReturnsOf, openRow, parseDetail, readReturns, receivedIn, remarksFor, retryAt,
+  returnInvoiceOf, staleCodes,
+  type Known, type OpenReturn, type OpenRow, type ReturnDetail, type SeenOpen,
 } from '../_shared/myntra-returns.ts';
 
 // An edge function run is cut off at 150 s. Reading orders stops at 85 s so the summary is always saved.
@@ -50,6 +54,9 @@ const READ_BUDGET_MS = 85_000;
 // A receive takes a few seconds (the call, a second read, the log); none is started after 115 s, so the run always ends in time and
 // whatever is left is received by the next one.
 const RECEIVE_BUDGET_MS = 115_000;
+// Returns whose opening date and reason are asked for in one run (one Unicommerce call each). 40 fits well inside the read budget; the
+// first runs fill the whole list in, and after that only a new return costs a call.
+const DETAIL_MAX = 40;
 const CURSOR_KEY = 'myntra_returns_cursor';
 const LAST_RUN_KEY = 'myntra_returns_last_run';
 const MAX_LIMIT = 200;
@@ -141,6 +148,45 @@ async function knownRows(admin: SupabaseClient): Promise<Map<string, Row>> {
   return new Map((data ?? []).map(r => [String(r.return_code), r as Row]));
 }
 
+// ── The list of open returns (v2) ─────────────────────────────────────────────────────────────
+
+type OpenKnown = SeenOpen & { order_code: string };
+
+// What the list holds now. null when it cannot be read (the table is missing, a database hiccup): the run then leaves the list alone.
+async function knownOpen(admin: SupabaseClient): Promise<Map<string, OpenKnown> | null> {
+  const out = new Map<string, OpenKnown>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin.from('myntra_open_returns').select('return_code, order_code, opened_at, reason, detail_fetched_at')
+      .order('return_code').range(from, from + 999);
+    if (error) return null;
+    for (const r of data ?? []) out.set(String(r.return_code), r as OpenKnown);
+    if ((data ?? []).length < 1000) break;
+  }
+  return out;
+}
+
+// When Myntra opened the return and why (oms/return/get, through uc_post). A failed call is simply tried again by a later run.
+async function fetchDetail(admin: SupabaseClient, ret: OpenReturn): Promise<ReturnDetail | null> {
+  try { return parseDetail(await ucPost(admin, '/services/rest/v1/oms/return/get', detailRequest(ret))); }
+  catch { return null; }
+}
+
+// Writes the rows seen open and drops the ones that are not open any more. Returns an error text instead of throwing: the list never
+// stops a run, and the returns that are back are received before this is reached.
+async function saveOpen(admin: SupabaseClient, rows: OpenRow[], stale: string[]): Promise<string | null> {
+  try {
+    for (let i = 0; i < rows.length; i += 100) {
+      const { error } = await admin.from('myntra_open_returns').upsert(rows.slice(i, i + 100), { onConflict: 'return_code' });
+      if (error) return `could not save the open returns: ${error.message}`;
+    }
+    for (let i = 0; i < stale.length; i += 100) {
+      const { error } = await admin.from('myntra_open_returns').delete().in('return_code', stale.slice(i, i + 100));
+      if (error) return `could not drop returns that are no longer open: ${error.message}`;
+    }
+    return null;
+  } catch (e) { return e instanceof Error ? e.message : String(e); }
+}
+
 // ── Sweep ─────────────────────────────────────────────────────────────────────────────────────
 
 async function sweep(admin: SupabaseClient, opts: { act: boolean; record: boolean }) {
@@ -150,6 +196,14 @@ async function sweep(admin: SupabaseClient, opts: { act: boolean; record: boolea
   try {
     const codes = await openOrders(admin);
     const known = await knownRows(admin);
+    // The list of open returns (v2): what it holds now, so a return whose opening date was already read is not asked for again.
+    // The list is secondary: if its table is missing or unreadable the returns are still received, and the run says so.
+    const listedOrNull = opts.record ? await knownOpen(admin) : null;
+    const listOn = listedOrNull !== null;
+    const listed = listedOrNull ?? new Map<string, OpenKnown>();
+    const rows: OpenRow[] = [];
+    const seen = new Set<string>();
+    const readOrders = new Set<string>();
     // Rotate through the orders so every one is read in turn when there are more than fit in one run.
     const cursor = codes.length ? Math.max(0, Math.floor(Number(await setting(admin, CURSOR_KEY, '0')) || 0)) % codes.length : 0;
 
@@ -159,7 +213,7 @@ async function sweep(admin: SupabaseClient, opts: { act: boolean; record: boolea
       would_receive: [] as Array<{ order: string; return_code: string; kind: string; awb: string | null; skus: string[] }>,
       received: [] as string[], failed: [] as string[], unverified: [] as string[],
       waiting: {} as Record<string, number>, attention: [] as string[], already_done: 0, already_logged: 0,
-      deferred: 0, unreadable: [] as string[], ms: 0,
+      deferred: 0, unreadable: [] as string[], listed: 0, details: 0, list_error: null as string | null, ms: 0,
     };
 
     let attempted = 0;
@@ -173,6 +227,16 @@ async function sweep(admin: SupabaseClient, opts: { act: boolean; record: boolea
 
       const reading = readReturns(so);
       out.already_done += reading.received;
+      if (listOn) {
+        readOrders.add(String(so.code));
+        for (const ret of openReturnsOf(reading)) {
+          seen.add(ret.code);
+          const before = listed.get(ret.code);
+          let detail: ReturnDetail | null = null;
+          if (needsDetail(before) && out.details < DETAIL_MAX && Date.now() - startedAt < READ_BUDGET_MS) { detail = await fetchDetail(admin, ret); out.details++; }
+          rows.push(openRow(String(so.code), ret, before, detail, new Date().toISOString()));
+        }
+      }
       // A log row that says failed / working / unverified for a return Unicommerce now shows received (a call that timed out after
       // Unicommerce took it, a slow answer, or a person receiving it by hand) is closed, so nothing waits on it for nothing.
       if (act) for (const code of reading.receivedCodes) await closeIfReceived(admin, so, code, known.get(code));
@@ -194,6 +258,15 @@ async function sweep(admin: SupabaseClient, opts: { act: boolean; record: boolea
         else if (res.status === 'failed' || res.status === 'attention') out.failed.push(`${ret.code}: ${res.detail}`);
         else if (res.status === 'unverified') out.unverified.push(`${ret.code}: ${res.detail}`);
       }
+    }
+
+    // The list: what was seen open (minus what this run just received) is kept, what is no longer open is dropped.
+    if (listOn) {
+      const justReceived = new Set(out.received);
+      const keep = rows.filter(r => !justReceived.has(r.return_code));
+      const stale = staleCodes([...listed.entries()].map(([return_code, v]) => ({ return_code, order_code: v.order_code })), new Set(codes), readOrders, new Set(keep.map(r => r.return_code)));
+      const err = await saveOpen(admin, keep, stale);
+      if (err) out.list_error = err; else out.listed = keep.length;
     }
 
     // A manual dry check changes nothing, not even where the rotation stands.
@@ -266,6 +339,8 @@ async function receiveReturn(admin: SupabaseClient, so: any, ret: OpenReturn, kn
     return await finish('unverified', 'Unicommerce accepted the receive but still shows the return open: check it in Unicommerce (it was not retried)');
   }
   const invoice = returnInvoiceOf(fresh, ret.code);
+  // It is received: off the list of open returns at once (best effort; the next sweep would drop it anyway).
+  await admin.from('myntra_open_returns').delete().eq('return_code', ret.code);
   return await finish('received', `received as good stock${invoice ? `, return invoice ${invoice}` : ''}`,
     { received_at: new Date().toISOString(), return_invoice: invoice, next_try_at: null });
 }
