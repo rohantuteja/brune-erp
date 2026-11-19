@@ -136,6 +136,12 @@ export function buildChecklist(d) {
       });
       add('bills', { id: 'advances', title: `${plural(groups.size, 'supplier')} paid before the invoice is dated (${plural(bb.advances.length, 'payment')})`, status: 'info', detail: 'One invoice can be paid in several parts. A part paid before the invoice is dated is booked as an advance on the supplier; when the invoice\'s month is booked it is settled against all of them. Nothing to do.', items });
     }
+    if ((bb.recoveries || []).length) {
+      const total = bb.recoveries.reduce((t, r) => t + r.amount, 0);
+      add('bills', { id: 'recoveries', title: `${plural(bb.recoveries.length, 'payout')} reached the bank ${money(total)} short: the gateway took its own invoices out`, status: 'info',
+        detail: 'Each receipt is booked at what the bank really received, and the amount taken is a debit on the gateway\'s supplier ledger, settling its bills. Nothing to do.',
+        items: bb.recoveries.map(r => `${dmy(r.date)} ${r.doc}: ${money(r.amount)}${r.refs.length ? ` against ${r.refs.map(x => `${x.name} (${money(x.amount)})`).join(' + ')}` : ' (no open bill of the gateway: left as an advance)'}`) });
+    }
     if ((bb.unpaid || []).length) add('bills', { id: 'unpaid', title: `${plural(bb.unpaid.length, 'bill')} still unpaid at the end of the month (${money(bb.unpaid.reduce((t, u) => t + u.left, 0))})`, status: 'info', detail: 'They stay open on the supplier in Tally until a payment settles them.', items: bb.unpaid.map(u => `${u.vendor} ${u.name}: ${money(u.left)}`) });
     if ((bb.provisionsMissing || []).length) add('bills', { id: 'provisions', title: 'Month-end provisions for Meta and Velocity cannot be made yet', status: 'todo', blocker: true, detail: 'October\'s own spend is billed on the 1st of the next month. Without that invoice the month is missing its Meta and Velocity cost (lakhs).', items: bb.provisionsMissing, link: { label: 'Bills', tab: 'bills' } });
     else if ((bb.provisions || 0) > 0) add('bills', { id: 'provisions', title: `${plural(bb.provisions, 'provision journal')} for Meta and Velocity made from the next invoices`, status: 'done', detail: (bb.provisionNotes || []).join(' ') || 'The month\'s own spend is provided for at the month end and reversed on the 1st.' });

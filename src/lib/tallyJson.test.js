@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTallyFile, tallyVoucher, tallyState, guid } from './tallyJson.js';
-import { groupOrderVouchers } from './tallyVouchers.js';
+import { groupOrderVouchers, applyRecoveries } from './tallyVouchers.js';
 
 const e = (order_name, entry_date, voucher, account, debit, credit, extra = {}) => ({ order_name, entry_date, voucher, account, debit, credit, doc: null, issued_by: 'x', memo: '', part: null, qty: null, ...extra });
 const entries = [
@@ -192,4 +192,20 @@ test('a return with pieces puts them back: the item is a debit with a negative a
 test('goods with no pieces recorded stay an accounting invoice', () => {
   const t = buildTallyFile({ vouchers: groupOrderVouchers(entries), orders, books: [] });
   assert.equal(find(t.file, 'Sales').vchentrymode, 'Accounting Invoice'); assert.equal(find(t.file, 'Sales').allinventoryentries, undefined);
+});
+
+test('a payout the bank paid short of: the receipt is booked at what came, and the rest is a debit on the gateway\'s supplier ledger against the bills it settles', () => {
+  const rec = [{ doc: 'U1', amount: 300, ledger: 'Gokwik Commerce Solutions Private Limited', refs: [{ name: 'GKHR/1', kind: 'Agst Ref', amount: 200 }, { name: 'GKHR/2', kind: 'Agst Ref', amount: 100 }] }];
+  const vouchers = applyRecoveries(groupOrderVouchers(entries), rec);
+  assert.ok(vouchers.every(v => v.balanced));
+  const { file, checks } = buildTallyFile({ vouchers, orders });
+  assert.ok(checks.every(c => c.ok), JSON.stringify(checks));
+  const r = find(file, 'Receipt');
+  const bank = r.allledgerentries.find(x => x.ledgername === 'ICICI Bank'), gk = r.allledgerentries.find(x => x.ledgername === 'Gokwik Commerce Solutions Private Limited');
+  assert.equal(Number(bank.amount), -730);                                           // the 1,030 of the ledger less the 300 taken: what the bank really got
+  assert.equal(bank.bankallocations[0].amount, '-730.00'); assert.equal(bank.bankallocations[0].instrumentnumber, 'U1');
+  assert.equal(gk.amount, '-300.00'); assert.equal(gk.isdeemedpositive, true);
+  assert.deepEqual(gk.billallocations.map(b => [b.name, b.billtype, b.amount]), [['GKHR/1', 'Agst Ref', '-200.00'], ['GKHR/2', 'Agst Ref', '-100.00']]);
+  // a receipt with no recovery is untouched
+  assert.equal(applyRecoveries(groupOrderVouchers(entries), []).length, groupOrderVouchers(entries).length);
 });
