@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { localToday } from '../lib/constants';
 import { accountingStart, fetchGstMonth } from '../lib/gstData';
-import { buildGstReport, stateTable, monthsBetween, monthLabel, CHANNEL_LABEL, MYNTRA_GSTIN } from '../lib/gstReport';
+import { buildGstReport, stateTable, monthsBetween, monthLabel, CHANNEL_LABEL, MYNTRA_ECO_GSTIN } from '../lib/gstReport';
 import { buildGstSheets, gstFileName } from '../lib/gstWorkbook';
 import { downloadXlsx } from '../lib/xlsxWrite';
 import { Collapsible, Pagination, Pills, StatCard, useUrlParams } from '../components/AnalyticsKit';
@@ -123,7 +123,7 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
             <Pills options={CHANNEL_PILLS} value={channel} onChange={onChannel} />
             <div className="text-[11px] text-stone-500 max-w-2xl sm:text-right">
               {channel === 'all' && <>Shopify and Myntra together, by state and rate: the figures for GSTR-1 <b>Table 7</b> (B2C). Myntra's sales belong here too.</>}
-              {channel === 'myntra' && <>Myntra collects TCS under section 52, so GSTR-1 <b>Table 14(a)</b> also asks for a summary of these sales under its GSTIN {MYNTRA_GSTIN}. They are already in Table 7 (use "Both channels" for that); do not leave them out of it.</>}
+              {channel === 'myntra' && <>Myntra collects TCS under section 52, so GSTR-1 <b>Table 14(a)</b> also asks for a summary of these sales under its GSTIN {MYNTRA_ECO_GSTIN}. They are already in Table 7 (use "Both channels" for that); do not leave them out of it.</>}
               {channel === 'shopify' && <>Shopify's sales on their own. This is not a GSTR-1 table: Table 7 needs Myntra's sales as well.</>}
             </div>
           </div>

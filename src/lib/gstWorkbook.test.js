@@ -45,7 +45,7 @@ test('read back from the file: totals, state rows and documents are the report\'
   assert.equal(Number(total[6]), 570.48);
 
   const my = out.get('Myntra (Table 14)');
-  assert.match(my[0][0], /Table 14\(a\).*29AAECM9636P1ZJ/);
+  assert.match(my[0][0], /Table 14\(a\).*09AAECM9636P1CW/);
   assert.equal(my.find(r => r[0] === 'Uttar Pradesh')[1], '09');
 
   // Table 7 holds BOTH channels' consumer sales by state and rate; Myntra's are in it too

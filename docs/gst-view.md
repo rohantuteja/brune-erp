@@ -25,7 +25,7 @@ the arithmetic is in the browser (`src/lib/gstReport.js`, tested), so the figure
   shows its TCS), and you invoice the customer yourself, so your sales through it are consumer (B2C) sales like Shopify's: they
   go in **Table 7**, state and rate wise, together with Shopify's. In addition, **Table 14(a)** asks for "the ECO-GSTIN wise
   summary of the supplies made through ECO on which ECO is liable to collect tax at source (TCS) and liability on which has
-  already been reported in any table 4 to 10", that is a summary under Myntra's GSTIN (Myntra Designs, 29AAECM9636P1ZJ) of sales
+  already been reported in any table 4 to 10", that is a summary under Myntra's GSTIN (Myntra Designs' tax collector registration for UP, **09AAECM9636P1CW**: the 14th character is C for a tax collector, read from the owner's GST portal, GSTR-2A September 2026, TCS Credit Received; not the ordinary Karnataka 29AAECM9636P1ZJ, and not 29AAECM9636P2CT, which the portal says is cancelled) of sales
   already in Table 7. "No taxable value or tax liabilities will be auto-populated from this table to GSTR-3B": tax is paid on
   the normal tables, and the TCS Myntra deducts is claimed from the cash ledger, not through GSTR-1. Table 14(b) and Table 15
   are for section 9(5) supplies (services such as transport and accommodation, not apparel). So the view's **Both channels**

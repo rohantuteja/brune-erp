@@ -1,6 +1,6 @@
 // The Excel file behind Analytics → GST: the same figures as the screen, one sheet per thing an accountant looks up.
 //   Summary · B2C all (Table 7) · Myntra (Table 14) · Shopify by state · Sales invoices · Fee invoices (ERP) · Credit notes · Not invoiced yet
-import { CHANNEL_LABEL, MYNTRA_GSTIN, stateTable } from './gstReport.js';
+import { CHANNEL_LABEL, MYNTRA_ECO_GSTIN, stateTable } from './gstReport.js';
 
 const h = (...cols) => cols.map(v => ({ v, s: 'h' }));
 const m = (v) => ({ v, s: 'm' });
@@ -15,7 +15,7 @@ function stateSheet(report, channel) {
   const title = channel === 'all'
     ? `Shopify and Myntra together, ${report.label}, by state and rate: the figures for GSTR-1 Table 7 (B2C)`
     : channel === 'myntra'
-      ? `Myntra, ${report.label}: the summary for GSTR-1 Table 14(a), under the e-commerce operator (GSTIN ${MYNTRA_GSTIN}). These sales are also in Table 7.`
+      ? `Myntra, ${report.label}: the summary for GSTR-1 Table 14(a), under the e-commerce operator (GSTIN ${MYNTRA_ECO_GSTIN}). These sales are also in Table 7.`
       : `Shopify on its own, ${report.label}, by state and rate (not a GSTR-1 table: Table 7 needs Myntra's sales too)`;
   const body = rows.map(r => [r.state, r.stateCode, r.ratePct, m(r.sales.taxable), m(r.fees.taxable), m(r.returns.taxable), m(r.net.taxable), m(r.net.igst), m(r.net.cgst), m(r.net.sgst), m(tax(r.net)), r.sales.docs, r.returns.docs]);
   const totalRow = [{ v: 'Total', s: 'tt' }, { v: '', s: 'tt' }, { v: '', s: 'tt' }, t(total.sales.taxable), t(total.fees.taxable), t(total.returns.taxable), t(total.net.taxable), t(total.net.igst), t(total.net.cgst), t(total.net.sgst), t(tax(total.net)), { v: total.sales.docs, s: 'tt' }, { v: total.returns.docs, s: 'tt' }];
@@ -43,7 +43,7 @@ export function buildGstSheets(report) {
       [{ v: 'Where it goes in GSTR-1', s: 'b' }],
       h('Table', 'Which sales', 'Net taxable value', 'Net tax'),
       ['Table 7: B2C, state and rate wise', 'Shopify + Myntra (sheet "B2C all (Table 7)")', m(T.all.net.taxable), m(tax(T.all.net))],
-      [`Table 14(a): supplies through an e-commerce operator, GSTIN ${MYNTRA_GSTIN}`, 'Myntra only (sheet "Myntra (Table 14)")', m(T.myntra.net.taxable), m(tax(T.myntra.net))],
+      [`Table 14(a): supplies through an e-commerce operator, GSTIN ${MYNTRA_ECO_GSTIN}`, 'Myntra only (sheet "Myntra (Table 14)")', m(T.myntra.net.taxable), m(tax(T.myntra.net))],
       [note('Myntra collects TCS under section 52, so its sales are summarised under its GSTIN in Table 14(a) AND are in Table 7: the GSTN advisory on Notification 26/2022 says the Table 14(a) summary is of supplies already reported in tables 4 to 10. No tax flows from Table 14(a) to GSTR-3B. Your accountant maps these figures onto the return.')],
       [],
       [{ v: 'Documents', s: 'b' }],
