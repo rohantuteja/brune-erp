@@ -12,7 +12,11 @@
 // Everything here is a pure function of ledger rows (ledger_entries and ledger_orders), so it can be tested without a database.
 // Amounts are rupees to the paisa; GST amounts are what the ledger booked (tax = amount - amount / (1 + rate), as in the ledger).
 
-export const MYNTRA_GSTIN = '29AAECM9636P1ZJ';        // Myntra Designs: the e-commerce operator its supplies are reported under (GSTR-1, table 14)
+export const MYNTRA_GSTIN = '29AAECM9636P1ZJ';        // Myntra Designs' ordinary Karnataka registration: the supplier its fee invoices come from (GSTR-2B, GSTR-3B)
+// Myntra Designs' TAX COLLECTOR (TCS) registration for Uttar Pradesh: the e-commerce operator GSTIN its supplies are reported under in GSTR-1 Table 14(a). The 14th character is 'C' for a tax collector.
+// Read from the owner's own GST portal on 19 Nov 2026: GSTR-2A, September 2026, "TCS Credit Received": GSTIN of the collector 09AAECM9636P1CW (net liable ₹1,168.00, TCS ₹5.84).
+// NOT 29AAECM9636P1ZJ (above, an ordinary registration) and NOT 29AAECM9636P2CT (a Karnataka collector number the portal says is cancelled).
+export const MYNTRA_ECO_GSTIN = '09AAECM9636P1CW';
 
 const A = { sales: 'GST SALES', salesReturn: 'GST SALES RETURN', igst: 'IGST OUTPUT UP', cgst: 'CGST Output UP', sgst: 'SGST Output UP' };
 export const GST_ACCOUNTS = Object.values(A);
