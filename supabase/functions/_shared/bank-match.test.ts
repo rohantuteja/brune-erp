@@ -322,3 +322,19 @@ test('a UPI reversal cancels the payment whose reference it names, not another p
   const orphan = one(bank('2026-09-21', 'UPI/RVSL999999999999/tea/XX9175@pthdfc//ICId', { credit: 50 }));
   assert.notEqual(orphan.status, 'ignored');                                // a reversal with no payment to undo is left for a person
 });
+
+test('the sweep FD and cash withdrawals: the owner\'s rules file them, both buckets exist, and a director\'s salary goes to his own payable', () => {
+  assert.ok(BUCKETS.some(b => b.name === 'FDR (022510011444)' && b.kind === 'transfer'), 'the FD is a bucket');
+  assert.ok(BUCKETS.some(b => b.name === 'Cash' && b.kind === 'transfer'), 'cash is a bucket');
+  const ctx: Ctx = { ...empty, rules: [{ id: 1, match_type: 'contains', pattern: '022510011444', bucket: 'FDR (022510011444)' }, { id: 2, match_type: 'contains', pattern: 'CASH WDL', bucket: 'Cash' },
+    { id: 3, match_type: 'payee', pattern: 'rohantuteja', bucket: 'Director Salary Payable- Rohan Tuteja' }] };
+  for (const [remarks, o] of [['022510011444: Rev Sweep From', { credit: 235000 }], ['022510011444: Closure Proceeds', { credit: 4739 }], ['022510011444: Sweep To', { debit: 50000 }]] as const) {
+    const r = one(bank('2026-11-06', remarks, o), ctx);
+    assert.equal(r.status, 'matched'); assert.equal(r.bucket, 'FDR (022510011444)');
+  }
+  const cash = one(bank('2026-11-06', 'CAM/41461HAR/CASH WDL/06-11-26', { debit: 20000 }), ctx);
+  assert.equal(cash.status, 'matched'); assert.equal(cash.bucket, 'Cash');
+  // a director's salary, with the note "fsalary" no longer pointing at staff salary in the owner's note list
+  const dir = one(bank('2026-11-06', 'INF/NEFT/IN42631059597294/KKBK0000430/81954234 /Fsalary /RohanTuteja', { debit: 50000 }), { ...ctx, notes: [{ note: 'salary', bucket: 'Salary Payable', learned: false }] });
+  assert.equal(dir.status, 'matched'); assert.equal(dir.bucket, 'Director Salary Payable- Rohan Tuteja');
+});
