@@ -4,7 +4,7 @@ import { pages, accountingStart } from './gstData.js';
 import { monthBounds } from './gstReport.js';
 import { buildGstr3b } from './gstr3b.js';
 import { missingLedgers } from './accountingChecklist.js';
-import { buildBooks } from './tallyBooks.js';
+import { buildBooks, findRecoveries } from './tallyBooks.js';
 import { MONTH_END } from './tallyMonthEnd.js';
 
 const missingTable = (error) => !!error && (error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache|Could not find the table/i.test(error.message || ''));
@@ -89,7 +89,7 @@ export async function fetchAccounting(supabase, month, today) {
   const setting = async (key) => { const r = await supabase.from('app_settings').select('value').eq('key', key).maybeSingle(); let v = r.data?.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch { /* keep the text */ } } return v ?? null; };
   const rentSetting = Number(await setting('rent_monthly')) || null;
   const monthEndInput = { salaryNext, rentMonthly: rentSetting, salaryOverride: (await setting('salary_expense')) || {} };
-  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening, rentMonthly: rentSetting || MONTH_END.rent.monthly, discounts: dc.data || [] });
+  const books = buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks: pl.data || [], cardLines, cardCoveredTo, trueups: tu.data || [], twoB: tb.data || [], provisionOpening, rentMonthly: rentSetting || MONTH_END.rent.monthly, discounts: dc.data || [], recoveries: findRecoveries({ entries, bankLines }) });
   const used = [
     ...entries.map(e => e.account),
     ...books.vouchers.flatMap(v => [...v.lines, ...(v.itemLines || [])].map(l => l.account)),

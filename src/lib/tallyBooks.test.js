@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BOOKS, unitOf, billsToBook, purchaseVoucher, allocateSupplier, classifyBankLines, vendorByPayeeName, bankRef, buildBooks, bookChecks, provisionJournals } from './tallyBooks.js';
+import { findRecoveries, BOOKS, unitOf, billsToBook, purchaseVoucher, allocateSupplier, classifyBankLines, vendorByPayeeName, bankRef, buildBooks, bookChecks, provisionJournals } from './tallyBooks.js';
 
 // A small October with the shapes of the real one: a fabric supplier paid for two bills in one payment, advances paid before an invoice dated next month, Meta's
 // opening bill paid on the 1st, a telephone bill part-paid before it arrived, wholesale left to the accountant.
@@ -330,4 +330,30 @@ test('a discount the supplier allowed closes the invoice: booked in full, one sm
   // a discount that is not less than the invoice is refused, not booked
   const silly = buildBooks({ from: '2026-11-01', next: '2026-12-01', start: '2026-10-01', bills, vendors, handled, bankLines: lines, buckets, payeeLinks: [], discounts: [{ invoice_id: 4, amount: 89061 }] });
   assert.equal(silly.vouchers.some(v => v.id === 'discount|4'), false); assert.match(silly.problems.map(p => p.text).join(' '), /the discount \(89061\) is not less than the invoice/);
+});
+
+test('a payout the bank paid short of is found by its UTR; one paid in full, or not paid yet, is not', () => {
+  const E = (doc, date, bank) => [{ voucher: 'payout', doc, account: 'ICICI Bank', debit: bank, credit: 0, entry_date: date }, { voucher: 'payout', doc, account: 'Easebuzz Private Limited', debit: 0, credit: bank + 20, entry_date: date }];
+  const entries = [...E('YESF262966190252', '2026-10-23', 4616.08), ...E('YESF262995929826', '2026-10-26', 24046.42), ...E('YESF262746246015', '2026-10-01', 6245.06), ...E('YESF263999999999', '2026-10-30', 1000)];
+  const bankLines = [{ id: 218, credit: 3021.58, remarks: 'NEFT-YESF262966190252-EASEBUZZ PVT LTD' }, { id: 222, credit: 17564.92, remarks: 'NEFT-YESF262995929826-EASEBUZZ' }, { id: 5, credit: 6245.06, remarks: 'NEFT-YESF262746246015-EASEBUZZ' }];
+  assert.deepEqual(findRecoveries({ entries, bankLines }), [{ doc: 'YESF262966190252', date: '2026-10-23', amount: 1594.5, bankLineId: 218 }, { doc: 'YESF262995929826', date: '2026-10-26', amount: 6481.5, bankLineId: 222 }]);
+  // a bank credit larger than the ledger's receipt is not a recovery
+  assert.deepEqual(findRecoveries({ entries: E('Z1234567890', '2026-10-05', 100), bankLines: [{ id: 1, credit: 150, remarks: 'NEFT-Z1234567890' }] }), []);
+});
+
+test('what the gateway took from its payouts settles the gateway\'s own bills: the oldest first, or the exact ones, and the bills are no longer unpaid', () => {
+  const gk = { id: 9, name: 'GoKwik', tally_ledger_name: 'Gokwik Commerce Solutions Private Limited', gstin: '06AAGCG0001A1Z5', booking: 'expense', expense_ledger: 'Payment Gateway Expenses' };
+  const gb = [bill({ id: 31, vendor: 'GoKwik', vendor_id: 9, invoice_no: 'GKHR/2627/031367', invoice_date: '2026-10-01', kind: 'service', tax_rate: 18, subtotal: 6128.17, tax: 1103.07, total: 7231, supplier_gstin: '06AAGCG0001A1Z5' }),
+    bill({ id: 32, vendor: 'GoKwik', vendor_id: 9, invoice_no: 'GKHR/2627/035032', invoice_date: '2026-10-01', kind: 'service', tax_rate: 18, subtotal: 716.37, tax: 128.95, total: 845, supplier_gstin: '06AAGCG0001A1Z5' })];
+  const recoveries = [{ doc: 'U-A', date: '2026-10-23', amount: 1594.5 }, { doc: 'U-B', date: '2026-10-26', amount: 6481.5 }];
+  const r = buildBooks({ ...month, bills: gb, vendors: [...vendors, gk], handled: [], bankLines: [], buckets, payeeLinks: [], recoveries });
+  assert.deepEqual(r.unpaid.filter(u => u.vendor === 'GoKwik'), []);
+  assert.equal(r.recoveries.length, 2);
+  assert.equal(r.recoveries[0].ledger, 'Gokwik Commerce Solutions Private Limited');
+  const all = r.recoveries.flatMap(x => x.refs);
+  assert.equal(Math.round(all.reduce((s, x) => s + x.amount, 0) * 100) / 100, 8076);                         // both bills, to the rupee
+  assert.ok(all.every(x => x.kind === 'Agst Ref'));
+  // without the recoveries the two invoices are unpaid
+  const none = buildBooks({ ...month, bills: gb, vendors: [...vendors, gk], handled: [], bankLines: [], buckets, payeeLinks: [] });
+  assert.deepEqual(none.unpaid.filter(u => u.vendor === 'GoKwik').map(u => u.left).sort((a, b) => a - b), [845, 7231]);
 });

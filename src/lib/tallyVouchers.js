@@ -53,3 +53,23 @@ export function accountTotals(vouchers) {
   for (const v of vouchers) for (const l of v.lines) { const x = t[l.account] ?? (t[l.account] = { debit: 0, credit: 0 }); x.debit = r2(x.debit + l.debit); x.credit = r2(x.credit + l.credit); }
   return t;
 }
+
+/**
+ * A payout the bank paid short of (the gateway took its own invoices out): the receipt is booked at what the bank really received, and the rest is a debit on the gateway's
+ * SUPPLIER ledger against the bills it settles: Dr bank (what came) + Dr the supplier (what was taken) / Cr the gateway's receivable (what it settled), all in one voucher.
+ *   recoveries  [{ doc, amount, ledger, refs: [{ name, kind, amount }], memo? }]  (tallyBooks.js: the ones `findRecoveries` found, with the bills each settles)
+ */
+export function applyRecoveries(vouchers, recoveries = []) {
+  if (!recoveries.length) return vouchers;
+  const by = new Map(recoveries.map(r => [r.doc, r]));
+  return vouchers.map(v => {
+    const r = v.type === 'receipt' && v.source === 'payout' && v.doc ? by.get(v.doc) : null;
+    if (!r) return v;
+    const memo = r.memo ?? 'taken from this payout by the gateway for its own invoices';
+    const lines = [...v.lines,
+      { order: '(deduction)', account: 'ICICI Bank', debit: 0, credit: r.amount, part: null, qty: null, memo },
+      { order: '(deduction)', account: r.ledger, debit: r.amount, credit: 0, part: null, qty: null, memo, refs: r.refs }];
+    const debit = r2(lines.reduce((s, l) => s + l.debit, 0)), credit = r2(lines.reduce((s, l) => s + l.credit, 0));
+    return { ...v, lines, debit, credit, balanced: Math.abs(debit - credit) < 0.005, recovery: r.amount };
+  });
+}

@@ -8,7 +8,7 @@ import { fetchAccounting, markLedgers, linkVendor } from '../lib/accountingData'
 import { bookChecks } from '../lib/tallyBooks';
 import { buildLedgersFile, ledgersFileName, withLedgers } from '../lib/tallyLedgers';
 import { buildChecklist } from '../lib/accountingChecklist';
-import { groupOrderVouchers, voucherPlan, accountTotals, TYPE_LABEL } from '../lib/tallyVouchers';
+import { groupOrderVouchers, applyRecoveries, voucherPlan, accountTotals, TYPE_LABEL } from '../lib/tallyVouchers';
 import { monthEndJournals } from '../lib/tallyMonthEnd';
 import { buildTallyFile, tallyFileName } from '../lib/tallyJson';
 import { useUrlParams } from '../components/AnalyticsKit';
@@ -224,7 +224,7 @@ export default function AccountingPage({ showToast }) {
   useEffect(() => { load(); }, [load]);
 
   const fresh = data && data.month === month ? data : null;
-  const vouchers = useMemo(() => fresh ? groupOrderVouchers(fresh.entries) : [], [fresh]);
+  const vouchers = useMemo(() => fresh ? applyRecoveries(groupOrderVouchers(fresh.entries), fresh.books?.recoveries ?? []) : [], [fresh]);
   const books = fresh?.books ?? null;
   // The month-end journals are worked out from the month's own vouchers (the GST ledgers they clear), then written with the others.
   const monthEnd = useMemo(() => fresh ? monthEndJournals({ ...fresh.bounds, totals: accountTotals([...vouchers, ...(books?.vouchers ?? [])]), ...fresh.monthEndInput }) : null, [fresh, vouchers, books]);

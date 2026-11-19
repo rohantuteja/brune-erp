@@ -32,6 +32,8 @@ export const BOOKS = {
   // His own 6 Sep payment of ₹25,512 ("RentnEB") went ₹18,000 to Rent Payable and ₹7,512 to Electricity Expenses: a payment to this bucket clears the month's rent on Rent Payable and
   // everything above it is electricity. (Salary is the opposite: paid in the NEXT month, see tallyMonthEnd.js.)
   rent: { payable: 'Rent Payable', electricity: 'Electricity Expenses' },
+  // A gateway that takes its own invoices out of a payout (GoKwik, October 2026: ₹8,076.00 of two invoices recovered from the payouts of 23 and 26 Oct) pays the bank less than its report says.
+  recoveryVendor: 'GoKwik', payoutVoucher: 'payout',
 };
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -309,7 +311,32 @@ export function provisionJournals({ from, next, bills, vendors, handled, opening
  *        twoB [{ month, docs }] every GSTR-2B loaded, provisionOpening { supplier: amount } the provisions the accountant booked at 30 Sep
  * @returns { vouchers, problems, notes, unlinked, advances, unpaid, tdsPending, provisionsMissing, parked, summary }
  */
-export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {}, rentMonthly = null, discounts = [] }) {
+/**
+ * Payouts where the bank received LESS than the order ledger's receipt: the gateway took something out first (its own invoices). Each is { doc, date, amount, bankLineId }:
+ * the UTR, the day, the shortfall. A payout the bank has not paid yet, or paid in full, is not here; one the bank paid MORE on is left to the person (not a recovery).
+ *   entries    ledger_entries rows of the month (voucher, doc, account, debit, credit, entry_date)      bankLines   the bank lines (id, credit, remarks)
+ */
+export function findRecoveries({ entries, bankLines }) {
+  const squash = (t) => String(t ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const docs = new Map();
+  for (const e of entries || []) {
+    if (e.voucher !== BOOKS.payoutVoucher || !e.doc || e.account !== BOOKS.bank) continue;
+    const d = docs.get(e.doc) ?? { doc: e.doc, date: String(e.entry_date).slice(0, 10), bank: 0 };
+    d.bank = r2(d.bank + (Number(e.debit) || 0) - (Number(e.credit) || 0));
+    docs.set(e.doc, d);
+  }
+  const lines = (bankLines || []).filter(l => Number(l.credit) > 0).map(l => ({ id: l.id, credit: Number(l.credit), k: squash(l.remarks) }));
+  const out = [];
+  for (const d of [...docs.values()].sort((a, b) => a.date.localeCompare(b.date) || a.doc.localeCompare(b.doc))) {
+    const key = squash(String(d.doc).split('/').pop());
+    if (key.length < 8) continue;
+    const hit = lines.find(l => l.k.includes(key));
+    if (hit && d.bank - hit.credit > 0.01) out.push({ doc: d.doc, date: d.date, amount: r2(d.bank - hit.credit), bankLineId: hit.id });
+  }
+  return out;
+}
+
+export function buildBooks({ from, next, start, bills, vendors, handled, bankLines, buckets, payeeLinks, cardLines = [], cardCoveredTo = null, trueups = [], twoB = [], provisionOpening = {}, rentMonthly = null, discounts = [], recoveries = [] }) {
   const { list, problems } = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) < next), vendors, handled });
   const notes = [];
   // A supplier that accepted less than its invoice (owner: "mark it as a discount"): the invoice is booked in full, a small journal closes what is left of it.
@@ -326,6 +353,9 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
   const slot = (id) => perVendor.get(id) ?? (perVendor.set(id, { bills: [], payments: [] }), perVendor.get(id));
   for (const t of list) if (!isPrepaid(t.vendor)) slot(t.vendor.id).bills.push({ id: t.bill.id, name: t.bill.invoice_no, date: String(t.bill.invoice_date).slice(0, 10), net: t.net, opening: !!t.bill.opening, discount: discountOf.get(Number(t.bill.id))?.amount ?? 0 });
   for (const p of cls.payments) if (p.vendor && !isPrepaid(p.vendor)) slot(p.vendor.id).payments.push({ id: p.line.id, date: String(p.line.txn_date).slice(0, 10), amount: Number(p.line.debit), ref: bankRef(p.line) });
+  // What the gateway recovered from a payout is a payment to ITS supplier ledger, settling its bills (oldest first, or the exact ones), made by the receipt, not by the bank.
+  const recVendor = (vendors || []).find(v => v.name === BOOKS.recoveryVendor);
+  for (const r of recoveries) if (recVendor) slot(recVendor.id).payments.push({ id: `rec|${r.doc}`, date: r.date, amount: r.amount, ref: r.doc });
   const billRefs = new Map(), payRefs = new Map(), advances = [], unpaid = [];
   for (const [vid, s] of perVendor) {
     const a = allocateSupplier(s.bills, s.payments);
@@ -334,6 +364,7 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
     for (const adv of a.advances) advances.push({ vendor: vendor?.name, vendorId: vid, ...adv });
     for (const o of a.open) if (!o.opening) unpaid.push({ vendor: vendor?.name, ...o });
   }
+  const recoveryRefs = recoveries.map(r => ({ ...r, ledger: recVendor?.tally_ledger_name ?? null, refs: payRefs.get(`rec|${r.doc}`) ?? [] })).filter(r => r.ledger);
   // One invoice is often paid in several parts, the first before the invoice is even dated. Say which uploaded invoice (dated after the month) each advance will settle,
   // oldest advance against the oldest later invoice, so the page reads "two payments of one invoice", not "two advances waiting for invoices".
   const later = billsToBook({ bills: (bills || []).filter(b => String(b.invoice_date).slice(0, 10) >= next && !b.opening), vendors, handled }).list
@@ -457,7 +488,7 @@ export function buildBooks({ from, next, start, bills, vendors, handled, bankLin
   const purchases = vouchers.filter(v => v.type === 'purchase'), payments = vouchers.filter(v => v.type === 'payment'), receipts = vouchers.filter(v => v.type === 'receipt');
   const inMonth = (l) => String(l.txn_date).slice(0, 10) >= from;
   return {
-    vouchers, problems, notes, tdsPending, provisionsMissing: prov.missing, provisionNotes: prov.notes, parked,
+    vouchers, problems, notes, tdsPending, provisionsMissing: prov.missing, provisionNotes: prov.notes, parked, recoveries: recoveryRefs,
     unlinked: cls.unlinked.filter(inMonth), advances: advances.filter(a => a.date < next), unpaid,
     summary: {
       purchases: { count: purchases.length, party: sum(purchases, v => v.net), tds: sum(purchases, v => v.tds), expected: sum(monthBills, t => t.net) , expectedCount: monthBills.length },

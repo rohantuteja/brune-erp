@@ -75,6 +75,8 @@ export function tallyVoucher(v, orders) {
       const kind = net > 0 ? 'New Ref' : 'Agst Ref';
       const b = e.bills.get(`${kind}|${ref}`) ?? { name: ref, kind, amount: 0 };
       b.amount = r2(b.amount + net); e.bills.set(`${kind}|${ref}`, b);
+    } else if (l.refs?.length) {
+      for (const rf of l.refs) { const b = e.bills.get(`${rf.kind}|${rf.name}`) ?? { name: rf.name, kind: rf.kind, amount: 0 }; b.amount = r2(b.amount + (net > 0 ? rf.amount : -rf.amount)); e.bills.set(`${rf.kind}|${rf.name}`, b); }
     }
     entries.set(l.account, e);
   }
