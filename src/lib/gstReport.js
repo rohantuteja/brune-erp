@@ -44,15 +44,17 @@ export function monthsBetween(startMonth, lastMonth) {
 }
 
 // ── A bucket of amounts ────────────────────────────────────────────────────────────────────────────────────────────
-const bucket = () => ({ taxable: 0, igst: 0, cgst: 0, sgst: 0, docs: 0 });
+const FIELDS = ['taxable', 'igst', 'cgst', 'sgst', 'goods', 'cod', 'retFee'];    // goods, the COD / shipping charge, the return fee: the three kinds of supply the ledger keeps apart
+const bucket = () => ({ taxable: 0, igst: 0, cgst: 0, sgst: 0, goods: 0, cod: 0, retFee: 0, docs: 0 });
 function put(b, d) {
-  b.taxable = r2(b.taxable + d.taxable); b.igst = r2(b.igst + d.igst); b.cgst = r2(b.cgst + d.cgst); b.sgst = r2(b.sgst + d.sgst); b.docs += 1;
+  for (const f of FIELDS) b[f] = r2(b[f] + (d[f] ?? 0));
+  b.docs += 1;
 }
 const taxOf = (b) => r2(b.igst + b.cgst + b.sgst);
 /** sales + fee invoices - credit notes */
 function netOf(sales, fees, returns) {
   const f = (k) => r2(sales[k] + fees[k] - returns[k]);
-  return { taxable: f('taxable'), igst: f('igst'), cgst: f('cgst'), sgst: f('sgst') };
+  return Object.fromEntries(FIELDS.map(k => [k, f(k)]));
 }
 
 // ── What a document is for, in words ───────────────────────────────────────────────────────────────────────────────
@@ -77,13 +79,14 @@ export function documentsOf(entries, orders, month) {
     let d = docs.get(key);
     if (!d) {
       d = { key, order: e.order_name, voucher: e.voucher, kind: e.voucher === 'sale' ? 'sale' : e.voucher === 'invoice' ? 'fee' : 'return',
-            date: e.entry_date, number: e.doc ?? null, issuedBy: e.issued_by ?? null, memo: e.memo ?? '', taxable: 0, igst: 0, cgst: 0, sgst: 0, qty: 0 };
+            date: e.entry_date, number: e.doc ?? null, issuedBy: e.issued_by ?? null, memo: e.memo ?? '', taxable: 0, igst: 0, cgst: 0, sgst: 0, goods: 0, cod: 0, retFee: 0, qty: 0 };
       docs.set(key, d);
     }
     // A sale or a fee invoice is credited to sales and to output tax; a credit note is debited to them.
     const v = e.voucher === 'credit_note' ? num(e.debit) - num(e.credit) : num(e.credit) - num(e.debit);
     if (e.account === A.sales || e.account === A.salesReturn) {
       d.taxable = r2(d.taxable + v);
+      if (e.part === 'cod_charge') d.cod = r2(d.cod + v); else if (e.part === 'return_fee') d.retFee = r2(d.retFee + v); else d.goods = r2(d.goods + v);
       if (e.voucher === 'sale' ? e.account === A.sales : e.account === A.salesReturn) d.qty += num(e.qty);
     } else if (e.account === A.igst) d.igst = r2(d.igst + v);
     else if (e.account === A.cgst) d.cgst = r2(d.cgst + v);
@@ -124,7 +127,7 @@ export function buildGstReport({ month, entries = [], orders = [], waiting = [] 
   const states = [...rows.values()].map(r => ({ ...r, net: netOf(r.sales, r.fees, r.returns) }))
     .sort((a, b) => a.channel.localeCompare(b.channel) || b.net.taxable - a.net.taxable || a.state.localeCompare(b.state));
   for (const ch of CHANNELS) totals[ch].net = netOf(totals[ch].sales, totals[ch].fees, totals[ch].returns);
-  const sum = (slot) => { const b = bucket(); for (const ch of CHANNELS) for (const k of ['taxable', 'igst', 'cgst', 'sgst', 'docs']) b[k] = k === 'docs' ? b[k] + totals[ch][slot][k] : r2(b[k] + totals[ch][slot][k]); return b; };
+  const sum = (slot) => { const b = bucket(); for (const ch of CHANNELS) for (const k of [...FIELDS, 'docs']) b[k] = k === 'docs' ? b[k] + totals[ch][slot][k] : r2(b[k] + totals[ch][slot][k]); return b; };
   totals.all = { sales: sum('sales'), fees: sum('fees'), returns: sum('returns') };
   totals.all.net = netOf(totals.all.sales, totals.all.fees, totals.all.returns);
 
@@ -168,6 +171,18 @@ export function buildGstReport({ month, entries = [], orders = [], waiting = [] 
  * Myntra's sales are in Table 7 AND summarised again under Myntra's GSTIN in Table 14(a) (the GSTN advisory on Notification
  * 26/2022: the Table 14(a) summary is of supplies "already reported in any table 4 to 10"), so 'myntra' is the Table 14(a) figure.
  */
+export const OUR_STATE_CODE = '09';                      // Uttar Pradesh: a sale to this state is CGST + SGST, every other state IGST
+/**
+ * The tax as GSTR-1 wants it: the rate on the net taxable value of a state-and-rate row, and for our own state CGST and SGST EQUAL (half each).
+ * The books add up tax invoice by invoice, each rounded on its own, so over a month CGST and SGST drift apart by paise and the total is not
+ * exactly the rate on the taxable value: the portal takes neither. The difference to the books is shown next to it, never hidden.
+ */
+export function gstr1Of(taxable, ratePct, stateCode) {
+  if (String(stateCode) === OUR_STATE_CODE) { const half = r2(taxable * ratePct / 200); return { igst: 0, cgst: half, sgst: half, tax: r2(half * 2) }; }   // half the rate on each, so never a paisa apart
+  const tax = r2(taxable * ratePct / 100);
+  return { igst: tax, cgst: 0, sgst: 0, tax };
+}
+const sumG = (list) => list.reduce((s, g) => ({ igst: r2(s.igst + g.igst), cgst: r2(s.cgst + g.cgst), sgst: r2(s.sgst + g.sgst), tax: r2(s.tax + g.tax) }), { igst: 0, cgst: 0, sgst: 0, tax: 0 });
 export function stateTable(report, channel) {
   let list;
   if (channel === 'all') {
@@ -177,15 +192,77 @@ export function stateTable(report, channel) {
       let x = merged.get(k);
       if (!x) { x = { channel: 'all', stateCode: r.stateCode, state: r.state, ratePct: r.ratePct, sales: bucket(), fees: bucket(), returns: bucket() }; merged.set(k, x); }
       for (const slot of ['sales', 'fees', 'returns']) {
-        for (const f of ['taxable', 'igst', 'cgst', 'sgst']) x[slot][f] = r2(x[slot][f] + r[slot][f]);
+        for (const f of FIELDS) x[slot][f] = r2(x[slot][f] + r[slot][f]);
         x[slot].docs += r[slot].docs;
       }
     }
     list = [...merged.values()].map(r => ({ ...r, net: netOf(r.sales, r.fees, r.returns) })).sort((a, b) => b.net.taxable - a.net.taxable || a.state.localeCompare(b.state));
   } else list = report.states.filter(r => r.channel === channel);
   const total = { sales: bucket(), fees: bucket(), returns: bucket() };
-  for (const r of list) for (const slot of ['sales', 'fees', 'returns']) for (const k of ['taxable', 'igst', 'cgst', 'sgst']) total[slot][k] = r2(total[slot][k] + r[slot][k]);
+  for (const r of list) for (const slot of ['sales', 'fees', 'returns']) for (const k of FIELDS) total[slot][k] = r2(total[slot][k] + r[slot][k]);
   for (const r of list) for (const slot of ['sales', 'fees', 'returns']) total[slot].docs += r[slot].docs;
-  return { rows: list, total: { ...total, net: netOf(total.sales, total.fees, total.returns) } };
+  const rows = list.map(r => ({ ...r, gstr1: gstr1Of(r.net.taxable, r.ratePct, r.stateCode) }));
+  return { rows, total: { ...total, net: netOf(total.sales, total.fees, total.returns), gstr1: sumG(rows.map(r => r.gstr1)) } };
+}
+
+/**
+ * GSTR-1 Table 12, the HSN summary: goods under their HSN, the COD / shipping charge and the return fee as services, by rate, with the pieces
+ * (sold minus returned). Taxable values are the same split of Table 7, so the totals agree with it.
+ */
+export const HSN = { goods: { code: '6204', what: 'Women\'s dresses, tops and kurtis (as on the Tally stock item)', uqc: 'PCS-PIECES' }, cod: { code: '9968', what: 'COD / shipping charge', uqc: 'NA' }, retFee: { code: '9968', what: 'Return fee kept on a return (SAC to be confirmed by the accountant)', uqc: 'NA' } };
+export function hsnSummary(report) {
+  const { rows } = stateTable(report, 'all');
+  const qtyByRate = new Map();
+  for (const x of report.docs.sales) qtyByRate.set(x.ratePct, (qtyByRate.get(x.ratePct) ?? 0) + (x.qty || 0));
+  for (const x of report.docs.returns) qtyByRate.set(x.ratePct, (qtyByRate.get(x.ratePct) ?? 0) - (x.qty || 0));
+  const by = new Map();
+  for (const r of rows) {
+    // The tax of the row (Table 7) is shared between the kinds of supply in it; the paisa the three roundings leave over goes to the first, so Table 12 adds up to Table 7 exactly.
+    const comps = ['goods', 'cod', 'retFee'].map(kind => ({ kind, taxable: r.net[kind] })).filter(c => Math.abs(c.taxable) >= 0.005);
+    if (!comps.length) continue;
+    const gs = comps.map(c => gstr1Of(c.taxable, r.ratePct, r.stateCode));
+    for (const head of ['igst', 'cgst', 'sgst']) gs[0][head] = r2(gs[0][head] + r2(r.gstr1[head] - gs.reduce((sum, g) => sum + g[head], 0)));
+    comps.forEach((c, i) => {
+      const k = `${c.kind}|${r.ratePct}`;
+      const x = by.get(k) ?? { kind: c.kind, ...HSN[c.kind], ratePct: r.ratePct, qty: c.kind === 'goods' ? (qtyByRate.get(r.ratePct) ?? 0) : 0, taxable: 0, igst: 0, cgst: 0, sgst: 0 };
+      x.taxable = r2(x.taxable + c.taxable); x.igst = r2(x.igst + gs[i].igst); x.cgst = r2(x.cgst + gs[i].cgst); x.sgst = r2(x.sgst + gs[i].sgst);
+      by.set(k, x);
+    });
+  }
+  const out = [...by.values()].map(x => ({ ...x, value: r2(x.taxable + x.igst + x.cgst + x.sgst) })).sort((a, b) => ['goods', 'cod', 'retFee'].indexOf(a.kind) - ['goods', 'cod', 'retFee'].indexOf(b.kind) || a.ratePct - b.ratePct);
+  const total = out.reduce((s, x) => ({ qty: s.qty + x.qty, taxable: r2(s.taxable + x.taxable), igst: r2(s.igst + x.igst), cgst: r2(s.cgst + x.cgst), sgst: r2(s.sgst + x.sgst), value: r2(s.value + x.value) }), { qty: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, value: 0 });
+  return { rows: out, total };
+}
+
+/**
+ * GSTR-1 Table 13, the documents issued: for each series (the letters before the running number) the first and last number issued in the month, how many,
+ * and the numbers in between that are not in this month's file (cancelled, or issued to another month): the accountant fills "cancelled" from them.
+ */
+export function documentSeries(report) {
+  const groups = [
+    ['Invoices for outward supply: Unicommerce', report.docs.sales],
+    ['Invoices for outward supply: issued by the ERP (return fee, retained COD charge)', report.docs.fees],
+    ['Credit notes: Unicommerce', report.docs.returns.filter(x => x.issuedBy === 'unicommerce')],
+    ['Credit notes: issued by the ERP', report.docs.returns.filter(x => x.issuedBy !== 'unicommerce')],
+  ];
+  const out = [];
+  for (const [nature, docs] of groups) {
+    const series = new Map();
+    for (const x of docs) {
+      const m = /^(.*?)(\d+)$/.exec(String(x.number ?? ''));
+      if (!m) continue;
+      const s = series.get(m[1]) ?? new Map();
+      s.set(Number(m[2]), m[2]);
+      series.set(m[1], s);
+    }
+    for (const [prefix, nums] of [...series].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const ns = [...nums.keys()].sort((a, b) => a - b), lo = ns[0], hi = ns[ns.length - 1];
+      const missing = []; for (let n = lo; n <= hi && missing.length < 500; n++) if (!nums.has(n)) missing.push(String(n).padStart(nums.get(lo).length, '0'));
+      out.push({ nature, prefix, from: `${prefix}${nums.get(lo)}`, to: `${prefix}${nums.get(hi)}`, total: ns.length, missing: (hi - lo + 1) - ns.length, missingList: missing.slice(0, 8).map(n => `${prefix}${n}`) });
+    }
+    const unnumbered = docs.filter(x => !x.number).length;
+    if (unnumbered) out.push({ nature, prefix: '', from: '(not numbered yet)', to: '', total: unnumbered, missing: 0, missingList: [] });
+  }
+  return out;
 }
 export { taxOf };

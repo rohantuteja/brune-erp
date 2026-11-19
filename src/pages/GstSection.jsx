@@ -132,7 +132,10 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
             <StatCard label="Sales" value={inr(T.sales.taxable + T.fees.taxable)} sub={`${T.sales.docs} invoices${T.fees.docs ? ` + ${T.fees.docs} fee invoices` : ''} · GST ${inr(tax(T.sales) + tax(T.fees), 2)}`} />
             <StatCard label="Credit notes" value={inr(T.returns.taxable)} tone="text-amber-800" sub={`${T.returns.docs} documents · GST ${inr(tax(T.returns), 2)}`} />
             <StatCard label="Net taxable value" value={inr(T.net.taxable)} tone="text-emerald-800" sub="sales + fee invoices − credit notes" />
-            <StatCard label="Net GST" value={inr(tax(T.net), 2)} sub={`IGST ${inr(T.net.igst, 2)} · CGST ${inr(T.net.cgst, 2)} · SGST ${inr(T.net.sgst, 2)}`} />
+            <StatCard label="Net GST (for GSTR-1)" value={inr(T.gstr1.tax, 2)} sub={`IGST ${inr(T.gstr1.igst, 2)} · CGST ${inr(T.gstr1.cgst, 2)} · SGST ${inr(T.gstr1.sgst, 2)}`} />
+          </div>
+          <div className="text-[11px] text-stone-500 -mt-1">
+            The tax for GSTR-1 is the rate on the net taxable value, with CGST equal to SGST. The books add up invoice by invoice, each rounded on its own, to {inr(tax(T.net), 2)} (CGST {inr(T.net.cgst, 2)}, SGST {inr(T.net.sgst, 2)}): the difference is {inr(Math.abs(T.gstr1.tax - tax(T.net)), 2)} of rounding.
           </div>
 
           <ul className="space-y-1">
@@ -157,6 +160,8 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
                     <th className="py-1.5 px-2 text-right font-medium">Fee invoices</th>
                     <th className="py-1.5 px-2 text-right font-medium">Credit notes</th>
                     <th className="py-1.5 px-2 text-right font-medium text-stone-900">Net taxable</th>
+                    <th className="py-1.5 px-2 text-right font-medium" title="of the net taxable value">Goods</th>
+                    <th className="py-1.5 px-2 text-right font-medium" title="of the net taxable value: what is charged for COD and shipping">COD / shipping</th>
                     <th className="py-1.5 px-2 text-right font-medium">IGST</th>
                     <th className="py-1.5 px-2 text-right font-medium">CGST</th>
                     <th className="py-1.5 px-2 text-right font-medium">SGST</th>
@@ -171,10 +176,12 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
                         <td className="py-1.5 px-2 text-right tabular-nums text-stone-500">{r.fees.taxable ? amt(r.fees.taxable) : '–'}</td>
                         <td className="py-1.5 px-2 text-right tabular-nums text-stone-500">{r.returns.taxable ? `−${amt(r.returns.taxable)}` : '–'}</td>
                         <td className="py-1.5 px-2 text-right tabular-nums font-medium">{amt(r.net.taxable)}</td>
-                        <td className="py-1.5 px-2 text-right tabular-nums">{r.net.igst ? amt(r.net.igst) : '–'}</td>
-                        <td className="py-1.5 px-2 text-right tabular-nums">{r.net.cgst ? amt(r.net.cgst) : '–'}</td>
-                        <td className="py-1.5 px-2 text-right tabular-nums">{r.net.sgst ? amt(r.net.sgst) : '–'}</td>
-                        <td className="py-1.5 px-3 text-right tabular-nums">{amt(tax(r.net))}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums text-stone-500">{amt(r.net.goods)}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums text-stone-500">{r.net.cod ? amt(r.net.cod) : '–'}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums">{r.gstr1.igst ? amt(r.gstr1.igst) : '–'}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums">{r.gstr1.cgst ? amt(r.gstr1.cgst) : '–'}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums">{r.gstr1.sgst ? amt(r.gstr1.sgst) : '–'}</td>
+                        <td className="py-1.5 px-3 text-right tabular-nums">{amt(r.gstr1.tax)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -184,10 +191,12 @@ export function GstReportView({ report, channel, onChannel, months, month, onMon
                     <td className="py-2 px-2 text-right tabular-nums">{amt(T.fees.taxable)}</td>
                     <td className="py-2 px-2 text-right tabular-nums">{T.returns.taxable ? `−${amt(T.returns.taxable)}` : amt(0)}</td>
                     <td className="py-2 px-2 text-right tabular-nums">{amt(T.net.taxable)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.net.igst)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.net.cgst)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.net.sgst)}</td>
-                    <td className="py-2 px-3 text-right tabular-nums">{amt(tax(T.net))}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.net.goods)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.net.cod)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.gstr1.igst)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.gstr1.cgst)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{amt(T.gstr1.sgst)}</td>
+                    <td className="py-2 px-3 text-right tabular-nums">{amt(T.gstr1.tax)}</td>
                   </tr></tfoot>
                 </table>
               </div>

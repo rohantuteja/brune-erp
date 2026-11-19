@@ -78,3 +78,12 @@ split the tax with it); if an order is missing, the rate the amounts imply is us
   invoices and 10 credit notes found as expected.
 - The Excel file was read back with the ERP's own `.xlsx` reader and structurally validated (zip, XML well-formedness, style
   indices, row and cell order). It was not opened in desktop Excel.
+
+## What the accountant found wrong in the first workbook, and what changed (19 Nov 2026)
+The October file was checked against the ledger and the ledger against the sources; it added up (net taxable ₹6,44,217.09 = the ledger's GST SALES less returns, to the paisa; Shopify's own shipping charges for the month, ₹8,900, are the ledger's COD charges net of the ones reversed, ₹8,900.18), but the accountant could not file from it:
+- **CGST and SGST differed** (₹1,027.01 and ₹1,026.94). The books add up invoice by invoice, each rounded on its own (Unicommerce splits a paisa to one side now and then), so over 90 Uttar Pradesh documents the halves drift apart. GSTR-1 wants them equal. The tax for GSTR-1 is now **the rate on the net taxable value of each state-and-rate row, CGST = SGST (half the rate on each)**; the books' own tax stays next to it ("Tax per books") with the difference (October: ₹32,210.86 against ₹32,210.01, ₹0.85, mostly in IGST).
+- **No split of goods and the shipping charge.** The taxable value is now split in every row into **goods, the COD / shipping charge (what Shopify calls shipping) and the return fee**, from the ledger's `part`. The ERP has no other shipping charge: Brune's shipping charge IS the COD charge.
+- **No HSN summary (Table 12)**: new sheet, goods under HSN 6204 (pieces sold minus returned, October 466) and the COD charge and return fee as services (SAC 9968; the return fee's SAC is for the accountant to confirm), by rate; it adds up to Table 7 exactly, head by head.
+- **No documents-issued summary (Table 13)**: new sheet, per series the first and last number, how many, and the numbers in between that are not in the month's file (October: Unicommerce invoices INS0029 to INS0414, 384 of them, INS0031 and INS0032 not in the ledger at all: to check in Unicommerce).
+- Table 14(a) GSTIN (09AAECM9636P1CW, a tax collector number), see `myntra-tcs-gstin`.
+The page shows the same GSTR-1 figures. Still decided, not changed: a sale counts in the month the ORDER was placed; a return in the month its credit note is dated.
