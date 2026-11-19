@@ -197,6 +197,25 @@ export function staleCodes(
     .map(e => e.return_code);
 }
 
+// ── Log rows that wait on a read of their order ───────────────────────────────────────────────
+
+/** Log statuses a later read of the order can settle: Unicommerce may have taken the return after all (see unsettledOrders). */
+export const UNSETTLED_STATUSES = new Set(['failed', 'working', 'unverified', 'attention']);
+/** The most orders one run reads only to settle log rows (a guard for the time budget; there are normally none). */
+export const UNSETTLED_MAX = 25;
+
+/**
+ * Orders to read only to settle the log, in code order. A timed-out receive can have gone through at Unicommerce (RP0037, 19 Nov 2026:
+ * Unicommerce needed 7 s, the call gives up at 7 s). Once Unicommerce has received a return the order no longer has a return open
+ * (a customer return even cancels the whole order), so the sweep stops reading it and its row would stay `failed` for ever. These
+ * orders are read in addition to the open ones so such a row is closed by a read of the order, never by calling Unicommerce again.
+ */
+export function unsettledOrders(rows: Array<{ order_code: string; status: string }>, openOrders: Set<string>, max = UNSETTLED_MAX): string[] {
+  const codes = new Set<string>();
+  for (const r of rows) if (UNSETTLED_STATUSES.has(r.status) && r.order_code && !openOrders.has(r.order_code)) codes.add(r.order_code);
+  return [...codes].sort().slice(0, Math.max(0, max));
+}
+
 // ── Whether to try a return again ─────────────────────────────────────────────────────────────
 
 export type Known = { status: string; attempts: number; next_try_at: string | null; claimed_at: string | null };

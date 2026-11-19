@@ -59,6 +59,16 @@ runs, or a run and a click, cannot both receive it.
 A `failed` / `working` / `unverified` row whose return Unicommerce now shows received (a call that timed out after Unicommerce took it, or a person
 receiving it by hand) is closed on the next read (`closeIfReceived`).
 
+**A timeout can hide a success (found 19 Nov 2026, RP0037).** `uc_post` gives up after 7 s (it must stay inside PostgREST's 8 s statement
+timeout) and `oms/returns/complete` for a customer return can need about that long: Unicommerce finished the return at 09:17:10 and the
+putaway at 09:17:15, the call was cut at 09:17:15, so the row said `failed` although the piece was back with return invoice ISR0081. Once
+Unicommerce receives a customer return it cancels the whole order, so the order stopped being one with a return open and the sweep (which
+reads only those) never looked at it again: the row stayed `failed` for ever and the panel showed a failure that was not one. A retry is
+harmless (the job never calls receive for a return Unicommerce shows complete), it just does nothing. Since v3 the sweep also reads the
+orders of rows still `failed` / `working` / `unverified` / `attention` whose order has no return open (`unsettledOrders`, at most 25 per
+run, only in live mode), solely to close the rows Unicommerce shows received; the run's answer lists them as `closed` (`settled_read` is how
+many orders were read for this). It never calls receive again for them.
+
 ## Customer returns need no putaway call (proven 17 Nov 2026)
 
 `oms/returns/complete` is documented only for "Courier Returned", and Unicommerce's own screens receive a customer return (reverse pickup,

@@ -1,4 +1,5 @@
-// myntra-returns v2 (v1 received the returns; v2 also keeps the list of returns still on their way, migration 041)
+// myntra-returns v3 (v1 received the returns; v2 also keeps the list of returns still on their way, migration 041; v3 closes a log row
+// whose receive timed out after Unicommerce had taken it, even though its order no longer has a return open)
 // Receives Myntra returns (Unicommerce channel MYNTRAPPMP) in Unicommerce once Myntra's tracking says the parcel has been
 // delivered back to us, so the piece goes back into stock and Unicommerce issues its return invoice (credit note), which the
 // accounting ledger then reads. Docs: docs/myntra-returns.md. Rules: _shared/myntra-returns.ts (tested).
@@ -45,7 +46,7 @@ import { completeReturn, ucErrorText, ucPost } from '../_shared/unicommerce.ts';
 import { linesFromOrder } from '../_shared/channel-velocity.ts';
 import {
   MAX_ATTEMPTS, decide, detailRequest, needsDetail, openReturnsOf, openRow, parseDetail, readReturns, receivedIn, remarksFor, retryAt,
-  returnInvoiceOf, staleCodes,
+  returnInvoiceOf, staleCodes, unsettledOrders,
   type Known, type OpenReturn, type OpenRow, type ReturnDetail, type SeenOpen,
 } from '../_shared/myntra-returns.ts';
 
@@ -213,8 +214,23 @@ async function sweep(admin: SupabaseClient, opts: { act: boolean; record: boolea
       would_receive: [] as Array<{ order: string; return_code: string; kind: string; awb: string | null; skus: string[] }>,
       received: [] as string[], failed: [] as string[], unverified: [] as string[],
       waiting: {} as Record<string, number>, attention: [] as string[], already_done: 0, already_logged: 0,
-      deferred: 0, unreadable: [] as string[], listed: 0, details: 0, list_error: null as string | null, ms: 0,
+      deferred: 0, unreadable: [] as string[], listed: 0, details: 0, list_error: null as string | null,
+      settled_read: 0, closed: [] as string[], ms: 0,
     };
+
+    // Log rows that never finished whose order no longer has a return open: a receive that timed out after Unicommerce took it (RP0037,
+    // 19 Nov 2026) leaves the order cancelled / returned, so the loop below never reads it and the row would stay failed for ever.
+    // Read those orders too, only to close the rows Unicommerce shows received; nothing is ever called to receive them again.
+    if (act) {
+      for (const orderCode of unsettledOrders([...known.values()], new Set(codes))) {
+        if (Date.now() - startedAt > READ_BUDGET_MS / 2) break;
+        let so: any;
+        try { so = await readOrder(admin, orderCode); }
+        catch (err) { out.unreadable.push(err instanceof Error ? err.message : String(err)); continue; }
+        out.settled_read++;
+        for (const rc of readReturns(so).receivedCodes) if (await closeIfReceived(admin, so, rc, known.get(rc))) out.closed.push(rc);
+      }
+    }
 
     let attempted = 0;
     for (let k = 0; k < codes.length; k++) {
@@ -345,16 +361,18 @@ async function receiveReturn(admin: SupabaseClient, so: any, ret: OpenReturn, kn
     { received_at: new Date().toISOString(), return_invoice: invoice, next_try_at: null });
 }
 
-async function closeIfReceived(admin: SupabaseClient, so: any, returnCode: string, known: Row | undefined) {
-  if (!known || !['failed', 'working', 'unverified', 'attention'].includes(known.status)) return;
+// True when it closed a log row.
+async function closeIfReceived(admin: SupabaseClient, so: any, returnCode: string, known: Row | undefined): Promise<boolean> {
+  if (!known || !['failed', 'working', 'unverified', 'attention'].includes(known.status)) return false;
   const invoice = returnInvoiceOf(so, returnCode);
   // One a person received in Unicommerce by hand after we flagged it is theirs ('resolved'); the rest are ours.
   const byPerson = known.status === 'attention';
-  await admin.from('myntra_returns').update({
+  const { data } = await admin.from('myntra_returns').update({
     status: byPerson ? 'resolved' : 'received', claimed_at: null, next_try_at: null, return_invoice: invoice, updated_at: new Date().toISOString(),
     ...(byPerson ? {} : { received_at: new Date().toISOString() }),
     detail: `Unicommerce shows it received${invoice ? `, return invoice ${invoice}` : ''} (seen on a later read)`,
-  }).eq('return_code', returnCode).eq('status', known.status);
+  }).eq('return_code', returnCode).eq('status', known.status).select('return_code');
+  return !!data?.length;
 }
 
 // The pieces of the order as Unicommerce shows them now (the same rows myntra-velocity keeps), so the velocity and the list of

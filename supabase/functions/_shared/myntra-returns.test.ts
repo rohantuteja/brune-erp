@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BACK_STATUSES, CLAIM_STALE_MS, MAX_ATTEMPTS, decide, detailRequest, isReceivedReturn, istToIso, kindOf, needsDetail, openReturnsOf, openRow,
-  parseDetail, readReturns, receivedIn, remarksFor, retryAt, returnInvoiceOf, staleCodes,
+  parseDetail, readReturns, receivedIn, remarksFor, retryAt, returnInvoiceOf, staleCodes, unsettledOrders,
 } from './myntra-returns.ts';
 
 const item = (code: string, sku = 'TOBY-BLACK-DRESS-49-M', statusCode = 'DELIVERED') => ({ code, itemSku: sku, statusCode });
@@ -272,4 +272,34 @@ test('rows go when the order has no open piece, or was read this run and the ret
   const stale = staleCodes(existing, new Set(['so-1', 'so-2']), new Set(['so-1']), new Set(['R1']));
   assert.deepEqual(stale.sort(), ['R2', 'R4']);
   assert.deepEqual(staleCodes([], new Set(), new Set(), new Set()), []);
+});
+
+// RP0037, 19 Nov 2026: the receive call timed out at 7 s, Unicommerce finished a moment later. A customer return that has been received
+// leaves the order CANCELLED with the return COMPLETE, so the sweep no longer lists it as an order with a return open.
+const receivedCir = (code: string, itemCode: string) =>
+  cir(code, itemCode, { statusCode: 'COMPLETE', putawayCode: 'PT0083', returnInvoiceCode: 'ISR0081', returnInvoiceDisplayCode: 'ISR0081', returnCompletedDate: 1795079830000, inventoryReceivedDate: 1795079835000 });
+
+test('a customer return received after a timed-out call is seen as received on the cancelled order, with its credit note', () => {
+  const so = order({ status: 'CANCELLED', saleOrderItems: [item('11475305761', 'MONA-WHITE-DRESS-58-M', 'CANCELLED')], returns: [receivedCir('RP0037', '11475305761')] });
+  const r = readReturns(so);
+  assert.deepEqual(r.receivedCodes, ['RP0037']);
+  assert.equal(r.receive.length + r.waiting.length + r.attention.length, 0);
+  assert.equal(returnInvoiceOf(so, 'RP0037'), 'ISR0081');
+});
+
+test('orders read only to settle the log: rows a read can close, whose order has no return open, once each, in code order', () => {
+  const rows = [
+    { order_code: 'so-9', status: 'failed' },       // the RP0037 case: its order is no longer open
+    { order_code: 'so-9', status: 'attention' },    // same order, read once
+    { order_code: 'so-2', status: 'unverified' },
+    { order_code: 'so-5', status: 'working' },
+    { order_code: 'so-1', status: 'failed' },       // its order is open: the sweep reads it anyway
+    { order_code: 'so-3', status: 'received' },     // finished
+    { order_code: 'so-4', status: 'resolved' },     // finished
+    { order_code: '', status: 'failed' },           // no order on record: nothing to read
+  ];
+  assert.deepEqual(unsettledOrders(rows, new Set(['so-1'])), ['so-2', 'so-5', 'so-9']);
+  assert.deepEqual(unsettledOrders(rows, new Set(['so-1']), 2), ['so-2', 'so-5']);   // capped
+  assert.deepEqual(unsettledOrders(rows, new Set(['so-1']), 0), []);
+  assert.deepEqual(unsettledOrders([], new Set()), []);
 });
